@@ -1,0 +1,21 @@
+{
+  "summary_type": "inference_export",
+  "publication_note": "Predictions are generated from the selected checkpoint and are not validation metrics.",
+  "n_samples": 260,
+  "n_participants": 260,
+  "cohort_counts": {
+    "Healthy": 73,
+    "RIL": 51,
+    "CVA": 49,
+    "Unknown": 33,
+    "PD": 24,
+    "CIPN": 19,
+    "ACL": 11
+  },
+  "risk_distribution": {
+    "low": 106,
+    "moderate": 0,
+    "high": 0,
+    "very_high": 154
+  }
+}

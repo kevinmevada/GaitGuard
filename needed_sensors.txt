@@ -1,0 +1,147 @@
+# **IMU-Based Fall Risk Assessment System – Data Specification Report**
+
+## **1. Introduction**
+
+This report outlines the data collection and input structure for an IMU-based fall risk assessment pipeline. The system is designed to analyze human motion using wearable sensors and predict fall probability through downstream machine learning models. The pipeline operates entirely on raw sensor data, performing all feature engineering internally.
+
+---
+
+## **2. Sensor Configuration**
+
+The system utilizes **four Inertial Measurement Unit (IMU) sensors**, strategically placed on the body to capture comprehensive motion dynamics:
+
+* **Head IMU** – Captures upper-body orientation and sudden movements
+* **Lower Back IMU** – Represents core body motion and stability
+* **Left Foot IMU** – Tracks gait and step patterns
+* **Right Foot IMU** – Complements gait symmetry and balance analysis
+
+This configuration ensures accurate detection of posture, movement irregularities, and gait asymmetry—key indicators of fall risk.
+
+---
+
+## **3. Sensor Data Format**
+
+Each IMU sensor produces a **CSV file** with exactly **10 columns**, structured as follows:
+
+```csv
+timestamp,acc_x,acc_y,acc_z,gyr_x,gyr_y,gyr_z,mag_x,mag_y,mag_z
+```
+
+### **3.1 Column Description**
+
+| Column Name         | Description                            | Unit    |
+| ------------------- | -------------------------------------- | ------- |
+| timestamp           | Time of recording                      | seconds |
+| acc_x, acc_y, acc_z | Linear acceleration along X, Y, Z axes | m/s²    |
+| gyr_x, gyr_y, gyr_z | Angular velocity along X, Y, Z axes    | rad/s   |
+| mag_x, mag_y, mag_z | Magnetic field along X, Y, Z axes      | μT      |
+
+### **3.2 Key Notes**
+
+* All four sensors must follow the **same schema**.
+* Data must be **time-synchronized** across sensors.
+* Sampling frequency should remain **consistent** within a trial.
+
+---
+
+## **4. Metadata Specification**
+
+Each trial includes a **JSON metadata file** containing contextual and label information:
+
+```json
+{
+  "trial_id": "string",
+  "participant_id": "string",
+  "cohort": "string",
+  "fall_probability": "number",
+  "risk_label": "number",
+  "laterality_biased": "boolean"
+}
+```
+
+### **4.1 Field Description**
+
+| Field             | Description                                             |
+| ----------------- | ------------------------------------------------------- |
+| trial_id          | Unique identifier for each trial                        |
+| participant_id    | Unique subject identifier                               |
+| cohort            | Group classification (e.g., age group, condition)       |
+| fall_probability  | Continuous value representing predicted fall likelihood |
+| risk_label        | Binary or categorical risk classification               |
+| laterality_biased | Indicates dominance or asymmetry in movement            |
+
+---
+
+## **5. Data Structure Summary**
+
+| Component            | Count |
+| -------------------- | ----- |
+| IMU Sensors          | 4     |
+| Columns per Sensor   | 10    |
+| Total Sensor Columns | 40    |
+| Metadata Fields      | 6     |
+| Total Inputs         | 46    |
+
+Each trial consists of:
+
+* **4 CSV files** (one per sensor)
+* **1 JSON file** (metadata)
+
+---
+
+## **6. Pipeline Overview**
+
+The system pipeline is designed to operate on raw IMU data and includes:
+
+1. **Data Ingestion**
+
+   * Reads synchronized multi-sensor time series data
+
+2. **Preprocessing**
+
+   * Noise filtering
+   * Signal normalization
+   * Alignment across sensors
+
+3. **Feature Engineering (Automated)**
+
+   * Temporal features (velocity, jerk, step timing)
+   * Frequency-domain features (FFT-based gait patterns)
+   * Spatial orientation features
+
+4. **Model Inference**
+
+   * Predicts fall probability
+   * Assigns risk classification
+
+---
+
+## **7. Assumptions & Constraints**
+
+* Sensors are properly calibrated before recording
+* Data is free from missing or corrupted timestamps
+* Units are strictly maintained as specified
+* Trials are independent and correctly labeled
+
+---
+
+## **8. Conclusion**
+
+This system leverages multi-point IMU data to build a robust representation of human motion. By standardizing the input format and automating feature engineering, the pipeline ensures scalability, consistency, and high-quality predictions for fall risk assessment.
+
+The structured approach enables easy integration with machine learning models and supports future extensions such as real-time monitoring and mobile deployment.
+
+---
+
+## **9. Future Improvements (Optional)**
+
+* Integration with real-time streaming sensors
+* Incorporation of additional physiological signals
+* Deployment as a mobile or wearable application
+* Personalized modeling based on participant history
+
+---
+
+**Prepared by:**
+Kevin Mevada
+Machine Learning Engineer

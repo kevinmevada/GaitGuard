@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GaitGuard - Gait Risk Research Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=SF+Pro+Display:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/"
+  }
+}
+</script>
+<link rel="stylesheet" href="style.css">
+<script>
+    // Configure API URL based on environment
+    // For production deployment, set this to your deployed API URL
+    window.GAITGUARD_API_BASE = window.GAITGUARD_API_BASE || 'http://localhost:8001';
+</script>
+</head>
+<body data-api-base="">
+
+<!-- NAV -->
+<nav>
+  <div class="nav-logo">GaitGuard</div>
+  <ul class="nav-links">
+    <li><a href="#pipeline">How It Works</a></li>
+    <li><a href="#models">Performance</a></li>
+    <li><a href="#results">Results</a></li>
+    <li><a href="#cohorts">Cohorts</a></li>
+  </ul>
+  <a href="#upload" class="nav-btn">Get Started</a>
+</nav>
+
+<!-- HERO -->
+<section id="hero">
+  <canvas id="hero-particles"></canvas>
+  <p class="hero-eyebrow">Gait Risk Research Platform</p>
+  <h1 class="hero-title">Gait Analysis.<br><em>Precision Redefined.</em></h1>
+  <p class="hero-sub">Ensemble machine learning trained on 4-sensor IMU recordings. Designed to surface gait-based fall-risk signals for review and validation.</p>
+  <div class="hero-cta-group">
+    <a href="#upload" class="cta-primary">Analyze Patient Data</a>
+    <a href="#pipeline" class="cta-secondary">See How It Works</a>
+  </div>
+  <div class="hero-canvas-container">
+    <canvas id="hero-canvas"></canvas>
+    <div class="hero-canvas-caption"></div>
+    <div class="sensor-label sl-head"><div class="sensor-dot"></div>Head IMU</div>
+    <div class="sensor-label sl-back"><div class="sensor-dot"></div>Lower Back</div>
+    <div class="sensor-label sl-lfoot"><div class="sensor-dot"></div>L. Foot</div>
+    <div class="sensor-label sl-rfoot"><div class="sensor-dot"></div>R. Foot</div>
+  </div>
+</section>
+
+<!-- METRICS -->
+<div class="metrics-bar">
+  <div class="metric-cell">
+    <div class="metric-num" data-count="4" data-dec="0">-</div>
+    <div class="metric-label">Models in ensemble</div>
+  </div>
+  <div class="metric-cell">
+    <div class="metric-num" data-count="41" data-dec="0">-</div>
+    <div class="metric-label">Extracted gait features</div>
+  </div>
+  <div class="metric-cell">
+    <div class="metric-num" data-count="4" data-dec="0">-</div>
+    <div class="metric-label">IMU sensor positions</div>
+  </div>
+    <div class="metric-cell">
+      <div class="metric-num" data-count="8" data-dec="0">-</div>
+      <div class="metric-label">Clinical cohorts represented</div>
+    </div>
+</div>
+
+<!-- PIPELINE -->
+<div class="pipeline-wrap" id="pipeline">
+  <div class="pipeline-inner">
+    <div class="label-tag">Process</div>
+    <h2 class="section-title">From raw sensor data<br>to clinical risk score.</h2>
+    <p class="section-body">A fully automated five-stage pipeline transforms multi-sensor IMU recordings into actionable fall risk predictions in seconds.</p>
+    <div class="pipeline-grid reveal">
+      <div class="pipe-cell">
+        <div class="pipe-num">01</div>
+        <div class="pipe-icon-wrap">IMU</div>
+        <div class="pipe-name">IMU Ingestion</div>
+        <div class="pipe-desc">Head, lower back, left & right foot sensors at 100 Hz. Automatic timestamp alignment across channels.</div>
+              </div>
+      <div class="pipe-cell">
+        <div class="pipe-num">02</div>
+        <div class="pipe-icon-wrap">Wave</div>
+        <div class="pipe-name">Signal Processing</div>
+        <div class="pipe-desc">Butterworth bandpass filtering, drift correction, and automatic gait cycle segmentation.</div>
+              </div>
+      <div class="pipe-cell">
+        <div class="pipe-num">03</div>
+        <div class="pipe-icon-wrap">Lab</div>
+        <div class="pipe-name">Feature Extraction</div>
+        <div class="pipe-desc">41 biomechanical features per trial - cadence, stride length, asymmetry index, harmonic ratio.</div>
+              </div>
+      <div class="pipe-cell">
+        <div class="pipe-num">04</div>
+        <div class="pipe-icon-wrap">Gear</div>
+        <div class="pipe-name">Ensemble Models</div>
+        <div class="pipe-desc">XGBoost, LightGBM, Random Forest, and SVM combined through calibrated soft voting.</div>
+              </div>
+      <div class="pipe-cell">
+        <div class="pipe-num">05</div>
+        <div class="pipe-icon-wrap">Report</div>
+        <div class="pipe-name">Risk Output</div>
+        <div class="pipe-desc">Fall probability 0-100 with SHAP-based factor attribution and anomaly classification.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODELS -->
+<div id="models">
+  <div class="section">
+    <div class="models-layout">
+      <div>
+        <div class="label-tag">Performance</div>
+        <h2 class="section-title">Four models.<br>One verdict.</h2>
+        <p class="section-body" style="margin-bottom: 36px;">Ensemble voting across four independently trained classifiers supports comparative internal evaluation and site-specific validation workflows.</p>
+        <div class="model-table reveal">
+          <div class="model-table-head">
+            <div>Model</div>
+            <div style="text-align:right">Status</div>
+            <div style="text-align:right">Use</div>
+            <div style="text-align:right">Notes</div>
+          </div>
+          <div class="model-row best">
+            <div class="model-name-wrap"><span class="model-name">Ensemble</span><span class="best-badge">Best</span></div>
+            <div class="model-val top">Internal</div>
+            <div class="model-val top">Research</div>
+            <div class="model-val top">Only</div>
+          </div>
+          <div class="model-row">
+            <div class="model-name">XGBoost</div>
+            <div class="model-val">Internal</div>
+            <div class="model-val">Research</div>
+            <div class="model-val">Baseline</div>
+          </div>
+          <div class="model-row">
+            <div class="model-name">LightGBM</div>
+            <div class="model-val">Internal</div>
+            <div class="model-val">Research</div>
+            <div class="model-val">Baseline</div>
+          </div>
+          <div class="model-row">
+            <div class="model-name">Random Forest</div>
+            <div class="model-val">Internal</div>
+            <div class="model-val">Research</div>
+            <div class="model-val">Baseline</div>
+          </div>
+          <div class="model-row">
+            <div class="model-name">SVM</div>
+            <div class="model-val">Internal</div>
+            <div class="model-val">Research</div>
+            <div class="model-val">Baseline</div>
+          </div>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; justify-content: center; padding-top: 120px;">
+        <div class="signal-panel reveal">
+          <div class="signal-header">
+            <div class="signal-title">Live IMU Signal - Lower Back Sensor</div>
+            <div class="signal-status"><div class="live-dot"></div>Recording</div>
+          </div>
+          <canvas id="signal-canvas"></canvas>
+          <div class="signal-axis-labels">
+            <div class="axis-label" style="color:#30d158">X - Roll</div>
+            <div class="axis-label" style="color:#0a84ff">Y - Pitch</div>
+            <div class="axis-label" style="color:#bf5af2">Z - Yaw</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ANOMALY -->
+<div class="anomaly-wrap" id="anomaly">
+  <div class="anomaly-inner">
+    <div class="label-tag" style="color: #30d158;">Anomaly Detection</div>
+    <h2 class="section-title" style="color: var(--white);">Unsupervised outlier<br>detection. Always on.</h2>
+    <p class="section-body" style="color: rgba(255,255,255,0.45); margin-bottom:0;">Three unsupervised algorithms running in parallel - flagging abnormal gait patterns that fall outside learned normative bounds.</p>
+    <div class="anomaly-layout">
+      <div class="anomaly-cards reveal">
+        <div class="anomaly-card">
+          <div class="a-icon">Forest</div>
+          <div>
+            <div class="a-title">Isolation Forest</div>
+            <div class="a-desc">Random recursive partitioning isolates anomalies faster on high-dimensional gait feature spaces. Scales without density assumptions.</div>
+          </div>
+        </div>
+        <div class="anomaly-card">
+          <div class="a-icon">LOF</div>
+          <div>
+            <div class="a-title">Local Outlier Factor</div>
+            <div class="a-desc">Density-based neighborhood comparison catches anomalies invisible to global thresholds - essential for cohort-specific edge cases.</div>
+          </div>
+        </div>
+        <div class="anomaly-card">
+          <div class="a-icon">SVM</div>
+          <div>
+            <div class="a-title">One-Class SVM</div>
+            <div class="a-desc">Learns hypersphere boundary of normal gait - ideal for detecting novel pathological patterns not seen during training.</div>
+          </div>
+        </div>
+        <div class="anomaly-card">
+          <div class="a-icon">Vote</div>
+          <div>
+            <div class="a-title">Ensemble Consensus</div>
+            <div class="a-desc">A trial is flagged anomalous only when ≥2 methods agree, providing a conservative internal review signal for follow-up analysis.</div>
+          </div>
+        </div>
+      </div>
+      <div class="anomaly-chart-card reveal">
+        <div class="chart-label">Anomaly Score Distribution</div>
+        <canvas id="anomaly-canvas"></canvas>
+        <div class="chart-legend">
+          <div class="cl-item"><div class="cl-dot" style="background:#30d158"></div>Normal</div>
+          <div class="cl-item"><div class="cl-dot" style="background:#ff453a"></div>Anomalous</div>
+          <div class="cl-item"><div class="cl-dot" style="background:rgba(255,255,255,0.3)"></div>Threshold</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- RESULTS -->
+<div id="results">
+  <div class="section">
+    <div class="label-tag">Output</div>
+    <h2 class="section-title">Structured reports.<br>Every trial.</h2>
+    <p class="section-body">Each patient trial produces a structured risk report with probability score, anomaly status, and SHAP-attributed risk factor breakdown.</p>
+    <div class="results-layout reveal">
+      <div class="trial-list" id="trial-list">
+        <div class="trial-row active" data-score="78" data-risk="high" data-name="Patient P-0041" data-id="Trial 001 · Elderly Cohort" data-anomaly="Detected" data-graph='{"confidence":87,"anomaly":100,"cohort":70,"trials":20}' data-meta='{"Confidence":"87%","Anomaly":"Detected","Cohort":"Elderly","Trials":"1"}'>
+          <div><div class="trial-name">Patient P-0041</div><div class="trial-id">Trial 001 · Elderly</div></div>
+          <div class="risk-pill r-high">High</div>
+        </div>
+        <div class="trial-row" data-score="42" data-risk="mod" data-name="Patient P-0087" data-id="Trial 002 · Post-Surgical" data-anomaly="Normal" data-graph='{"confidence":91,"anomaly":20,"cohort":60,"trials":20}' data-meta='{"Confidence":"91%","Anomaly":"Normal","Cohort":"Post-Surg","Trials":"1"}'>
+          <div><div class="trial-name">Patient P-0087</div><div class="trial-id">Trial 002 · Post-Surgical</div></div>
+          <div class="risk-pill r-mod">Moderate</div>
+        </div>
+        <div class="trial-row" data-score="18" data-risk="low" data-name="Patient P-0023" data-id="Trial 003 · Healthy Control" data-anomaly="Normal" data-graph='{"confidence":96,"anomaly":20,"cohort":20,"trials":20}' data-meta='{"Confidence":"96%","Anomaly":"Normal","Cohort":"Control","Trials":"1"}'>
+          <div><div class="trial-name">Patient P-0023</div><div class="trial-id">Trial 003 · Control</div></div>
+          <div class="risk-pill r-low">Low</div>
+        </div>
+        <div class="trial-row" data-score="61" data-risk="mod" data-name="Patient P-0055" data-id="Trial 004 · Neurological" data-anomaly="Detected" data-graph='{"confidence":83,"anomaly":100,"cohort":85,"trials":20}' data-meta='{"Confidence":"83%","Anomaly":"Detected","Cohort":"Neuro","Trials":"1"}'>
+          <div><div class="trial-name">Patient P-0055</div><div class="trial-id">Trial 004 · Neurological</div></div>
+          <div class="risk-pill r-mod">Moderate</div>
+        </div>
+        <div class="trial-row" data-score="89" data-risk="high" data-name="Patient P-0012" data-id="Trial 005 · Elderly Cohort" data-anomaly="Detected" data-graph='{"confidence":92,"anomaly":100,"cohort":70,"trials":20}' data-meta='{"Confidence":"92%","Anomaly":"Detected","Cohort":"Elderly","Trials":"1"}'>
+          <div><div class="trial-name">Patient P-0012</div><div class="trial-id">Trial 005 · Elderly</div></div>
+          <div class="risk-pill r-high">High</div>
+        </div>
+      </div>
+
+      <div class="result-card" id="result-card">
+        <div class="rc-header">
+          <div>
+            <div class="rc-title" id="rc-name">Patient P-0041</div>
+            <div class="rc-sub" id="rc-sub">Trial 001 · Elderly Cohort · Anomaly Detected</div>
+          </div>
+          <div class="score-wrap">
+            <div class="score-big" id="rc-score" style="color: var(--danger)">78</div>
+            <div class="score-sub">Risk Score</div>
+          </div>
+        </div>
+        <div class="rc-body">
+          <div class="shap-section">
+            <div class="shap-title">Metadata Graph</div>
+            <div id="shap-bars">
+              <div class="shap-bar">
+                <div class="shap-row"><span class="shap-name">Confidence</span><span class="shap-val">87%</span></div>
+                <div class="shap-track"><div class="shap-fill fill-success" style="width:87%"></div></div>
+              </div>
+              <div class="shap-bar">
+                <div class="shap-row"><span class="shap-name">Anomaly</span><span class="shap-val">20%</span></div>
+                <div class="shap-track"><div class="shap-fill fill-blue" style="width:20%"></div></div>
+              </div>
+              <div class="shap-bar">
+                <div class="shap-row"><span class="shap-name">Cohort</span><span class="shap-val">70%</span></div>
+                <div class="shap-track"><div class="shap-fill fill-warn" style="width:70%"></div></div>
+              </div>
+              <div class="shap-bar">
+                <div class="shap-row"><span class="shap-name">Trials</span><span class="shap-val">20%</span></div>
+                <div class="shap-track"><div class="shap-fill fill-blue" style="width:20%"></div></div>
+              </div>
+            </div>
+          </div>
+          <div class="meta-section">
+            <div class="shap-title">Trial Metadata</div>
+            <div class="meta-grid" id="meta-grid">
+              <div class="meta-cell"><div class="meta-key">Confidence</div><div class="meta-val">87%</div></div>
+              <div class="meta-cell"><div class="meta-key">Anomaly</div><div class="meta-val red">Detected</div></div>
+              <div class="meta-cell"><div class="meta-key">Cohort</div><div class="meta-val">Elderly</div></div>
+              <div class="meta-cell"><div class="meta-key">Trials</div><div class="meta-val">1</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- COHORTS -->
+<div class="cohorts-wrap" id="cohorts">
+  <div class="cohorts-inner">
+    <div class="label-tag">Validation</div>
+    <h2 class="section-title">Evaluated across multiple<br>patient populations.</h2>
+    <p class="section-body">Built from a mixed clinical dataset spanning multiple cohorts. Real-world deployment still requires site-specific validation and governance.</p>
+    <div class="cohort-grid reveal">
+      <div class="cohort-cell">
+        <div class="cohort-icon">Elderly</div>
+        <div class="cohort-name">Elderly Adults</div>
+        <div class="cohort-desc">Community-dwelling adults aged 65+. Primary high-risk group with complex, multifactorial fall aetiology.</div>
+        <div class="cohort-stat"><div class="cohort-pct">34.2%</div><div class="cohort-pct-label">Annual fall incidence</div></div>
+      </div>
+      <div class="cohort-cell">
+        <div class="cohort-icon">Neuro</div>
+        <div class="cohort-name">Neurological</div>
+        <div class="cohort-desc">Parkinson's, MS, and stroke patients with documented gait abnormalities and impaired balance control.</div>
+        <div class="cohort-stat"><div class="cohort-pct">58.7%</div><div class="cohort-pct-label">Annual fall incidence</div></div>
+      </div>
+      <div class="cohort-cell">
+        <div class="cohort-icon">Surgical</div>
+        <div class="cohort-name">Post-Surgical</div>
+        <div class="cohort-desc">Total knee and hip replacement rehabilitation phase. Characterised by asymmetric loading and compensatory gait patterns.</div>
+        <div class="cohort-stat"><div class="cohort-pct">22.1%</div><div class="cohort-pct-label">Annual fall incidence</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- UPLOAD -->
+<div id="upload">
+  <div class="section upload-section">
+    <div class="label-tag">Custom Analysis</div>
+    <h2 class="section-title">Analyse your patient data.</h2>
+    <p class="section-body" style="margin: 0 auto; text-align: center;">Upload multi-sensor IMU recordings and receive an instant fall risk report powered by trained ensemble models.</p>
+    <div class="dropzone" id="dropzone">
+      <div class="dz-icon">Files</div>
+      <div class="dz-title">Drop trial files or ZIP archive here</div>
+      <div class="dz-sub">Upload CSV sensor files and metadata JSON, or a ZIP containing all files for a complete risk assessment</div>
+      <div class="dz-files">
+        <span class="dz-file">head_raw.csv</span>
+        <span class="dz-file">lower_back_raw.csv</span>
+        <span class="dz-file">left_foot_raw.csv</span>
+        <span class="dz-file">right_foot_raw.csv</span>
+        <span class="dz-file">metadata.json</span>
+        <span class="dz-file">trial_data.zip</span>
+      </div>
+      <button class="dz-btn">Select Files</button>
+    </div>
+  </div>
+</div>
+
+<!-- TECH -->
+<div class="tech-wrap">
+  <div class="tech-inner">
+    <div class="tech-label">Built with</div>
+    <div class="tech-tags">
+      <span class="tech-tag">Python 3.11</span>
+      <span class="tech-tag">XGBoost</span>
+      <span class="tech-tag">LightGBM</span>
+      <span class="tech-tag">Scikit-learn</span>
+      <span class="tech-tag">SHAP</span>
+      <span class="tech-tag">Pandas</span>
+      <span class="tech-tag">NumPy</span>
+      <span class="tech-tag">FastAPI</span>
+      <span class="tech-tag">Parquet</span>
+    </div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-brand">Kevin Mevada</div>
+  <div class="footer-copy">© 2025 GaitGuard. Clinical Fall Risk Intelligence Platform.</div>
+  <div class="footer-links">
+    <a href="https://www.linkedin.com/in/kevinmevada/" target="_blank" title="LinkedIn">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
+      </svg>
+    </a>
+    <a href="https://github.com/kevinmevada" target="_blank" title="GitHub">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+      </svg>
+    </a>
+    <a href="mailto:kmevada@hawk.illinoistech.edu" title="Email">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M0 3v18h24v-18h-24zm6.623 7.929l-4.623 5.712v-9.458l4.623 3.746zm-4.141-5.929h19.035l-9.517 7.713-9.517-7.713zm5.694 7.188l3.824 3.099 3.83-3.104 5.612 6.817h-18.779l5.513-6.812zm9.208-1.264l4.616-3.741v9.348l-4.616-5.607z"/>
+      </svg>
+    </a>
+  </div>
+</footer>
+
+<script src="main.js?v=20260410-5"></script>
+</body>
+</html>

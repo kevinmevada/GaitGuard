@@ -1,0 +1,15 @@
+{
+  "participant_id": "P2",
+  "trial_id": "T-P2",
+  "cohort": "healthy",
+  "sampling_rate": 100,
+  "duration_seconds": 25.36,
+  "sensor_positions": [
+    "head",
+    "lower_back",
+    "left_foot",
+    "right_foot"
+  ],
+  "notes": "Real healthy trial with low risk and normal anomaly status, slightly different gait profile from P1.",
+  "source_trial": "HS_45_1"
+}
