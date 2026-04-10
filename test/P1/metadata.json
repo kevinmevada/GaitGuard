@@ -1,0 +1,15 @@
+{
+  "participant_id": "P1",
+  "trial_id": "T-P1",
+  "cohort": "healthy",
+  "sampling_rate": 100,
+  "duration_seconds": 24.29,
+  "sensor_positions": [
+    "head",
+    "lower_back",
+    "left_foot",
+    "right_foot"
+  ],
+  "notes": "Real healthy trial with low risk and normal anomaly status.",
+  "source_trial": "HS_26_1"
+}

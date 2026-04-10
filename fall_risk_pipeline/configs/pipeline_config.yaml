@@ -1,0 +1,143 @@
+# configs/pipeline_config.yaml
+# Master configuration for the fall risk prediction pipeline
+
+# Paths
+paths:
+  raw_data: "data/raw"
+  processed_data: "data/processed"
+  features: "data/features"
+  results: "results"
+  figures_eda: "results/figures/eda"
+  figures_models: "results/figures/models"
+  figures_shap: "results/figures/shap"
+  graphs: "results/graphs"
+  metrics: "results/metrics"
+  checkpoints: "results/checkpoints"
+  logs: "logs"
+
+# Dataset
+dataset:
+  sensor_positions: ["head", "lower_back", "left_foot", "right_foot"]
+  sampling_rate: 100
+  axes: ["acc_x", "acc_y", "acc_z", "gyr_x", "gyr_y", "gyr_z", "mag_x", "mag_y", "mag_z"]
+
+  cohort_labels:
+    Healthy: 0
+    HipOA: 1
+    KneeOA: 1
+    ACL: 1
+    PD: 2
+    CVA: 2
+    CIPN: 2
+    RIL: 2
+
+  label_mode: "binary"
+  high_risk_threshold: 1
+  probability_calibration: false
+
+  laterality_flags:
+    HipOA: "right_dominant"
+    CVA: "right_dominant"
+
+# Preprocessing
+preprocessing:
+  lowpass_cutoff_hz: 15.0
+  lowpass_order: 4
+  highpass_cutoff_hz: 0.1
+  madgwick_beta: 0.1
+  min_trial_length_s: 10.0
+  gait_event_source: "dataset"
+
+# Feature Engineering
+features:
+  temporal:
+    - stride_time_mean
+    - stride_time_std
+    - stride_time_cv
+    - cadence
+    - stance_phase_ratio
+    - swing_phase_ratio
+    - double_support_ratio
+    - step_count
+
+  spatial:
+    - step_length_mean
+    - step_length_std
+    - gait_speed
+    - step_width_mean
+
+  spectral:
+    - dominant_frequency
+    - spectral_entropy
+
+  trunk_dynamics:
+    - rms_acc_ap
+    - rms_acc_ml
+    - rms_acc_v
+    - rms_acc_total
+    - jerk_mean
+    - jerk_max
+
+  asymmetry:
+    - stride_time_asymmetry
+    - swing_time_asymmetry
+
+  turning:
+    - turn_duration_mean
+    - turn_velocity_mean
+
+  patient_aggregation: "mean_std"
+
+# Models (tabular only)
+models:
+  run:
+    - xgboost
+    - lightgbm
+    - random_forest
+    - svm
+
+  tuning:
+    enabled: true
+    framework: "optuna"
+    n_trials: 50
+    timeout_per_model: 1200
+    direction: "maximize"
+    metric: "auc"
+    cv_folds: 5
+
+  evaluation:
+    mode: "paper"
+    strategy: "nested_group_cv"
+    fast_strategy: "grouped_checkpoint_cv"
+    random_state: 42
+    nested_n_trials: 10
+    nested_timeout_per_model: 300
+
+  ensemble:
+    enabled: true
+    method: "soft_voting"
+    top_k: 3
+
+# Deep Learning (disabled for now)
+deep_learning:
+  enabled: false
+  sequence_length: 256
+  overlap: 0.5
+  batch_size: 32
+  max_epochs: 100
+  learning_rate: 0.001
+  early_stopping_patience: 15
+  device: "auto"
+
+# Explainability
+explainability:
+  shap_enabled: true
+  n_shap_samples: 200
+  top_features_plot: 20
+
+# Reporting
+reporting:
+  save_all_figures: true
+  figure_dpi: 300
+  figure_format: "pdf"
+  ieee_table_format: true

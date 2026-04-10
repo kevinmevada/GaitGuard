@@ -1,0 +1,6 @@
+model,cv_auc,validation
+xgboost,1.0,stratified_group_kfold
+lightgbm,1.0,stratified_group_kfold
+ensemble,1.0,stratified_group_kfold
+random_forest,0.9987711213517665,stratified_group_kfold
+svm,0.9898910766652701,stratified_group_kfold

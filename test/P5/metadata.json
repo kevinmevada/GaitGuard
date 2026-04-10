@@ -1,0 +1,14 @@
+{
+  "participant_id": "P5",
+  "trial_id": "T-P5",
+  "cohort": "pd",
+  "sampling_rate": 100,
+  "duration_seconds": 1.8,
+  "sensor_positions": [
+    "head",
+    "lower_back",
+    "left_foot",
+    "right_foot"
+  ],
+  "notes": "Synthetic high-risk neurological case dominated by head acceleration RMS."
+}

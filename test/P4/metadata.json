@@ -1,0 +1,14 @@
+{
+  "participant_id": "P4",
+  "trial_id": "T-P4",
+  "cohort": "cipn",
+  "sampling_rate": 100,
+  "duration_seconds": 1.8,
+  "sensor_positions": [
+    "head",
+    "lower_back",
+    "left_foot",
+    "right_foot"
+  ],
+  "notes": "Synthetic high-risk case dominated by cadence instability."
+}

@@ -1,0 +1,13 @@
+{
+  "participant_id": "P-001",
+  "trial_id": "T-001",
+  "cohort": "healthy",
+  "sampling_rate": 100,
+  "duration_seconds": 10,
+  "sensor_positions": ["head", "lower_back", "left_foot", "right_foot"],
+  "notes": "Example healthy control trial data",
+  "age": 35,
+  "gender": "M",
+  "height_cm": 175,
+  "weight_kg": 70
+}
