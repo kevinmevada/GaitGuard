@@ -77,6 +77,11 @@ if not cors_origins:
 
 app = FastAPI(title="GaitGuard API", version="2.0.0")
 
+
+@app.on_event("startup")
+async def startup_event():
+    load_resources()
+
 # Add rate limiting if available
 if limiter:
     app.state.limiter = limiter
