@@ -34,5 +34,6 @@ Pipeline workflow.png
 .ipynb_checkpoints/
 *.ipynb
 
-# Data
-data/
+# Data (exclude raw data, keep processed features)
+data/raw/
+data/processed/
