@@ -78,8 +78,8 @@ cors_origins = parse_cors_origins(os.getenv("CORS_ORIGINS"))
 allow_all_origins = cors_origins == ["*"]
 
 if not cors_origins:
-    cors_origins = ["http://localhost:8001", "http://127.0.0.1:8001", "https://gaitguard.onrender.com"]
-    allow_all_origins = False
+    cors_origins = ["*"]
+    allow_all_origins = True
 
 CONFIG_PATH = Path(os.getenv("CONFIG_PATH", PIPELINE_ROOT / "configs" / "pipeline_config.yaml"))
 MODEL_DIR = Path(os.getenv("MODEL_DIR", PIPELINE_ROOT / "results" / "checkpoints"))
