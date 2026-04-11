@@ -80,7 +80,11 @@ app = FastAPI(title="GaitGuard API", version="2.0.0")
 
 @app.on_event("startup")
 async def startup_event():
-    load_resources()
+    try:
+        load_resources()
+    except Exception as e:
+        print(f"Warning: Failed to load resources on startup: {e}")
+        print("App will start but predictions may not work until resources are loaded.")
 
 # Add rate limiting if available
 if limiter:
