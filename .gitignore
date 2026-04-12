@@ -9,6 +9,7 @@ env/
 ENV/
 .venv
 
+
 # IDE
 .vscode/
 .idea/
@@ -35,6 +36,7 @@ Pipeline workflow.png
 *.ipynb
 
 # Data (exclude raw and processed data, features, results)
+data/
 data/raw/
 data/processed/
 data/features/
