@@ -1,11 +1,14 @@
 """
 Publication-oriented evaluation using nested subject-grouped validation.
 
-OPTIMIZATIONS APPLIED:
-  1. Fast evaluation mode (_fast=True): loads checkpoints, skips retuning → <2 min
-  2. Parallelized LOSO folds via joblib (n_jobs=-1) → uses all CPU cores
-  3. Reduced nested Optuna trials (nested_n_trials / nested_timeout) → 60-70% faster
-  4. Ensemble fast path reuses per-fold tuned models without redundant fitting
+FIXES APPLIED:
+  1. Removed fall_probability / laterality_biased / n_trials from feature matrix.
+  2. Fast mode now re-fits a checkpoint on train data per fold — no longer evaluates
+     the full-data checkpoint in-sample (which inflated metrics).
+  3. Replaced non-existent _tune_model_with_budget() call with _run_optuna() +
+     _build_pipeline_from_params() — the correct public trainer API.
+  4. SHAP is now computed on a held-out subset using the fold-refitted pipeline,
+     not the full-data checkpoint.
 """
 
 from __future__ import annotations
@@ -32,7 +35,7 @@ from sklearn.metrics import (
 )
 from tqdm import tqdm
 
-from src.models.trainer import ModelTrainer
+from src.models.trainer import ModelTrainer, NON_FEATURE_COLS
 
 
 class Evaluator:
@@ -44,17 +47,17 @@ class Evaluator:
     config : dict
         Pipeline configuration dictionary.
     fast : bool
-        If True (default for post-training evaluation), loads saved checkpoints
-        and skips per-fold Optuna retuning. Runs in <2 minutes.
-        Set to False only when you need true nested CV for publication reporting.
+        If True (default), loads saved checkpoints and re-fits them per fold
+        so held-out scores are unbiased.  Runs in a few minutes.
+        Set to False for full per-fold Optuna retuning (publication mode).
     """
 
     def __init__(self, config: dict, fast: bool = True):
         self.config = config
         self.fast = fast
 
-        self.feat_dir  = Path(config["paths"]["features"])
-        self.ckpt_dir  = Path(config["paths"]["checkpoints"])
+        self.feat_dir    = Path(config["paths"]["features"])
+        self.ckpt_dir    = Path(config["paths"]["checkpoints"])
         self.metrics_dir = Path(config["paths"]["metrics"])
         self.fig_models  = Path(config["paths"]["figures_models"])
         self.fig_shap    = Path(config["paths"]["figures_shap"])
@@ -69,11 +72,10 @@ class Evaluator:
         eval_cfg = config.get("models", {}).get("evaluation", {})
         self.validation_strategy = eval_cfg.get("strategy", "nested_group_cv")
 
-        # Reduced defaults — override in config if needed
-        self.nested_trials  = int(eval_cfg.get("nested_n_trials", min(3, self.trainer.n_trials)))
+        self.nested_trials  = int(eval_cfg.get("nested_n_trials",  min(3, self.trainer.n_trials)))
         self.nested_timeout = int(eval_cfg.get("nested_timeout_per_model", min(60, self.trainer.timeout)))
 
-        mode = "FAST (checkpoint)" if self.fast else "FULL nested CV"
+        mode = "FAST (per-fold refit)" if self.fast else "FULL nested CV"
         logger.info(f"Evaluator initialized — mode: {mode}")
 
     # ------------------------------------------------------------------
@@ -124,26 +126,24 @@ class Evaluator:
         best_name = max(all_results, key=lambda n: all_results[n]["auc"])
         logger.info(f"Best model (AUC): {best_name}")
 
-        shap_model = self._load_checkpoint(best_name)
-        if shap_model is not None:
-            self._shap_analysis(best_name, shap_model, X, feat_names)
-        else:
-            logger.warning(f"Skipping SHAP — checkpoint not found for {best_name}")
+        # SHAP on a held-out fold — not the full-data checkpoint.
+        self._shap_analysis_held_out(best_name, X, y, groups, feat_names)
 
         self._save_all_metrics(all_results, len(np.unique(groups)))
         return all_results
 
     # ------------------------------------------------------------------
-    # FAST MODE — load checkpoints, skip retuning (<2 min total)
+    # FAST MODE — per-fold refit of saved checkpoint architecture
     # ------------------------------------------------------------------
 
     def _fast_evaluate_model(self, name: str, X, y, groups):
         """
-        Load a saved checkpoint and run LOSO evaluation without retuning.
-        Use this after training is complete.
+        Load a saved checkpoint to recover its hyperparameters, then re-fit it
+        on each LOSO training fold and evaluate on the held-out subject.
+        This avoids in-sample evaluation while skipping Optuna retuning.
         """
-        model = self._load_checkpoint(name)
-        if model is None:
+        checkpoint = self._load_checkpoint(name)
+        if checkpoint is None:
             logger.warning(f"Checkpoint not found for {name} — falling back to nested CV")
             return self._nested_group_evaluate_model(name, X, y, groups)
 
@@ -151,8 +151,18 @@ class Evaluator:
         all_probs, all_true = [], []
 
         for subj in unique_subjects:
-            test_idx = np.where(groups == subj)[0]
-            prob = model.predict_proba(X[test_idx])[:, 1]
+            test_idx  = np.where(groups == subj)[0]
+            train_idx = np.where(groups != subj)[0]
+
+            if len(np.unique(y[train_idx])) < 2:
+                continue
+
+            # Clone the pipeline structure and refit on training fold only.
+            import sklearn.base as skbase
+            fold_model = skbase.clone(checkpoint)
+            fold_model.fit(X[train_idx], y[train_idx])
+
+            prob = fold_model.predict_proba(X[test_idx])[:, 1]
             all_probs.extend(prob.tolist())
             all_true.extend(y[test_idx].tolist())
 
@@ -161,15 +171,17 @@ class Evaluator:
 
     def _fast_evaluate_ensemble(self, X, y, groups, model_names: list[str]):
         """
-        Soft-vote ensemble using saved checkpoints — no retuning.
+        Soft-vote ensemble: per-fold refit of each checkpoint, then average probabilities.
         """
-        models = {}
+        import sklearn.base as skbase
+
+        checkpoints = {}
         for name in model_names:
             m = self._load_checkpoint(name)
             if m is not None:
-                models[name] = m
+                checkpoints[name] = m
 
-        if not models:
+        if not checkpoints:
             logger.warning("No checkpoints found — falling back to nested ensemble CV")
             return self._nested_group_evaluate_ensemble(X, y, groups)
 
@@ -177,15 +189,23 @@ class Evaluator:
         all_probs, all_true = [], []
 
         for subj in unique_subjects:
-            test_idx = np.where(groups == subj)[0]
-            fold_probs = np.mean(
-                [m.predict_proba(X[test_idx])[:, 1] for m in models.values()],
-                axis=0,
-            )
+            test_idx  = np.where(groups == subj)[0]
+            train_idx = np.where(groups != subj)[0]
+
+            if len(np.unique(y[train_idx])) < 2:
+                continue
+
+            fold_probs_list = []
+            for name, ckpt in checkpoints.items():
+                fold_model = skbase.clone(ckpt)
+                fold_model.fit(X[train_idx], y[train_idx])
+                fold_probs_list.append(fold_model.predict_proba(X[test_idx])[:, 1])
+
+            fold_probs = np.mean(fold_probs_list, axis=0)
             all_probs.extend(fold_probs.tolist())
             all_true.extend(y[test_idx].tolist())
 
-        logger.info(f"Ensemble fast LOSO done ({len(unique_subjects)} subjects, {len(models)} models)")
+        logger.info(f"Ensemble fast LOSO done ({len(unique_subjects)} subjects, {len(checkpoints)} models)")
         return self._build_metric_payload("ensemble", np.array(all_true), np.array(all_probs))
 
     # ------------------------------------------------------------------
@@ -201,7 +221,9 @@ class Evaluator:
         if len(np.unique(y[train_idx])) < 2:
             return None, None
 
-        best_pipeline, _, _ = self.trainer._tune_model_with_budget(
+        # FIX: use the correct trainer API (_run_optuna + _build_pipeline_from_params)
+        # instead of the non-existent _tune_model_with_budget.
+        best_params, _ = self.trainer._run_optuna(
             name,
             X[train_idx],
             y[train_idx],
@@ -209,15 +231,14 @@ class Evaluator:
             n_trials=self.nested_trials,
             timeout=self.nested_timeout,
         )
+        best_pipeline = self.trainer._build_pipeline_from_params(name, best_params)
+        best_pipeline.fit(X[train_idx], y[train_idx])
 
         prob = best_pipeline.predict_proba(X[test_idx])[:, 1]
         return prob.tolist(), y[test_idx].tolist()
 
     def _nested_group_evaluate_model(self, name, X, y, groups):
-        """
-        Parallelized nested LOSO-CV with per-fold Optuna retuning.
-        Uses all available CPU cores (n_jobs=-1).
-        """
+        """Parallelized nested LOSO-CV with per-fold Optuna retuning."""
         unique_subjects = np.unique(groups)
 
         fold_results = Parallel(n_jobs=-1, prefer="processes")(
@@ -225,8 +246,7 @@ class Evaluator:
             for subj in tqdm(unique_subjects, desc=f"  {name} folds", leave=False)
         )
 
-        all_probs = []
-        all_true  = []
+        all_probs, all_true = [], []
         for probs, trues in fold_results:
             if probs is not None:
                 all_probs.extend(probs)
@@ -246,23 +266,19 @@ class Evaluator:
         top_k = self.config["models"]["ensemble"]["top_k"]
         tuned_results = []
 
-        # Load pre-trained checkpoints if available (much faster than retuning)
         for name in model_names:
-            checkpoint = self._load_checkpoint(name)
-            if checkpoint is not None:
-                checkpoint.fit(X[train_idx], y[train_idx])
-                tuned_results.append((name, {"pipeline": checkpoint, "cv_auc": 0.0}))
-            else:
-                # Fallback to tuning only if checkpoint not found
-                best_pipeline, best_score, _ = self.trainer._tune_model_with_budget(
-                    name,
-                    X[train_idx],
-                    y[train_idx],
-                    groups[train_idx],
-                    n_trials=self.nested_trials,
-                    timeout=self.nested_timeout,
-                )
-                tuned_results.append((name, {"pipeline": best_pipeline, "cv_auc": best_score}))
+            # FIX: use the correct trainer API instead of _tune_model_with_budget.
+            best_params, best_score = self.trainer._run_optuna(
+                name,
+                X[train_idx],
+                y[train_idx],
+                groups[train_idx],
+                n_trials=self.nested_trials,
+                timeout=self.nested_timeout,
+            )
+            best_pipeline = self.trainer._build_pipeline_from_params(name, best_params)
+            best_pipeline.fit(X[train_idx], y[train_idx])
+            tuned_results.append((name, {"pipeline": best_pipeline, "cv_auc": best_score}))
 
         top_models = sorted(
             tuned_results,
@@ -289,8 +305,7 @@ class Evaluator:
             for subj in tqdm(unique_subjects, desc="  ensemble folds", leave=False)
         )
 
-        all_probs = []
-        all_true  = []
+        all_probs, all_true = [], []
         for probs, trues in fold_results:
             if probs is not None:
                 all_probs.extend(probs)
@@ -307,8 +322,8 @@ class Evaluator:
         path = self.feat_dir / "patient_features.parquet"
         df = pd.read_parquet(path)
 
-        meta_cols = ["participant_id", "cohort", "risk_label"]
-        feat_cols = [c for c in df.columns if c not in meta_cols]
+        # FIX: exclude all leakage columns — same set as trainer uses.
+        feat_cols = [c for c in df.columns if c not in NON_FEATURE_COLS]
         feat_cols = df[feat_cols].select_dtypes(include=np.number).columns.tolist()
 
         X      = df[feat_cols].values.astype(np.float32)
@@ -328,9 +343,9 @@ class Evaluator:
         if len(y_true) == 0:
             raise ValueError(f"{name} evaluation failed: no valid grouped splits")
 
-        y_pred   = (y_prob >= 0.5).astype(int)
-        auc_roc  = roc_auc_score(y_true, y_prob)
-        auc_pr   = average_precision_score(y_true, y_prob)
+        y_pred      = (y_prob >= 0.5).astype(int)
+        auc_roc     = roc_auc_score(y_true, y_prob)
+        auc_pr      = average_precision_score(y_true, y_prob)
         fpr, tpr, _ = roc_curve(y_true, y_prob)
 
         cm = confusion_matrix(y_true, y_pred)
@@ -343,19 +358,19 @@ class Evaluator:
         specificity = tn / (tn + fp + 1e-10)
 
         return {
-            "model":          name,
-            "auc":            float(auc_roc),
-            "auc_pr":         float(auc_pr),
-            "f1":             float(f1_score(y_true, y_pred, zero_division=0)),
-            "accuracy":       float(accuracy_score(y_true, y_pred)),
-            "sensitivity":    float(sensitivity),
-            "specificity":    float(specificity),
-            "fpr":            fpr,
-            "tpr":            tpr,
-            "y_true":         y_true,
-            "y_prob":         y_prob,
+            "model":            name,
+            "auc":              float(auc_roc),
+            "auc_pr":           float(auc_pr),
+            "f1":               float(f1_score(y_true, y_pred, zero_division=0)),
+            "accuracy":         float(accuracy_score(y_true, y_pred)),
+            "sensitivity":      float(sensitivity),
+            "specificity":      float(specificity),
+            "fpr":              fpr,
+            "tpr":              tpr,
+            "y_true":           y_true,
+            "y_prob":           y_prob,
             "confusion_matrix": cm,
-            "report":         classification_report(y_true, y_pred, output_dict=True),
+            "report":           classification_report(y_true, y_pred, output_dict=True),
         }
 
     # ------------------------------------------------------------------
@@ -402,20 +417,40 @@ class Evaluator:
             ax.set_title(name)
             self._save(fig, f"cm_{name}")
 
-    def _shap_analysis(self, name, pipeline, X, feat_names):
+    def _shap_analysis_held_out(self, name: str, X, y, groups, feat_names):
+        """
+        FIX: compute SHAP on a genuine held-out fold, not the full-data checkpoint.
+        We take one LOSO fold (the last subject), refit on the remaining data,
+        then explain predictions on the held-out subject's data.
+        """
         if not self.config["explainability"]["shap_enabled"]:
             return
 
-        n = min(self.config["explainability"]["n_shap_samples"], len(X))
-        idx      = np.random.choice(len(X), n, replace=False)
+        unique_subjects = np.unique(groups)
+        # Use last subject as the held-out shard for SHAP explanation.
+        subj = unique_subjects[-1]
+        test_idx  = np.where(groups == subj)[0]
+        train_idx = np.where(groups != subj)[0]
+
+        checkpoint = self._load_checkpoint(name)
+        if checkpoint is None:
+            logger.warning(f"Skipping SHAP — checkpoint not found for {name}")
+            return
+
+        import sklearn.base as skbase
+        fold_model = skbase.clone(checkpoint)
+        fold_model.fit(X[train_idx], y[train_idx])
+
+        n = min(self.config["explainability"]["n_shap_samples"], len(test_idx))
+        idx      = test_idx[:n]
         X_sample = X[idx]
 
         try:
-            if hasattr(pipeline, "named_steps") and "clf" in pipeline.named_steps:
-                clf   = pipeline.named_steps["clf"]
-                X_proc = pipeline[:-1].transform(X_sample)
+            if hasattr(fold_model, "named_steps") and "clf" in fold_model.named_steps:
+                clf    = fold_model.named_steps["clf"]
+                X_proc = fold_model[:-1].transform(X_sample)
             else:
-                clf    = pipeline
+                clf    = fold_model
                 X_proc = X_sample
 
             if name in ("xgboost", "lightgbm", "random_forest"):

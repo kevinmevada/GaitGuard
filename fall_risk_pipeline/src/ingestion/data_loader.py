@@ -1,6 +1,10 @@
 """
 src/ingestion/data_loader.py
 FINAL FIXED VERSION (robust + safe)
+
+FIX: _infer_cohort now matches on full path-segment tokens (split on os.sep and
+     underscore) instead of raw substring search. This prevents false positives
+     such as "thresholds" matching "hs" (Healthy), or "mesh" matching "hs".
 """
 
 from __future__ import annotations
@@ -39,17 +43,25 @@ COHORT_LABEL_MAP = {
 
 LATERALITY_BIASED_COHORTS = {"HipOA", "CVA"}
 
+# Columns that are label-derived and must never enter feature-space analysis.
+METADATA_ONLY_COLS = {
+    "cohort",
+    "risk_label",
+    "fall_probability",
+    "laterality_biased",
+}
+
 IMU_AXES = [
     "acc_x", "acc_y", "acc_z",
     "gyr_x", "gyr_y", "gyr_z",
-    "mag_x", "mag_y", "mag_z"
+    "mag_x", "mag_y", "mag_z",
 ]
 
 SENSOR_FILE_MAPPING = {
-    "head": "HE",
-    "lower_back": "LB",
-    "left_foot": "LF",
-    "right_foot": "RF"
+    "head":        "HE",
+    "lower_back":  "LB",
+    "left_foot":   "LF",
+    "right_foot":  "RF",
 }
 
 
@@ -92,17 +104,17 @@ class TrialRecord:
 
     def to_meta_dict(self) -> dict:
         return {
-            "trial_id": self.trial_id,
-            "participant_id": self.participant_id,
-            "cohort": self.cohort,
-            "session": self.session,
-            "age": self.age,
-            "sex": self.sex,
-            "laterality": self.laterality,
-            "risk_label": self.risk_label,
+            "trial_id":         self.trial_id,
+            "participant_id":   self.participant_id,
+            "cohort":           self.cohort,
+            "session":          self.session,
+            "age":              self.age,
+            "sex":              self.sex,
+            "laterality":       self.laterality,
+            "risk_label":       self.risk_label,
             "laterality_biased": self.laterality_biased,
             "fall_probability": self.fall_probability,
-            "duration_s": self.duration_s,
+            "duration_s":       self.duration_s,
         }
 
 
@@ -115,9 +127,9 @@ class DataLoader:
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
         self.min_duration = config["preprocessing"]["min_trial_length_s"]
-        self.label_mode = config["dataset"]["label_mode"]
-        self.threshold = config["dataset"]["high_risk_threshold"]
-        self.fs = config["dataset"]["sampling_rate"]
+        self.label_mode   = config["dataset"]["label_mode"]
+        self.threshold    = config["dataset"]["high_risk_threshold"]
+        self.fs           = config["dataset"]["sampling_rate"]
 
     # ─────────────────────────────────────────
 
@@ -171,24 +183,39 @@ class DataLoader:
     # ─────────────────────────────────────────
 
     def _infer_cohort(self, trial_dir: Path) -> str:
-        path = str(trial_dir).lower()
+        """
+        FIX: tokenise the path on separators and underscores, then match whole
+        tokens (case-insensitive) rather than arbitrary substrings.
 
-        if "healthy" in path or "hs" in path:
+        Previously `"hs" in path` matched any path containing "hs" anywhere
+        (e.g. "thresholds", "mesh_data"), silently assigning the Healthy label.
+        Whole-token matching eliminates those false positives.
+        """
+        # Build a set of lowercase tokens from every path component.
+        tokens: set[str] = set()
+        for part in trial_dir.parts:
+            part_lower = part.lower()
+            tokens.add(part_lower)
+            # Also split on underscores so "pd_001" yields {"pd", "001"}.
+            tokens.update(part_lower.split("_"))
+
+        # Ordered from most specific to most general to avoid mis-classification.
+        if "healthy" in tokens or "hs" in tokens:
             return "Healthy"
-        if "pd" in path:
-            return "PD"
-        if "hipoa" in path:
+        if "hipoa" in tokens:
             return "HipOA"
-        if "kneeoa" in path:
+        if "kneeoa" in tokens:
             return "KneeOA"
-        if "cva" in path:
-            return "CVA"
-        if "cipn" in path:
+        if "cipn" in tokens:
             return "CIPN"
-        if "ril" in path:
-            return "RIL"
-        if "acl" in path:
+        if "acl" in tokens:
             return "ACL"
+        if "cva" in tokens:
+            return "CVA"
+        if "ril" in tokens:
+            return "RIL"
+        if "pd" in tokens:
+            return "PD"
 
         return "Unknown"
 
@@ -200,18 +227,21 @@ class DataLoader:
         if "cohort" not in meta:
             meta["cohort"] = self._infer_cohort(trial_dir)
 
-        cohort = meta.get("cohort", "Unknown")
+        cohort    = meta.get("cohort", "Unknown")
         raw_label = COHORT_LABEL_MAP.get(cohort, 0)
 
-        risk_label = int(raw_label >= self.threshold) if self.label_mode == "binary" else raw_label
+        risk_label = (
+            int(raw_label >= self.threshold)
+            if self.label_mode == "binary"
+            else raw_label
+        )
 
         fall_probability = COHORT_FALL_PROBABILITIES.get(cohort, 10.0) / 100.0
 
-        signals = {}
+        signals: dict[str, pd.DataFrame] = {}
 
         for pos, suffix in SENSOR_FILE_MAPPING.items():
             txt_path = trial_dir / f"{trial_dir.name}_raw_data_{suffix}.txt"
-
             df = None
 
             if txt_path.exists():
@@ -271,7 +301,7 @@ class DataLoader:
 
     # ─────────────────────────────────────────
 
-    def _load_imu_txt(self, path: Path) -> pd.DataFrame:
+    def _load_imu_txt(self, path: Path) -> Optional[pd.DataFrame]:
         try:
             df = pd.read_csv(path, sep=r"\s+", header=None)
 
@@ -283,9 +313,9 @@ class DataLoader:
 
             df.insert(0, "time", time_col)
 
-            available_axes = df.shape[1] - 1  # Subtract time column
+            available_axes = df.shape[1] - 1
             cols = ["time"] + IMU_AXES[:available_axes]
-            
+
             df = df.iloc[:, :len(cols)]
             df.columns = cols
 
