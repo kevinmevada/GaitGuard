@@ -1,5 +1,8 @@
 """
 Generate inference-style prediction exports without in-sample validation claims.
+
+FIX: fall_probability and laterality_biased excluded from feature columns,
+     matching the same NON_FEATURE_COLS guard used in trainer and evaluator.
 """
 
 from __future__ import annotations
@@ -12,6 +15,8 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from sklearn.utils.validation import check_is_fitted
+
+from src.models.trainer import NON_FEATURE_COLS
 
 
 class PredictionGenerator:
@@ -29,8 +34,10 @@ class PredictionGenerator:
             raise FileNotFoundError(f"{feat_path} not found")
 
         df = pd.read_parquet(feat_path)
-        meta_cols = ["participant_id", "cohort", "risk_label"]
-        feat_cols = [c for c in df.columns if c not in meta_cols]
+
+        # FIX: use the same exclusion set as trainer / evaluator so the feature
+        # vector fed to the model at inference matches what it was trained on.
+        feat_cols = [c for c in df.columns if c not in NON_FEATURE_COLS]
         feat_cols = df[feat_cols].select_dtypes(include=np.number).columns.tolist()
 
         X = df[feat_cols].values.astype(np.float32)
@@ -49,16 +56,28 @@ class PredictionGenerator:
         self._save_summary(df, y_prob)
 
     def _load_best_model(self):
+        # Prefer the evaluation metrics file (written by Evaluator).
         metrics_path = self.results_dir / "metrics.csv"
         if metrics_path.exists():
             df = pd.read_csv(metrics_path)
             if not df.empty:
                 best_model_name = df.iloc[0]["model"]
-                model_path = self.ckpt_dir / f"{best_model_name}.pkl"
-                model = self._load_fitted_model(model_path)
+                model = self._load_fitted_model(self.ckpt_dir / f"{best_model_name}.pkl")
                 if model is not None:
                     return model
 
+        # Fall back to trainer comparison file if evaluator hasn't run yet.
+        comparison_path = self.results_dir / "model_comparison_cv.csv"
+        if comparison_path.exists():
+            df = pd.read_csv(comparison_path)
+            if not df.empty:
+                best_model_name = df.iloc[0]["model"]
+                model = self._load_fitted_model(self.ckpt_dir / f"{best_model_name}.pkl")
+                if model is not None:
+                    logger.info(f"Loaded best model from trainer comparison: {best_model_name}")
+                    return model
+
+        # Last resort: try well-known names in order of typical performance.
         for model_name in ["ensemble", "lightgbm", "xgboost", "random_forest", "svm"]:
             model = self._load_fitted_model(self.ckpt_dir / f"{model_name}.pkl")
             if model is not None:
@@ -83,7 +102,6 @@ class PredictionGenerator:
         return model
 
     def _save_predictions(self, ids, cohorts, y_percent, y_prob):
-        # Vectorized prediction generation
         results = [
             {
                 "participant_id": pid,
@@ -105,14 +123,17 @@ class PredictionGenerator:
         cohort_counts = df["cohort"].value_counts(dropna=False).to_dict() if "cohort" in df else {}
         summary = {
             "summary_type": "inference_export",
-            "publication_note": "Predictions are generated from the selected checkpoint and are not validation metrics.",
+            "publication_note": (
+                "Predictions are generated from the selected checkpoint and are not "
+                "validation metrics."
+            ),
             "n_samples": int(len(y_prob)),
             "n_participants": int(df["participant_id"].nunique()) if "participant_id" in df else int(len(y_prob)),
             "cohort_counts": {str(k): int(v) for k, v in cohort_counts.items()},
             "risk_distribution": {
-                "low": int(np.sum(y_prob < 0.2)),
-                "moderate": int(np.sum((y_prob >= 0.2) & (y_prob < 0.5))),
-                "high": int(np.sum((y_prob >= 0.5) & (y_prob < 0.8))),
+                "low":       int(np.sum(y_prob < 0.2)),
+                "moderate":  int(np.sum((y_prob >= 0.2) & (y_prob < 0.5))),
+                "high":      int(np.sum((y_prob >= 0.5) & (y_prob < 0.8))),
                 "very_high": int(np.sum(y_prob >= 0.8)),
             },
         }
@@ -124,26 +145,18 @@ class PredictionGenerator:
         logger.info(f"Saved summary -> {path}")
 
     def _get_risk_category(self, p):
-        if p < 20:
-            return "Low"
-        if p < 40:
-            return "Moderate"
-        if p < 60:
-            return "High"
+        if p < 20:  return "Low"
+        if p < 40:  return "Moderate"
+        if p < 60:  return "High"
         return "Very High"
 
     def _confidence_label(self, prob):
-        if prob > 0.8 or prob < 0.2:
-            return "High"
-        if prob > 0.6 or prob < 0.4:
-            return "Medium"
+        if prob > 0.8 or prob < 0.2:  return "High"
+        if prob > 0.6 or prob < 0.4:  return "Medium"
         return "Low"
 
     def _get_recommendation(self, p):
-        if p < 20:
-            return "Routine monitoring"
-        if p < 40:
-            return "Preventive exercises"
-        if p < 60:
-            return "Clinical evaluation recommended"
+        if p < 20:  return "Routine monitoring"
+        if p < 40:  return "Preventive exercises"
+        if p < 60:  return "Clinical evaluation recommended"
         return "Immediate intervention required"
