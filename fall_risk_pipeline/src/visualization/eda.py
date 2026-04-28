@@ -74,9 +74,14 @@ class EDAAnalyzer:
         self._plot_signal_examples(meta)
         self._plot_psd_by_cohort(meta)
 
-        feat_path = self.feat_dir / "patient_features.parquet"
-        if feat_path.exists():
-            self._plot_tsne(feat_path, meta)
+        trial_feat_path = self.feat_dir / "trial_features.parquet"
+        patient_feat_path = self.feat_dir / "patient_features.parquet"
+        
+        if patient_feat_path.exists():
+            self._plot_tsne(patient_feat_path, meta)
+        
+        if trial_feat_path.exists():
+            self._plot_gait_cycle_features(trial_feat_path, meta)
 
         self.save_all_graphs()
 
@@ -333,6 +338,84 @@ class EDAAnalyzer:
         ax.set_ylabel("t-SNE 2")
 
         self._save(fig, "tsne")
+
+    # ─────────────────────────────────────────
+
+    def _plot_gait_cycle_features(self, feat_path: Path, meta: pd.DataFrame) -> None:
+        """Plot gait cycle features (stride time, cadence, stance ratio) by cohort."""
+        df = pd.read_parquet(feat_path)
+
+        # Gait cycle feature columns to plot
+        gait_features = [
+            "left_stride_time_mean", "right_stride_time_mean",
+            "left_cadence", "right_cadence",
+            "left_stance_ratio", "right_stance_ratio",
+            "cadence_mean",
+            "stride_time_mean_asymmetry"
+        ]
+
+        # Filter to only features that exist in the dataframe
+        available_features = [f for f in gait_features if f in df.columns]
+
+        if not available_features:
+            logger.warning("No gait cycle features found — skipping gait cycle plots.")
+            return
+
+        # Merge with metadata to get cohort information (trial_features has trial_id)
+        if "trial_id" not in df.columns or "trial_id" not in meta.columns:
+            logger.warning("trial_id not found — skipping gait cycle plots.")
+            return
+
+        df_merged = df.merge(meta[["trial_id", "cohort"]], on="trial_id", how="left", suffixes=("", "_meta"))
+        
+        # Use the cohort from metadata (cohort_meta if there was a collision)
+        if "cohort_meta" in df_merged.columns:
+            df_merged["cohort"] = df_merged["cohort_meta"]
+            df_merged = df_merged.drop(columns=["cohort_meta"])
+        
+        # Ensure cohort is a Series, not DataFrame
+        if isinstance(df_merged["cohort"], pd.DataFrame):
+            df_merged["cohort"] = df_merged["cohort"].iloc[:, 0]
+
+        # Create subplots for available features
+        n_features = len(available_features)
+        n_cols = 3
+        n_rows = (n_features + n_cols - 1) // n_cols
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5 * n_rows))
+        if n_rows == 1:
+            axes = axes.reshape(1, -1)
+
+        for idx, feature in enumerate(available_features):
+            row = idx // n_cols
+            col = idx % n_cols
+            ax = axes[row, col]
+
+            for cohort in df_merged["cohort"].unique():
+                cohort_data = df_merged[df_merged["cohort"] == cohort][feature].dropna()
+                if len(cohort_data) > 0:
+                    ax.hist(
+                        cohort_data,
+                        bins=20,
+                        alpha=0.6,
+                        label=cohort,
+                        color=COHORT_PALETTE.get(cohort, "#888"),
+                        edgecolor="white"
+                    )
+
+            ax.set_xlabel(feature.replace("_", " ").title())
+            ax.set_ylabel("Count")
+            ax.set_title(f"{feature.replace('_', ' ').title()} by Cohort")
+            ax.legend(fontsize=7, ncol=2)
+
+        # Hide unused subplots
+        for idx in range(n_features, n_rows * n_cols):
+            row = idx // n_cols
+            col = idx % n_cols
+            axes[row, col].set_visible(False)
+
+        plt.tight_layout()
+        self._save(fig, "gait_cycle_features")
 
     # ─────────────────────────────────────────
 

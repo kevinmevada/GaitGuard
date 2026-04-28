@@ -1,5 +1,5 @@
 # Fall Risk Prediction Pipeline - Results Report
-Generated: 2026-04-11 20:00
+Generated: 2026-04-28 01:18
 
 ## Dataset
 - Participants: 260
@@ -14,20 +14,20 @@ Generated: 2026-04-11 20:00
 
 | Model | AUC | Accuracy | F1 | Sensitivity |
 |---|---|---|---|---|
-| ensemble * | 0.937 | 0.877 | 0.897 | 0.909 |
-| lightgbm | 0.933 | 0.850 | 0.872 | 0.864 |
-| xgboost | 0.931 | 0.838 | 0.871 | 0.922 |
-| random_forest | 0.928 | 0.850 | 0.872 | 0.864 |
-| svm | 0.917 | 0.881 | 0.898 | 0.890 |
+| lightgbm * | 0.932 | 0.869 | 0.880 | 0.812 |
+| ensemble | 0.920 | 0.869 | 0.881 | 0.818 |
+| random_forest | 0.915 | 0.862 | 0.875 | 0.818 |
+| xgboost | 0.908 | 0.865 | 0.880 | 0.831 |
+| svm | 0.895 | 0.869 | 0.888 | 0.877 |
 
 
 ## Best Model
-**ensemble**
+**lightgbm**
 
-- AUC: **0.9370**
-- Accuracy: **0.8769**
-- F1 Score: **0.8974**
-- Sensitivity: **0.9091**
+- AUC: **0.9322**
+- Accuracy: **0.8692**
+- F1 Score: **0.8803**
+- Sensitivity: **0.8117**
 
 ## Outputs
 - metrics.csv

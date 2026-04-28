@@ -685,10 +685,61 @@ const GRAPH_NAMES = [
   'Trials'
 ];
 
-// API_BASE can be configured via window.GAITGUARD_API_BASE or environment variable
-// Defaults to localhost:8001 for development
+// API_BASE can be configured via window.GAITGUARD_API_BASE.
+// We also keep safe local fallbacks because some browsers/environments
+// resolve localhost/127.0.0.1 differently.
 const API_BASE = window.GAITGUARD_API_BASE || 'http://localhost:8001';
-console.log('API_BASE set to:', API_BASE);
+const API_BASE_CANDIDATES = Array.from(new Set([
+  API_BASE,
+  'http://localhost:8001',
+  'http://127.0.0.1:8001'
+].filter(Boolean)));
+console.log('API_BASE candidates:', API_BASE_CANDIDATES);
+
+async function postPredictWithFallback(formData) {
+  let lastNetworkError = null;
+
+  for (const baseUrl of API_BASE_CANDIDATES) {
+    const url = baseUrl.replace(/\/+$/, '') + '/predict';
+    try {
+      console.log('Trying API:', url);
+      upsertApiDebugLine('Trying API: ' + url);
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData
+      });
+      upsertApiDebugLine('Connected API: ' + url + ' (status ' + response.status + ')');
+      return response;
+    } catch (error) {
+      lastNetworkError = error;
+      console.warn('API endpoint unreachable:', url, error);
+      upsertApiDebugLine(
+        'Connection failed: ' + url + ' | ' + (error && error.message ? error.message : 'network error')
+      );
+    }
+  }
+
+  throw new Error(
+    'Cannot connect to the API server. Please ensure the backend is running and reachable from this page.'
+  );
+}
+
+function upsertApiDebugLine(message) {
+  const dropzone = document.getElementById('dropzone');
+  if (!dropzone) return;
+
+  let debug = document.getElementById('api-debug-line');
+  if (!debug) {
+    debug = document.createElement('div');
+    debug.id = 'api-debug-line';
+    debug.style.marginTop = '10px';
+    debug.style.fontSize = '12px';
+    debug.style.color = '#6e6e73';
+    debug.style.wordBreak = 'break-word';
+    dropzone.appendChild(debug);
+  }
+  debug.textContent = message;
+}
 
 function createElement(tag, className, text) {
   const el = document.createElement(tag);
@@ -918,23 +969,14 @@ async function handleFilesSafe(files) {
   if (!validation.valid) { alert(validation.error); return; }
 
   setDropzoneState('...', 'Processing...', 'Analysing gait patterns with ensemble models');
+  upsertApiDebugLine('Starting upload...');
 
   try {
     const formData = new FormData();
     fileList.forEach(function(f) { formData.append('files', f); });
 
-    let response;
-    try {
-      const url = (API_BASE || '') + '/predict';
-      console.log('Fetching from:', url);
-      response = await fetch(url, {
-        method: 'POST',
-        body: formData
-      });
-    } catch (error) {
-      console.error('Fetch error:', error);
-      throw new Error('Cannot connect to the API server. Please ensure the backend is running and reachable from this page.');
-    }
+    upsertApiDebugLine('Trying API endpoints: ' + API_BASE_CANDIDATES.join(' , '));
+    const response = await postPredictWithFallback(formData);
 
     if (!response.ok) {
       let detail = 'API Error: ' + response.status + ' ' + response.statusText;
@@ -953,6 +995,7 @@ async function handleFilesSafe(files) {
     }
 
     setDropzoneState('Done', 'Analysis Complete!', 'Scroll down to see your fall risk report');
+    upsertApiDebugLine('Upload and prediction succeeded.');
     injectApiResultSafe(result);
     setTimeout(function() {
       var r = document.getElementById('results');
@@ -964,6 +1007,7 @@ async function handleFilesSafe(files) {
     setDropzoneState('Error', 'Upload Failed', msg, {
       onRetry: function() { window.location.reload(); }
     });
+    upsertApiDebugLine('Final error: ' + msg);
   }
 }
 

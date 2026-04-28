@@ -160,7 +160,12 @@ class DataLoader:
         records = []
         skipped = 0
 
-        for td in tqdm(trial_dirs, desc="Loading trials"):
+        for td in tqdm(
+            trial_dirs,
+            desc="Loading trials",
+            colour="red",
+            bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+        ):
             try:
                 rec = self._load_trial(td)
 
@@ -352,7 +357,12 @@ class DataLoader:
         signals_dir = self.out_dir / "signals"
         signals_dir.mkdir(exist_ok=True)
 
-        for rec in tqdm(records, desc="Saving signals"):
+        for rec in tqdm(
+            records,
+            desc="Saving signals",
+            colour="red",
+            bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+        ):
             for pos, df in rec.signals.items():
                 if df is None or df.empty:
                     continue

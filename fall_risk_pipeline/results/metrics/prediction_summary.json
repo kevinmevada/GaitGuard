@@ -13,9 +13,9 @@
     "ACL": 11
   },
   "risk_distribution": {
-    "low": 91,
-    "moderate": 14,
-    "high": 12,
+    "low": 96,
+    "moderate": 11,
+    "high": 10,
     "very_high": 143
   }
 }

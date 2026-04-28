@@ -1,6 +1,6 @@
 model,cv_auc,cv_std,validation
-ensemble,0.9272769166317554,0.032718429594403374,nested_stratified_group_kfold
-xgboost,0.925761765116604,0.033550188998237564,nested_stratified_group_kfold
-random_forest,0.9228306102499652,0.036005064649810126,nested_stratified_group_kfold
-lightgbm,0.915731043150398,0.05157062582694764,nested_stratified_group_kfold
-svm,0.9098533724340176,0.03520518868457165,nested_stratified_group_kfold
+ensemble,0.9244700460829494,0.04768479678727869,nested_stratified_group_kfold
+xgboost,0.9198952660242983,0.04142374607220699,nested_stratified_group_kfold
+lightgbm,0.9183801145091468,0.05122374691649495,nested_stratified_group_kfold
+random_forest,0.9148806032677002,0.034721676310498474,nested_stratified_group_kfold
+svm,0.8782390727552019,0.0542753014966464,nested_stratified_group_kfold

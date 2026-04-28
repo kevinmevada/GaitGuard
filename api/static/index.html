@@ -38,9 +38,9 @@
 <!-- HERO -->
 <section id="hero">
   <canvas id="hero-particles"></canvas>
-  <p class="hero-eyebrow">Gait Risk Research Platform</p>
+  <p class="hero-eyebrow">Research Use Only: Not yet clinically validated for medical diagnosis</p>
   <h1 class="hero-title">Gait Analysis.<br><em>Precision Redefined.</em></h1>
-  <p class="hero-sub">Ensemble machine learning trained on 4-sensor IMU recordings. Designed to surface gait-based fall-risk signals for review and validation.</p>
+  <p class="hero-sub">Advanced ensemble machine learning trained on multi-sensor IMU recordings. Designed to surface clinically relevant gait patterns for expert review and validation.</p>
   <div class="hero-cta-group">
     <a href="#upload" class="cta-primary">Analyze Patient Data</a>
     <a href="#pipeline" class="cta-secondary">See How It Works</a>
@@ -79,14 +79,14 @@
 <div class="pipeline-wrap" id="pipeline">
   <div class="pipeline-inner">
     <div class="label-tag">Process</div>
-    <h2 class="section-title">From raw sensor data<br>to clinical risk score.</h2>
-    <p class="section-body">A fully automated five-stage pipeline transforms multi-sensor IMU recordings into actionable fall risk predictions in seconds.</p>
+    <h2 class="section-title">From raw sensor data<br>to clinical insight.</h2>
+    <p class="section-body">A fully automated five-stage pipeline transforms multi-sensor IMU recordings into structured gait intelligence within seconds.</p>
     <div class="pipeline-grid reveal">
       <div class="pipe-cell">
         <div class="pipe-num">01</div>
         <div class="pipe-icon-wrap">IMU</div>
         <div class="pipe-name">IMU Ingestion</div>
-        <div class="pipe-desc">Head, lower back, left & right foot sensors at 100 Hz. Automatic timestamp alignment across channels.</div>
+        <div class="pipe-desc">Head, lower back, left & right foot sensors sampled at 100 Hz with automatic timestamp synchronization.</div>
               </div>
       <div class="pipe-cell">
         <div class="pipe-num">02</div>
@@ -98,19 +98,19 @@
         <div class="pipe-num">03</div>
         <div class="pipe-icon-wrap">Lab</div>
         <div class="pipe-name">Feature Extraction</div>
-        <div class="pipe-desc">41 biomechanical features per trial - cadence, stride length, asymmetry index, harmonic ratio.</div>
+        <div class="pipe-desc">41 biomechanical features per trial — including cadence, stride length, asymmetry index, and harmonic ratio.</div>
               </div>
       <div class="pipe-cell">
         <div class="pipe-num">04</div>
         <div class="pipe-icon-wrap">Gear</div>
         <div class="pipe-name">Ensemble Models</div>
-        <div class="pipe-desc">XGBoost, LightGBM, Random Forest, and SVM combined through calibrated soft voting.</div>
+        <div class="pipe-desc">XGBoost, LightGBM, Random Forest, and SVM combined through soft voting for robust pattern recognition.</div>
               </div>
       <div class="pipe-cell">
         <div class="pipe-num">05</div>
         <div class="pipe-icon-wrap">Report</div>
-        <div class="pipe-name">Risk Output</div>
-        <div class="pipe-desc">Fall probability 0-100 with SHAP-based factor attribution and anomaly classification.</div>
+        <div class="pipe-name">Structured Output</div>
+        <div class="pipe-desc">Quantitative gait scoring (0–100), SHAP-based feature attribution, and anomaly classification.</div>
       </div>
     </div>
   </div>
@@ -342,8 +342,8 @@
 <div id="upload">
   <div class="section upload-section">
     <div class="label-tag">Custom Analysis</div>
-    <h2 class="section-title">Analyse your patient data.</h2>
-    <p class="section-body" style="margin: 0 auto; text-align: center;">Upload multi-sensor IMU recordings and receive an instant fall risk report powered by trained ensemble models.</p>
+    <h2 class="section-title">For custom analysis</h2>
+    <p class="section-body" style="margin: 0 auto; text-align: center;">Upload multi-sensor IMU recordings to identify gait anomalies and generate a structured, model-driven report.</p>
     <div class="dropzone" id="dropzone">
       <div class="dz-icon">Files</div>
       <div class="dz-title">Drop trial files or ZIP archive here</div>

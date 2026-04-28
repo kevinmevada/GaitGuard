@@ -3,6 +3,7 @@ from __future__ import annotations
 import pickle
 import warnings
 from pathlib import Path
+from typing import Any
 
 import lightgbm as lgb
 import numpy as np
@@ -83,8 +84,12 @@ class ModelTrainer:
                 progress.update(task_id, description=f"Training model: {model_name}")
                 logger.info(f"Tuning {model_name}...")
 
-                best_params, cv_mean, cv_std = self._nested_cv(model_name, X, y, groups)
-
+                cv_mean, cv_std = self._nested_cv(model_name, X, y, groups)
+                # Fit the deployable model with a dedicated full-data tune pass
+                # instead of reusing "last outer fold" params.
+                best_params, _ = self._run_optuna(
+                    model_name, X, y, groups, n_trials=self.n_trials, timeout=self.timeout
+                )
                 best_pipeline = self._build_pipeline_from_params(model_name, best_params)
                 best_pipeline.fit(X, y)
 
@@ -151,15 +156,14 @@ class ModelTrainer:
         groups = df["participant_id"].values
         return X, y, groups
 
-    def _nested_cv(self, name: str, X, y, groups) -> tuple[dict, float, float]:
+    def _nested_cv(self, name: str, X, y, groups) -> tuple[float, float]:
         """Nested CV: outer loop estimates generalisation, inner loop tunes.
-        Returns (best_params_from_last_inner_fold, outer_mean_auc, outer_std_auc).
+        Returns (outer_mean_auc, outer_std_auc).
         """
         outer_cv = StratifiedGroupKFold(
             n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
         )
         outer_scores: list[float] = []
-        last_best_params: dict = {}
 
         for train_idx, val_idx in outer_cv.split(X, y, groups):
             X_train, X_val = X[train_idx], X[val_idx]
@@ -170,7 +174,6 @@ class ModelTrainer:
                 name, X_train, y_train, groups_train,
                 n_trials=self.n_trials, timeout=self.timeout,
             )
-            last_best_params = best_params
 
             pipeline = self._build_pipeline_from_params(name, best_params)
             pipeline.fit(X_train, y_train)
@@ -179,7 +182,7 @@ class ModelTrainer:
             from sklearn.metrics import roc_auc_score
             outer_scores.append(roc_auc_score(y_val, proba))
 
-        return last_best_params, float(np.mean(outer_scores)), float(np.std(outer_scores))
+        return float(np.mean(outer_scores)), float(np.std(outer_scores))
 
     def _run_optuna(self, name: str, X, y, groups, n_trials: int, timeout: int) -> tuple[dict, float]:
         """Inner Optuna tuning loop confined to the provided (X, y, groups) split."""
@@ -200,7 +203,10 @@ class ModelTrainer:
             )
             return float(np.mean(scores))
 
-        study = optuna.create_study(direction="maximize")
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=self.random_state),
+        )
         study.optimize(objective, n_trials=n_trials, timeout=timeout)
         return study.best_params, study.best_value
 
