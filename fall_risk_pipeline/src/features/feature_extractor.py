@@ -196,7 +196,10 @@ class FeatureExtractor:
                 return 0.0
             fm, pm = freqs[mask], pxx[mask]
             if len(fm) > 1:
-                return float(np.trapz(pm, fm))
+                integrator = getattr(np, "trapezoid", None) or getattr(np, "trapz", None)
+                if integrator is None:
+                    return float(np.sum(pm))
+                return float(integrator(pm, fm))
             return float(pm[0])
 
         f[f"{prefix}_power_0_1hz"]  = band_power(0.0, 1.0)
