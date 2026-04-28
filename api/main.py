@@ -770,7 +770,11 @@ async def health_check() -> dict[str, Any]:
 async def predict_fall_risk(request: Request, files: list[UploadFile] = File(...)) -> JSONResponse:
     # Apply rate limit when slowapi is available
     if RATE_LIMITING_AVAILABLE and limiter:
-        await limiter._check_request_limit(request, predict_fall_risk, "10/minute")  # type: ignore[attr-defined]
+        try:
+            await limiter._check_request_limit(request, predict_fall_risk, "10/minute")  # type: ignore[attr-defined]
+        except Exception:
+            # Do not fail prediction requests if slowapi internals differ by runtime.
+            logger.warning("Rate limit check failed; continuing without rate enforcement.", exc_info=True)
 
     try:
         raw_sensor_frames, metadata = parse_uploaded_files(files)
