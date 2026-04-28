@@ -57,7 +57,13 @@ class FeatureExtractor:
         meta = pd.read_csv(meta_path)
         rows = []
 
-        for row in tqdm(meta.itertuples(index=False), total=len(meta), desc="Extracting features"):
+        for row in tqdm(
+            meta.itertuples(index=False),
+            total=len(meta),
+            desc="Extracting features",
+            colour="red",
+            bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+        ):
             feats = self._extract_trial(row._asdict())
             if feats:
                 rows.append(feats)

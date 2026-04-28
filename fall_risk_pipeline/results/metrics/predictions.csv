@@ -1,261 +1,261 @@
 participant_id,cohort,risk_probability_percent,risk_category,model_confidence,clinical_recommendation
-ACL_1,ACL,76.36948828362166,Very High,Medium,Immediate intervention required
-ACL_10,ACL,72.40834956160789,Very High,Medium,Immediate intervention required
-ACL_11,ACL,77.10423563104479,Very High,Medium,Immediate intervention required
-ACL_2,ACL,84.99086472490654,Very High,High,Immediate intervention required
-ACL_3,ACL,71.00921836526118,Very High,Medium,Immediate intervention required
-ACL_4,ACL,65.56242938895284,Very High,Medium,Immediate intervention required
-ACL_5,ACL,69.07405488244852,Very High,Medium,Immediate intervention required
-ACL_6,ACL,77.83312396727865,Very High,Medium,Immediate intervention required
-ACL_7,ACL,74.45473943911432,Very High,Medium,Immediate intervention required
-ACL_8,ACL,78.30174748274219,Very High,Medium,Immediate intervention required
-ACL_9,ACL,84.61351968072614,Very High,High,Immediate intervention required
-CIPN_1,CIPN,99.18323377076858,Very High,High,Immediate intervention required
-CIPN_10,CIPN,90.04997989385396,Very High,High,Immediate intervention required
-CIPN_11,CIPN,93.28484754712308,Very High,High,Immediate intervention required
-CIPN_12,CIPN,98.49882478284002,Very High,High,Immediate intervention required
-CIPN_13,CIPN,98.76762432251685,Very High,High,Immediate intervention required
-CIPN_14,CIPN,95.80602459759226,Very High,High,Immediate intervention required
-CIPN_15,CIPN,78.29949518275137,Very High,Medium,Immediate intervention required
-CIPN_16,CIPN,97.48892266019806,Very High,High,Immediate intervention required
-CIPN_17,CIPN,92.8522403533814,Very High,High,Immediate intervention required
-CIPN_18,CIPN,99.47980420661796,Very High,High,Immediate intervention required
-CIPN_19,CIPN,96.15646753270607,Very High,High,Immediate intervention required
-CIPN_2,CIPN,98.44249510404507,Very High,High,Immediate intervention required
-CIPN_3,CIPN,82.50171376778651,Very High,High,Immediate intervention required
-CIPN_4,CIPN,91.9367719760179,Very High,High,Immediate intervention required
-CIPN_5,CIPN,99.31568018373052,Very High,High,Immediate intervention required
-CIPN_6,CIPN,96.62176113916111,Very High,High,Immediate intervention required
-CIPN_7,CIPN,99.53926438459523,Very High,High,Immediate intervention required
-CIPN_8,CIPN,97.94335002509871,Very High,High,Immediate intervention required
-CIPN_9,CIPN,97.16512065990722,Very High,High,Immediate intervention required
-CVA_1,CVA,99.28534506675571,Very High,High,Immediate intervention required
-CVA_10,CVA,96.99547348297203,Very High,High,Immediate intervention required
-CVA_11,CVA,99.06380767826438,Very High,High,Immediate intervention required
-CVA_12,CVA,95.02236466170477,Very High,High,Immediate intervention required
-CVA_13,CVA,97.05703674827394,Very High,High,Immediate intervention required
-CVA_14,CVA,97.96251179570933,Very High,High,Immediate intervention required
-CVA_15,CVA,92.9422510837246,Very High,High,Immediate intervention required
-CVA_16,CVA,87.01949158934941,Very High,High,Immediate intervention required
-CVA_17,CVA,97.27663005717064,Very High,High,Immediate intervention required
-CVA_18,CVA,98.93934004017791,Very High,High,Immediate intervention required
-CVA_19,CVA,98.44202386913888,Very High,High,Immediate intervention required
-CVA_2,CVA,99.61952620974911,Very High,High,Immediate intervention required
-CVA_20,CVA,99.21804383406595,Very High,High,Immediate intervention required
-CVA_21,CVA,97.98551976516909,Very High,High,Immediate intervention required
-CVA_22,CVA,97.61637674576379,Very High,High,Immediate intervention required
-CVA_23,CVA,93.4607284274036,Very High,High,Immediate intervention required
-CVA_24,CVA,99.30929795840223,Very High,High,Immediate intervention required
-CVA_25,CVA,97.66340643830725,Very High,High,Immediate intervention required
-CVA_26,CVA,87.14614834949656,Very High,High,Immediate intervention required
-CVA_27,CVA,99.6057502393494,Very High,High,Immediate intervention required
-CVA_28,CVA,99.20696954611722,Very High,High,Immediate intervention required
-CVA_29,CVA,93.67205416955063,Very High,High,Immediate intervention required
-CVA_3,CVA,96.02601611267501,Very High,High,Immediate intervention required
-CVA_30,CVA,94.45042235326297,Very High,High,Immediate intervention required
-CVA_31,CVA,97.82629823207878,Very High,High,Immediate intervention required
-CVA_32,CVA,97.14173653577767,Very High,High,Immediate intervention required
-CVA_33,CVA,93.01603606219302,Very High,High,Immediate intervention required
-CVA_34,CVA,97.69650916252311,Very High,High,Immediate intervention required
-CVA_35,CVA,86.54334821179103,Very High,High,Immediate intervention required
-CVA_36,CVA,92.04090154944943,Very High,High,Immediate intervention required
-CVA_37,CVA,96.83426662163588,Very High,High,Immediate intervention required
-CVA_38,CVA,94.53107331072344,Very High,High,Immediate intervention required
-CVA_39,CVA,96.4237146831265,Very High,High,Immediate intervention required
-CVA_4,CVA,98.65226082304807,Very High,High,Immediate intervention required
-CVA_40,CVA,97.86491396382208,Very High,High,Immediate intervention required
-CVA_41,CVA,98.26570530614953,Very High,High,Immediate intervention required
-CVA_42,CVA,99.47956969708844,Very High,High,Immediate intervention required
-CVA_43,CVA,95.37186598025748,Very High,High,Immediate intervention required
-CVA_44,CVA,98.99374873258778,Very High,High,Immediate intervention required
-CVA_45,CVA,89.7598335082148,Very High,High,Immediate intervention required
-CVA_46,CVA,97.42466947815119,Very High,High,Immediate intervention required
-CVA_47,CVA,98.06900023955725,Very High,High,Immediate intervention required
-CVA_48,CVA,98.68612813471933,Very High,High,Immediate intervention required
-CVA_49,CVA,94.24839924967286,Very High,High,Immediate intervention required
-CVA_5,CVA,98.38680513044254,Very High,High,Immediate intervention required
-CVA_6,CVA,98.46222292175518,Very High,High,Immediate intervention required
-CVA_7,CVA,97.68215542279029,Very High,High,Immediate intervention required
-CVA_8,CVA,97.60447089834983,Very High,High,Immediate intervention required
-CVA_9,CVA,98.34212234394246,Very High,High,Immediate intervention required
-HOA_1,Unknown,22.986163636067978,Moderate,Medium,Preventive exercises
-HOA_10,Unknown,10.432713064523066,Low,High,Routine monitoring
-HOA_11,Unknown,5.13857463946544,Low,High,Routine monitoring
-HOA_12,Unknown,20.698540507511566,Moderate,Medium,Preventive exercises
-HOA_13,Unknown,12.686205691338689,Low,High,Routine monitoring
-HOA_14,Unknown,17.974777165132384,Low,High,Routine monitoring
-HOA_15,Unknown,15.97793595303302,Low,High,Routine monitoring
-HOA_2,Unknown,8.147115827708515,Low,High,Routine monitoring
-HOA_3,Unknown,4.300874235927129,Low,High,Routine monitoring
-HOA_4,Unknown,15.800142500058653,Low,High,Routine monitoring
-HOA_5,Unknown,13.19341151642632,Low,High,Routine monitoring
-HOA_6,Unknown,8.207884393273556,Low,High,Routine monitoring
-HOA_7,Unknown,23.505358950734124,Moderate,Medium,Preventive exercises
-HOA_8,Unknown,12.604472578517809,Low,High,Routine monitoring
-HOA_9,Unknown,9.420713761488797,Low,High,Routine monitoring
-HS_1,Healthy,1.9013627175598575,Low,High,Routine monitoring
-HS_10,Healthy,12.902303273659266,Low,High,Routine monitoring
-HS_11,Healthy,5.383948444397238,Low,High,Routine monitoring
-HS_12,Healthy,7.286864256546853,Low,High,Routine monitoring
-HS_13,Healthy,4.411560228213062,Low,High,Routine monitoring
-HS_14,Healthy,4.746256709684458,Low,High,Routine monitoring
-HS_15,Healthy,3.8055664634414184,Low,High,Routine monitoring
-HS_16,Healthy,7.62898856112809,Low,High,Routine monitoring
-HS_17,Healthy,7.643372032501369,Low,High,Routine monitoring
-HS_18,Healthy,2.1469671868580873,Low,High,Routine monitoring
-HS_19,Healthy,35.87824892916604,Moderate,Medium,Preventive exercises
-HS_2,Healthy,4.9308713706200695,Low,High,Routine monitoring
-HS_20,Healthy,3.8768938599785687,Low,High,Routine monitoring
-HS_21,Healthy,5.033633942832369,Low,High,Routine monitoring
-HS_22,Healthy,9.76334303319824,Low,High,Routine monitoring
-HS_23,Healthy,5.306447838912126,Low,High,Routine monitoring
-HS_24,Healthy,8.629816656438944,Low,High,Routine monitoring
-HS_25,Healthy,3.2768006059641817,Low,High,Routine monitoring
-HS_26,Healthy,14.01453924619909,Low,High,Routine monitoring
-HS_27,Healthy,10.332750961950095,Low,High,Routine monitoring
-HS_28,Healthy,2.587311149086224,Low,High,Routine monitoring
-HS_29,Healthy,18.718147244567714,Low,High,Routine monitoring
-HS_3,Healthy,30.511226333149715,Moderate,Medium,Preventive exercises
-HS_30,Healthy,5.190971479408222,Low,High,Routine monitoring
-HS_31,Healthy,44.235439664305815,High,Low,Clinical evaluation recommended
-HS_32,Healthy,0.8612545640761483,Low,High,Routine monitoring
-HS_33,Healthy,13.40841351758432,Low,High,Routine monitoring
-HS_34,Healthy,3.576921400288169,Low,High,Routine monitoring
-HS_35,Healthy,3.921470865131161,Low,High,Routine monitoring
-HS_36,Healthy,11.567690706093618,Low,High,Routine monitoring
-HS_37,Healthy,20.211145529366707,Moderate,Medium,Preventive exercises
-HS_38,Healthy,1.408381712740616,Low,High,Routine monitoring
-HS_39,Healthy,60.691498418384846,Very High,Medium,Immediate intervention required
-HS_4,Healthy,44.8791547802647,High,Low,Clinical evaluation recommended
-HS_40,Healthy,9.06749623674809,Low,High,Routine monitoring
-HS_41,Healthy,1.2783964815006406,Low,High,Routine monitoring
-HS_42,Healthy,5.5164880054380925,Low,High,Routine monitoring
-HS_43,Healthy,2.715716812063536,Low,High,Routine monitoring
-HS_44,Healthy,21.676863004923774,Moderate,Medium,Preventive exercises
-HS_45,Healthy,12.655351836875647,Low,High,Routine monitoring
-HS_46,Healthy,14.09150261275095,Low,High,Routine monitoring
-HS_47,Healthy,17.208639346626235,Low,High,Routine monitoring
-HS_48,Healthy,13.62258929859583,Low,High,Routine monitoring
-HS_49,Healthy,18.84052296663756,Low,High,Routine monitoring
-HS_5,Healthy,8.744024476737678,Low,High,Routine monitoring
-HS_50,Healthy,35.95106291930364,Moderate,Medium,Preventive exercises
-HS_51,Healthy,27.29563892300985,Moderate,Medium,Preventive exercises
-HS_52,Healthy,11.698835229567923,Low,High,Routine monitoring
-HS_53,Healthy,8.254061028597217,Low,High,Routine monitoring
-HS_54,Healthy,6.3257242569763905,Low,High,Routine monitoring
-HS_55,Healthy,2.6220647844334217,Low,High,Routine monitoring
-HS_56,Healthy,3.029772987975521,Low,High,Routine monitoring
-HS_57,Healthy,5.257945877622766,Low,High,Routine monitoring
-HS_58,Healthy,2.964754519502676,Low,High,Routine monitoring
-HS_59,Healthy,33.86516793026392,Moderate,Medium,Preventive exercises
-HS_6,Healthy,23.971023127018857,Moderate,Medium,Preventive exercises
-HS_60,Healthy,6.839438374337983,Low,High,Routine monitoring
-HS_61,Healthy,1.6819817633000185,Low,High,Routine monitoring
-HS_62,Healthy,3.1677131756931867,Low,High,Routine monitoring
-HS_63,Healthy,3.474368378671957,Low,High,Routine monitoring
-HS_64,Healthy,28.98290530215754,Moderate,Medium,Preventive exercises
-HS_65,Healthy,9.513343910784911,Low,High,Routine monitoring
-HS_66,Healthy,3.1677676724153607,Low,High,Routine monitoring
-HS_67,Healthy,1.3518925091070773,Low,High,Routine monitoring
-HS_68,Healthy,13.567411807079408,Low,High,Routine monitoring
-HS_69,Healthy,1.5245621362380894,Low,High,Routine monitoring
-HS_7,Healthy,4.348337720824745,Low,High,Routine monitoring
-HS_70,Healthy,4.717312968487283,Low,High,Routine monitoring
-HS_71,Healthy,11.69800783350445,Low,High,Routine monitoring
-HS_72,Healthy,7.945629593567344,Low,High,Routine monitoring
-HS_73,Healthy,8.10099928199779,Low,High,Routine monitoring
-HS_8,Healthy,10.17675482723112,Low,High,Routine monitoring
-HS_9,Healthy,3.4455103699133667,Low,High,Routine monitoring
-KOA_1,Unknown,11.826441963513169,Low,High,Routine monitoring
-KOA_10,Unknown,12.53623276476851,Low,High,Routine monitoring
-KOA_11,Unknown,5.770188557900341,Low,High,Routine monitoring
-KOA_12,Unknown,13.335037383196372,Low,High,Routine monitoring
-KOA_13,Unknown,3.1163481616687907,Low,High,Routine monitoring
-KOA_14,Unknown,8.442120337101896,Low,High,Routine monitoring
-KOA_15,Unknown,4.787420905289164,Low,High,Routine monitoring
-KOA_16,Unknown,1.2486897355207816,Low,High,Routine monitoring
-KOA_17,Unknown,17.636638135271365,Low,High,Routine monitoring
-KOA_18,Unknown,17.194682237324322,Low,High,Routine monitoring
-KOA_2,Unknown,18.578901325816442,Low,High,Routine monitoring
-KOA_3,Unknown,3.6356500691328306,Low,High,Routine monitoring
-KOA_4,Unknown,17.24874756967879,Low,High,Routine monitoring
-KOA_5,Unknown,3.6921876318921214,Low,High,Routine monitoring
-KOA_6,Unknown,19.480999447499556,Low,High,Routine monitoring
-KOA_7,Unknown,17.010403289569535,Low,High,Routine monitoring
-KOA_8,Unknown,8.077840536185821,Low,High,Routine monitoring
-KOA_9,Unknown,4.509196642980917,Low,High,Routine monitoring
-PD_1,PD,98.41679135938875,Very High,High,Immediate intervention required
-PD_10,PD,97.73093552577535,Very High,High,Immediate intervention required
-PD_11,PD,87.87320903437687,Very High,High,Immediate intervention required
-PD_12,PD,97.38887692703807,Very High,High,Immediate intervention required
-PD_13,PD,80.49489077744076,Very High,High,Immediate intervention required
-PD_14,PD,97.96143628816827,Very High,High,Immediate intervention required
-PD_15,PD,93.16998516062239,Very High,High,Immediate intervention required
-PD_16,PD,98.14716978317014,Very High,High,Immediate intervention required
-PD_17,PD,95.61022546447573,Very High,High,Immediate intervention required
-PD_18,PD,97.24963114144444,Very High,High,Immediate intervention required
-PD_19,PD,97.90220690607262,Very High,High,Immediate intervention required
-PD_2,PD,99.61909066169645,Very High,High,Immediate intervention required
-PD_20,PD,89.85368618088002,Very High,High,Immediate intervention required
-PD_21,PD,98.56129114494017,Very High,High,Immediate intervention required
-PD_22,PD,94.81876917959895,Very High,High,Immediate intervention required
-PD_23,PD,89.74595021955834,Very High,High,Immediate intervention required
-PD_24,PD,95.18464157615831,Very High,High,Immediate intervention required
-PD_3,PD,97.11943293749079,Very High,High,Immediate intervention required
-PD_4,PD,99.2674193638152,Very High,High,Immediate intervention required
-PD_5,PD,99.15125741474164,Very High,High,Immediate intervention required
-PD_6,PD,85.04330417887638,Very High,High,Immediate intervention required
-PD_7,PD,99.16670720281678,Very High,High,Immediate intervention required
-PD_8,PD,91.42600479860029,Very High,High,Immediate intervention required
-PD_9,PD,98.93967240500207,Very High,High,Immediate intervention required
-RIL_1,RIL,98.22557007238694,Very High,High,Immediate intervention required
-RIL_10,RIL,97.6161195517645,Very High,High,Immediate intervention required
-RIL_11,RIL,80.8704043202651,Very High,High,Immediate intervention required
-RIL_12,RIL,97.74466744384588,Very High,High,Immediate intervention required
-RIL_13,RIL,80.59550723675018,Very High,High,Immediate intervention required
-RIL_14,RIL,98.99112660686485,Very High,High,Immediate intervention required
-RIL_15,RIL,85.51727095985618,Very High,High,Immediate intervention required
-RIL_16,RIL,99.38500155379505,Very High,High,Immediate intervention required
-RIL_17,RIL,98.28888476805794,Very High,High,Immediate intervention required
-RIL_18,RIL,98.52559946258204,Very High,High,Immediate intervention required
-RIL_19,RIL,96.96923308394355,Very High,High,Immediate intervention required
-RIL_2,RIL,84.72026650294987,Very High,High,Immediate intervention required
-RIL_20,RIL,98.78870065831902,Very High,High,Immediate intervention required
-RIL_21,RIL,97.43465157356445,Very High,High,Immediate intervention required
-RIL_22,RIL,97.0824638941839,Very High,High,Immediate intervention required
-RIL_23,RIL,98.2448808396435,Very High,High,Immediate intervention required
-RIL_24,RIL,90.59296446617444,Very High,High,Immediate intervention required
-RIL_25,RIL,89.10217339175038,Very High,High,Immediate intervention required
-RIL_26,RIL,98.76672417685836,Very High,High,Immediate intervention required
-RIL_27,RIL,99.12486662690245,Very High,High,Immediate intervention required
-RIL_28,RIL,95.07511467934825,Very High,High,Immediate intervention required
-RIL_29,RIL,97.34206716150449,Very High,High,Immediate intervention required
-RIL_3,RIL,88.72303553597162,Very High,High,Immediate intervention required
-RIL_30,RIL,96.89226151477426,Very High,High,Immediate intervention required
-RIL_31,RIL,95.35815051628059,Very High,High,Immediate intervention required
-RIL_32,RIL,92.73798495428211,Very High,High,Immediate intervention required
-RIL_33,RIL,98.41489867417118,Very High,High,Immediate intervention required
-RIL_34,RIL,98.11394991849859,Very High,High,Immediate intervention required
-RIL_35,RIL,96.59843081425325,Very High,High,Immediate intervention required
-RIL_36,RIL,98.50513868950883,Very High,High,Immediate intervention required
-RIL_37,RIL,99.60370410407785,Very High,High,Immediate intervention required
-RIL_38,RIL,94.73096895473893,Very High,High,Immediate intervention required
-RIL_39,RIL,99.31176052188391,Very High,High,Immediate intervention required
-RIL_4,RIL,99.02714932082958,Very High,High,Immediate intervention required
-RIL_40,RIL,94.29362004659475,Very High,High,Immediate intervention required
-RIL_41,RIL,93.44462949467557,Very High,High,Immediate intervention required
-RIL_42,RIL,86.26948666595561,Very High,High,Immediate intervention required
-RIL_43,RIL,79.40502159136523,Very High,Medium,Immediate intervention required
-RIL_44,RIL,98.4705564750039,Very High,High,Immediate intervention required
-RIL_45,RIL,86.50365569706076,Very High,High,Immediate intervention required
-RIL_46,RIL,87.59800399114921,Very High,High,Immediate intervention required
-RIL_47,RIL,97.4748835233088,Very High,High,Immediate intervention required
-RIL_48,RIL,99.73764867687551,Very High,High,Immediate intervention required
-RIL_49,RIL,90.99674066719233,Very High,High,Immediate intervention required
-RIL_5,RIL,97.12749371731016,Very High,High,Immediate intervention required
-RIL_50,RIL,93.90296374145372,Very High,High,Immediate intervention required
-RIL_51,RIL,97.48858003224203,Very High,High,Immediate intervention required
-RIL_6,RIL,97.87283978720778,Very High,High,Immediate intervention required
-RIL_7,RIL,99.64613291479274,Very High,High,Immediate intervention required
-RIL_8,RIL,97.81838221394112,Very High,High,Immediate intervention required
-RIL_9,RIL,91.38214629458928,Very High,High,Immediate intervention required
+ACL_1,ACL,68.50195206354259,Very High,Medium,Immediate intervention required
+ACL_10,ACL,74.40071246918384,Very High,Medium,Immediate intervention required
+ACL_11,ACL,77.74457025702965,Very High,Medium,Immediate intervention required
+ACL_2,ACL,88.05152624600473,Very High,High,Immediate intervention required
+ACL_3,ACL,61.48066061214269,Very High,Medium,Immediate intervention required
+ACL_4,ACL,49.54913372633353,High,Low,Clinical evaluation recommended
+ACL_5,ACL,70.02978954290498,Very High,Medium,Immediate intervention required
+ACL_6,ACL,79.46466929640987,Very High,Medium,Immediate intervention required
+ACL_7,ACL,71.0313157524954,Very High,Medium,Immediate intervention required
+ACL_8,ACL,69.01702797844813,Very High,Medium,Immediate intervention required
+ACL_9,ACL,86.40601340144586,Very High,High,Immediate intervention required
+CIPN_1,CIPN,99.32024621018515,Very High,High,Immediate intervention required
+CIPN_10,CIPN,94.34187148921744,Very High,High,Immediate intervention required
+CIPN_11,CIPN,98.3514979749439,Very High,High,Immediate intervention required
+CIPN_12,CIPN,98.53839291226606,Very High,High,Immediate intervention required
+CIPN_13,CIPN,98.66234306190034,Very High,High,Immediate intervention required
+CIPN_14,CIPN,97.66431880117965,Very High,High,Immediate intervention required
+CIPN_15,CIPN,81.78821949444699,Very High,High,Immediate intervention required
+CIPN_16,CIPN,99.18755888391671,Very High,High,Immediate intervention required
+CIPN_17,CIPN,95.33435552931174,Very High,High,Immediate intervention required
+CIPN_18,CIPN,99.2925369941,Very High,High,Immediate intervention required
+CIPN_19,CIPN,95.74320586885754,Very High,High,Immediate intervention required
+CIPN_2,CIPN,97.21549629114705,Very High,High,Immediate intervention required
+CIPN_3,CIPN,80.99707733450285,Very High,High,Immediate intervention required
+CIPN_4,CIPN,96.41581059382999,Very High,High,Immediate intervention required
+CIPN_5,CIPN,99.35099801487105,Very High,High,Immediate intervention required
+CIPN_6,CIPN,94.2386825479817,Very High,High,Immediate intervention required
+CIPN_7,CIPN,98.3981284652338,Very High,High,Immediate intervention required
+CIPN_8,CIPN,98.35832179357637,Very High,High,Immediate intervention required
+CIPN_9,CIPN,96.4866428203081,Very High,High,Immediate intervention required
+CVA_1,CVA,98.10242445766846,Very High,High,Immediate intervention required
+CVA_10,CVA,91.29558291568809,Very High,High,Immediate intervention required
+CVA_11,CVA,98.46179942261888,Very High,High,Immediate intervention required
+CVA_12,CVA,93.68261937548881,Very High,High,Immediate intervention required
+CVA_13,CVA,97.48586801704326,Very High,High,Immediate intervention required
+CVA_14,CVA,96.45283791207497,Very High,High,Immediate intervention required
+CVA_15,CVA,94.3943458325351,Very High,High,Immediate intervention required
+CVA_16,CVA,88.70474365893163,Very High,High,Immediate intervention required
+CVA_17,CVA,95.6547725376151,Very High,High,Immediate intervention required
+CVA_18,CVA,99.27712694478365,Very High,High,Immediate intervention required
+CVA_19,CVA,98.37891142126473,Very High,High,Immediate intervention required
+CVA_2,CVA,98.55548185370388,Very High,High,Immediate intervention required
+CVA_20,CVA,98.60877843934567,Very High,High,Immediate intervention required
+CVA_21,CVA,98.54563923516402,Very High,High,Immediate intervention required
+CVA_22,CVA,98.25413455009938,Very High,High,Immediate intervention required
+CVA_23,CVA,97.68766803443066,Very High,High,Immediate intervention required
+CVA_24,CVA,97.39189094972676,Very High,High,Immediate intervention required
+CVA_25,CVA,99.2104213506264,Very High,High,Immediate intervention required
+CVA_26,CVA,80.11467381824082,Very High,High,Immediate intervention required
+CVA_27,CVA,99.18237693772348,Very High,High,Immediate intervention required
+CVA_28,CVA,98.69480318145673,Very High,High,Immediate intervention required
+CVA_29,CVA,94.44257770876828,Very High,High,Immediate intervention required
+CVA_3,CVA,97.47452198549495,Very High,High,Immediate intervention required
+CVA_30,CVA,92.82020905957256,Very High,High,Immediate intervention required
+CVA_31,CVA,97.90715951413704,Very High,High,Immediate intervention required
+CVA_32,CVA,96.8598647235928,Very High,High,Immediate intervention required
+CVA_33,CVA,97.28393042136217,Very High,High,Immediate intervention required
+CVA_34,CVA,97.57115305412182,Very High,High,Immediate intervention required
+CVA_35,CVA,84.47486702829379,Very High,High,Immediate intervention required
+CVA_36,CVA,95.95326213619832,Very High,High,Immediate intervention required
+CVA_37,CVA,98.2506396290672,Very High,High,Immediate intervention required
+CVA_38,CVA,94.18793081069981,Very High,High,Immediate intervention required
+CVA_39,CVA,95.50303213591495,Very High,High,Immediate intervention required
+CVA_4,CVA,98.27460471260288,Very High,High,Immediate intervention required
+CVA_40,CVA,97.44407784392831,Very High,High,Immediate intervention required
+CVA_41,CVA,98.94998868854965,Very High,High,Immediate intervention required
+CVA_42,CVA,98.84608945797262,Very High,High,Immediate intervention required
+CVA_43,CVA,97.24014192272263,Very High,High,Immediate intervention required
+CVA_44,CVA,98.80199868020588,Very High,High,Immediate intervention required
+CVA_45,CVA,88.32928301125405,Very High,High,Immediate intervention required
+CVA_46,CVA,96.9452156969483,Very High,High,Immediate intervention required
+CVA_47,CVA,97.54174114516282,Very High,High,Immediate intervention required
+CVA_48,CVA,99.06037706195046,Very High,High,Immediate intervention required
+CVA_49,CVA,93.32779918245633,Very High,High,Immediate intervention required
+CVA_5,CVA,96.74235026520961,Very High,High,Immediate intervention required
+CVA_6,CVA,98.54461255131454,Very High,High,Immediate intervention required
+CVA_7,CVA,97.13893593085248,Very High,High,Immediate intervention required
+CVA_8,CVA,97.16838978976084,Very High,High,Immediate intervention required
+CVA_9,CVA,97.70545060543662,Very High,High,Immediate intervention required
+HOA_1,Unknown,20.5380372220294,Moderate,Medium,Preventive exercises
+HOA_10,Unknown,5.745416338416552,Low,High,Routine monitoring
+HOA_11,Unknown,5.682304155552919,Low,High,Routine monitoring
+HOA_12,Unknown,15.493602758090475,Low,High,Routine monitoring
+HOA_13,Unknown,9.231855512145149,Low,High,Routine monitoring
+HOA_14,Unknown,12.893076710122365,Low,High,Routine monitoring
+HOA_15,Unknown,21.118713770850476,Moderate,Medium,Preventive exercises
+HOA_2,Unknown,5.03949607590933,Low,High,Routine monitoring
+HOA_3,Unknown,2.880418018053565,Low,High,Routine monitoring
+HOA_4,Unknown,15.971630329378009,Low,High,Routine monitoring
+HOA_5,Unknown,11.719261964786945,Low,High,Routine monitoring
+HOA_6,Unknown,6.86562422111559,Low,High,Routine monitoring
+HOA_7,Unknown,10.863738348089292,Low,High,Routine monitoring
+HOA_8,Unknown,15.985968585373406,Low,High,Routine monitoring
+HOA_9,Unknown,13.879465468820065,Low,High,Routine monitoring
+HS_1,Healthy,4.630701991093806,Low,High,Routine monitoring
+HS_10,Healthy,16.136285524325558,Low,High,Routine monitoring
+HS_11,Healthy,6.729905628767012,Low,High,Routine monitoring
+HS_12,Healthy,12.491602812391472,Low,High,Routine monitoring
+HS_13,Healthy,2.8469613306483255,Low,High,Routine monitoring
+HS_14,Healthy,5.820333191754668,Low,High,Routine monitoring
+HS_15,Healthy,1.4856915359209315,Low,High,Routine monitoring
+HS_16,Healthy,7.787584561182752,Low,High,Routine monitoring
+HS_17,Healthy,3.2768748197824036,Low,High,Routine monitoring
+HS_18,Healthy,5.62401978073379,Low,High,Routine monitoring
+HS_19,Healthy,17.015890726362983,Low,High,Routine monitoring
+HS_2,Healthy,2.465173395717588,Low,High,Routine monitoring
+HS_20,Healthy,10.134016825985743,Low,High,Routine monitoring
+HS_21,Healthy,2.8284173450301533,Low,High,Routine monitoring
+HS_22,Healthy,9.012224264551426,Low,High,Routine monitoring
+HS_23,Healthy,3.6474739351651255,Low,High,Routine monitoring
+HS_24,Healthy,6.152020030661057,Low,High,Routine monitoring
+HS_25,Healthy,1.057740038840671,Low,High,Routine monitoring
+HS_26,Healthy,8.544401310866412,Low,High,Routine monitoring
+HS_27,Healthy,8.939228009376338,Low,High,Routine monitoring
+HS_28,Healthy,1.8460409068059058,Low,High,Routine monitoring
+HS_29,Healthy,14.129736459288672,Low,High,Routine monitoring
+HS_3,Healthy,19.876053134108286,Low,High,Routine monitoring
+HS_30,Healthy,3.627300233176202,Low,High,Routine monitoring
+HS_31,Healthy,31.704300485969327,Moderate,Medium,Preventive exercises
+HS_32,Healthy,1.090290108848395,Low,High,Routine monitoring
+HS_33,Healthy,7.690550647390312,Low,High,Routine monitoring
+HS_34,Healthy,2.8358756029674503,Low,High,Routine monitoring
+HS_35,Healthy,4.242041623660762,Low,High,Routine monitoring
+HS_36,Healthy,6.222608089023216,Low,High,Routine monitoring
+HS_37,Healthy,16.196079351162208,Low,High,Routine monitoring
+HS_38,Healthy,0.8589192512368541,Low,High,Routine monitoring
+HS_39,Healthy,40.720657962464074,High,Low,Clinical evaluation recommended
+HS_4,Healthy,35.66237857986257,Moderate,Medium,Preventive exercises
+HS_40,Healthy,8.443468509584301,Low,High,Routine monitoring
+HS_41,Healthy,1.0160788373321046,Low,High,Routine monitoring
+HS_42,Healthy,2.864908423249208,Low,High,Routine monitoring
+HS_43,Healthy,1.856320357752605,Low,High,Routine monitoring
+HS_44,Healthy,21.482558702295254,Moderate,Medium,Preventive exercises
+HS_45,Healthy,3.392772452377759,Low,High,Routine monitoring
+HS_46,Healthy,11.947742143753649,Low,High,Routine monitoring
+HS_47,Healthy,11.97212789407407,Low,High,Routine monitoring
+HS_48,Healthy,12.992613679733326,Low,High,Routine monitoring
+HS_49,Healthy,10.323255910777391,Low,High,Routine monitoring
+HS_5,Healthy,13.881822558923155,Low,High,Routine monitoring
+HS_50,Healthy,32.8509532886643,Moderate,Medium,Preventive exercises
+HS_51,Healthy,20.75676932015903,Moderate,Medium,Preventive exercises
+HS_52,Healthy,8.82609041156162,Low,High,Routine monitoring
+HS_53,Healthy,5.791245178248443,Low,High,Routine monitoring
+HS_54,Healthy,3.082252489803331,Low,High,Routine monitoring
+HS_55,Healthy,3.4552736570076674,Low,High,Routine monitoring
+HS_56,Healthy,1.444852179774615,Low,High,Routine monitoring
+HS_57,Healthy,4.583810731573303,Low,High,Routine monitoring
+HS_58,Healthy,2.73508402139309,Low,High,Routine monitoring
+HS_59,Healthy,21.91167730393227,Moderate,Medium,Preventive exercises
+HS_6,Healthy,23.10979530839402,Moderate,Medium,Preventive exercises
+HS_60,Healthy,3.1245593649928782,Low,High,Routine monitoring
+HS_61,Healthy,2.191779717023117,Low,High,Routine monitoring
+HS_62,Healthy,3.0089257235044324,Low,High,Routine monitoring
+HS_63,Healthy,2.6030065454191007,Low,High,Routine monitoring
+HS_64,Healthy,19.420745099442303,Low,High,Routine monitoring
+HS_65,Healthy,10.077910662981816,Low,High,Routine monitoring
+HS_66,Healthy,2.87447952043135,Low,High,Routine monitoring
+HS_67,Healthy,1.0443142309598847,Low,High,Routine monitoring
+HS_68,Healthy,6.919589706039228,Low,High,Routine monitoring
+HS_69,Healthy,3.6480598708127303,Low,High,Routine monitoring
+HS_7,Healthy,3.5536490786491357,Low,High,Routine monitoring
+HS_70,Healthy,3.8030575290471735,Low,High,Routine monitoring
+HS_71,Healthy,3.7549813175959588,Low,High,Routine monitoring
+HS_72,Healthy,3.6347258955433905,Low,High,Routine monitoring
+HS_73,Healthy,6.736056557715877,Low,High,Routine monitoring
+HS_8,Healthy,6.238805771871673,Low,High,Routine monitoring
+HS_9,Healthy,6.34425212679848,Low,High,Routine monitoring
+KOA_1,Unknown,6.817943014286578,Low,High,Routine monitoring
+KOA_10,Unknown,4.054704069622818,Low,High,Routine monitoring
+KOA_11,Unknown,5.9541499095420525,Low,High,Routine monitoring
+KOA_12,Unknown,11.267149169734022,Low,High,Routine monitoring
+KOA_13,Unknown,1.9854535471772339,Low,High,Routine monitoring
+KOA_14,Unknown,7.771613870519538,Low,High,Routine monitoring
+KOA_15,Unknown,1.4851224004353192,Low,High,Routine monitoring
+KOA_16,Unknown,1.851925570193182,Low,High,Routine monitoring
+KOA_17,Unknown,19.956168562354996,Low,High,Routine monitoring
+KOA_18,Unknown,10.770266469681888,Low,High,Routine monitoring
+KOA_2,Unknown,14.200981364812742,Low,High,Routine monitoring
+KOA_3,Unknown,5.802276581724635,Low,High,Routine monitoring
+KOA_4,Unknown,19.950740957341672,Low,High,Routine monitoring
+KOA_5,Unknown,3.036607949834256,Low,High,Routine monitoring
+KOA_6,Unknown,13.086263212609477,Low,High,Routine monitoring
+KOA_7,Unknown,15.017400809602655,Low,High,Routine monitoring
+KOA_8,Unknown,4.899357629216662,Low,High,Routine monitoring
+KOA_9,Unknown,2.0409495994915368,Low,High,Routine monitoring
+PD_1,PD,98.51536252157757,Very High,High,Immediate intervention required
+PD_10,PD,97.87649783585934,Very High,High,Immediate intervention required
+PD_11,PD,94.12479138404895,Very High,High,Immediate intervention required
+PD_12,PD,94.97417216666076,Very High,High,Immediate intervention required
+PD_13,PD,83.74756628483432,Very High,High,Immediate intervention required
+PD_14,PD,98.78798844951646,Very High,High,Immediate intervention required
+PD_15,PD,94.93221869514018,Very High,High,Immediate intervention required
+PD_16,PD,98.94408343524529,Very High,High,Immediate intervention required
+PD_17,PD,99.02776244984463,Very High,High,Immediate intervention required
+PD_18,PD,91.28545909367598,Very High,High,Immediate intervention required
+PD_19,PD,97.4528127644496,Very High,High,Immediate intervention required
+PD_2,PD,99.28512270013104,Very High,High,Immediate intervention required
+PD_20,PD,91.00064625062726,Very High,High,Immediate intervention required
+PD_21,PD,98.07579607035393,Very High,High,Immediate intervention required
+PD_22,PD,94.48593100998634,Very High,High,Immediate intervention required
+PD_23,PD,90.24937804210604,Very High,High,Immediate intervention required
+PD_24,PD,98.29619146252391,Very High,High,Immediate intervention required
+PD_3,PD,98.28741907876034,Very High,High,Immediate intervention required
+PD_4,PD,98.70489808348579,Very High,High,Immediate intervention required
+PD_5,PD,98.8376056218407,Very High,High,Immediate intervention required
+PD_6,PD,85.7972502375611,Very High,High,Immediate intervention required
+PD_7,PD,99.3470356218919,Very High,High,Immediate intervention required
+PD_8,PD,93.38979259495282,Very High,High,Immediate intervention required
+PD_9,PD,98.60321059221833,Very High,High,Immediate intervention required
+RIL_1,RIL,97.60049661653493,Very High,High,Immediate intervention required
+RIL_10,RIL,99.03475753841097,Very High,High,Immediate intervention required
+RIL_11,RIL,65.74013203399979,Very High,Medium,Immediate intervention required
+RIL_12,RIL,97.48915616579394,Very High,High,Immediate intervention required
+RIL_13,RIL,82.37570658289096,Very High,High,Immediate intervention required
+RIL_14,RIL,97.24230601787383,Very High,High,Immediate intervention required
+RIL_15,RIL,85.73706275896198,Very High,High,Immediate intervention required
+RIL_16,RIL,99.41649654273526,Very High,High,Immediate intervention required
+RIL_17,RIL,95.41044070585548,Very High,High,Immediate intervention required
+RIL_18,RIL,99.11733607266011,Very High,High,Immediate intervention required
+RIL_19,RIL,96.15222626396367,Very High,High,Immediate intervention required
+RIL_2,RIL,80.73459285249771,Very High,High,Immediate intervention required
+RIL_20,RIL,98.7249623484946,Very High,High,Immediate intervention required
+RIL_21,RIL,96.78890103269346,Very High,High,Immediate intervention required
+RIL_22,RIL,96.72199018027227,Very High,High,Immediate intervention required
+RIL_23,RIL,98.37182348085743,Very High,High,Immediate intervention required
+RIL_24,RIL,94.38206838824493,Very High,High,Immediate intervention required
+RIL_25,RIL,88.49673631594639,Very High,High,Immediate intervention required
+RIL_26,RIL,99.23704931192269,Very High,High,Immediate intervention required
+RIL_27,RIL,99.23656156381458,Very High,High,Immediate intervention required
+RIL_28,RIL,97.92979453749794,Very High,High,Immediate intervention required
+RIL_29,RIL,95.98847704576349,Very High,High,Immediate intervention required
+RIL_3,RIL,90.01012585879519,Very High,High,Immediate intervention required
+RIL_30,RIL,90.18148545901894,Very High,High,Immediate intervention required
+RIL_31,RIL,95.67756974648874,Very High,High,Immediate intervention required
+RIL_32,RIL,88.18604038080485,Very High,High,Immediate intervention required
+RIL_33,RIL,98.77103794143082,Very High,High,Immediate intervention required
+RIL_34,RIL,97.36657942446938,Very High,High,Immediate intervention required
+RIL_35,RIL,93.8778681364043,Very High,High,Immediate intervention required
+RIL_36,RIL,98.44347933129316,Very High,High,Immediate intervention required
+RIL_37,RIL,99.68064896674124,Very High,High,Immediate intervention required
+RIL_38,RIL,95.33503592244902,Very High,High,Immediate intervention required
+RIL_39,RIL,99.36783024990265,Very High,High,Immediate intervention required
+RIL_4,RIL,98.9646606574814,Very High,High,Immediate intervention required
+RIL_40,RIL,87.79925789557163,Very High,High,Immediate intervention required
+RIL_41,RIL,93.04882087230155,Very High,High,Immediate intervention required
+RIL_42,RIL,90.2813842382942,Very High,High,Immediate intervention required
+RIL_43,RIL,68.54187860610385,Very High,Medium,Immediate intervention required
+RIL_44,RIL,98.23014605410852,Very High,High,Immediate intervention required
+RIL_45,RIL,91.62678481745573,Very High,High,Immediate intervention required
+RIL_46,RIL,83.46368156877152,Very High,High,Immediate intervention required
+RIL_47,RIL,97.12889184584431,Very High,High,Immediate intervention required
+RIL_48,RIL,99.36592867896476,Very High,High,Immediate intervention required
+RIL_49,RIL,91.21796219376883,Very High,High,Immediate intervention required
+RIL_5,RIL,95.47846702026307,Very High,High,Immediate intervention required
+RIL_50,RIL,95.53450253245393,Very High,High,Immediate intervention required
+RIL_51,RIL,96.73722814239353,Very High,High,Immediate intervention required
+RIL_6,RIL,98.91253352770785,Very High,High,Immediate intervention required
+RIL_7,RIL,99.5724840187983,Very High,High,Immediate intervention required
+RIL_8,RIL,97.91291818953324,Very High,High,Immediate intervention required
+RIL_9,RIL,94.2763348820262,Very High,High,Immediate intervention required

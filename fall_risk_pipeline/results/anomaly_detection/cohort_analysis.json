@@ -6,56 +6,56 @@
       "anomaly_count": 36
     },
     "CIPN": {
-      "anomaly_rate": 0.3979591836734694,
+      "anomaly_rate": 0.2857142857142857,
       "total_trials": 98,
-      "anomaly_count": 39
+      "anomaly_count": 28
     },
     "CVA": {
-      "anomaly_rate": 0.515625,
+      "anomaly_rate": 0.453125,
       "total_trials": 128,
-      "anomaly_count": 66
+      "anomaly_count": 58
     },
     "PD": {
-      "anomaly_rate": 0.58125,
+      "anomaly_rate": 0.43125,
       "total_trials": 160,
-      "anomaly_count": 93
+      "anomaly_count": 69
     },
     "RIL": {
-      "anomaly_rate": 0.5603015075376885,
+      "anomaly_rate": 0.46733668341708545,
       "total_trials": 398,
-      "anomaly_count": 223
+      "anomaly_count": 186
     },
     "ACL": {
-      "anomaly_rate": 0.15,
+      "anomaly_rate": 0.16666666666666666,
       "total_trials": 60,
-      "anomaly_count": 9
+      "anomaly_count": 10
     },
     "Unknown": {
-      "anomaly_rate": 0.28289473684210525,
+      "anomaly_rate": 0.27631578947368424,
       "total_trials": 152,
-      "anomaly_count": 43
+      "anomaly_count": 42
     }
   },
   "lof": {
     "Healthy": {
-      "anomaly_rate": 0.08611111111111111,
+      "anomaly_rate": 0.07777777777777778,
       "total_trials": 360,
-      "anomaly_count": 31
+      "anomaly_count": 28
     },
     "CIPN": {
-      "anomaly_rate": 0.21428571428571427,
+      "anomaly_rate": 0.16326530612244897,
       "total_trials": 98,
-      "anomaly_count": 21
+      "anomaly_count": 16
     },
     "CVA": {
-      "anomaly_rate": 0.4609375,
+      "anomaly_rate": 0.4921875,
       "total_trials": 128,
-      "anomaly_count": 59
+      "anomaly_count": 63
     },
     "PD": {
-      "anomaly_rate": 0.25,
+      "anomaly_rate": 0.2875,
       "total_trials": 160,
-      "anomaly_count": 40
+      "anomaly_count": 46
     },
     "RIL": {
       "anomaly_rate": 0.38944723618090454,
@@ -63,88 +63,88 @@
       "anomaly_count": 155
     },
     "ACL": {
-      "anomaly_rate": 0.2,
+      "anomaly_rate": 0.15,
       "total_trials": 60,
-      "anomaly_count": 12
+      "anomaly_count": 9
     },
     "Unknown": {
-      "anomaly_rate": 0.3223684210526316,
+      "anomaly_rate": 0.32894736842105265,
       "total_trials": 152,
-      "anomaly_count": 49
+      "anomaly_count": 50
     }
   },
   "one_class_svm": {
     "Healthy": {
-      "anomaly_rate": 0.10277777777777777,
+      "anomaly_rate": 0.1111111111111111,
       "total_trials": 360,
-      "anomaly_count": 37
+      "anomaly_count": 40
     },
     "CIPN": {
-      "anomaly_rate": 0.32653061224489793,
+      "anomaly_rate": 0.41836734693877553,
       "total_trials": 98,
-      "anomaly_count": 32
+      "anomaly_count": 41
     },
     "CVA": {
-      "anomaly_rate": 0.3984375,
+      "anomaly_rate": 0.5625,
       "total_trials": 128,
-      "anomaly_count": 51
+      "anomaly_count": 72
     },
     "PD": {
-      "anomaly_rate": 0.46875,
+      "anomaly_rate": 0.56875,
       "total_trials": 160,
-      "anomaly_count": 75
+      "anomaly_count": 91
     },
     "RIL": {
-      "anomaly_rate": 0.4547738693467337,
+      "anomaly_rate": 0.535175879396985,
       "total_trials": 398,
-      "anomaly_count": 181
+      "anomaly_count": 213
     },
     "ACL": {
-      "anomaly_rate": 0.2,
+      "anomaly_rate": 0.25,
       "total_trials": 60,
-      "anomaly_count": 12
+      "anomaly_count": 15
     },
     "Unknown": {
-      "anomaly_rate": 0.2894736842105263,
+      "anomaly_rate": 0.47368421052631576,
       "total_trials": 152,
-      "anomaly_count": 44
+      "anomaly_count": 72
     }
   },
   "ensemble": {
     "Healthy": {
-      "anomaly_rate": 0.025,
+      "anomaly_rate": 0.002777777777777778,
       "total_trials": 360,
-      "anomaly_count": 9
+      "anomaly_count": 1
     },
     "CIPN": {
-      "anomaly_rate": 0.0,
+      "anomaly_rate": 0.04081632653061224,
       "total_trials": 98,
-      "anomaly_count": 0
-    },
-    "CVA": {
-      "anomaly_rate": 0.109375,
-      "total_trials": 128,
-      "anomaly_count": 14
-    },
-    "PD": {
-      "anomaly_rate": 0.1375,
-      "total_trials": 160,
-      "anomaly_count": 22
-    },
-    "RIL": {
-      "anomaly_rate": 0.15829145728643215,
-      "total_trials": 398,
-      "anomaly_count": 63
-    },
-    "ACL": {
-      "anomaly_rate": 0.06666666666666667,
-      "total_trials": 60,
       "anomaly_count": 4
     },
+    "CVA": {
+      "anomaly_rate": 0.171875,
+      "total_trials": 128,
+      "anomaly_count": 22
+    },
+    "PD": {
+      "anomaly_rate": 0.09375,
+      "total_trials": 160,
+      "anomaly_count": 15
+    },
+    "RIL": {
+      "anomaly_rate": 0.18090452261306533,
+      "total_trials": 398,
+      "anomaly_count": 72
+    },
+    "ACL": {
+      "anomaly_rate": 0.05,
+      "total_trials": 60,
+      "anomaly_count": 3
+    },
     "Unknown": {
-      "anomaly_rate": 0.15789473684210525,
+      "anomaly_rate": 0.125,
       "total_trials": 152,
-      "anomaly_count": 24
+      "anomaly_count": 19
     }
   }
 }

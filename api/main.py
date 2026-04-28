@@ -80,6 +80,11 @@ allow_all_origins = cors_origins == ["*"]
 if not cors_origins:
     cors_origins = ["*"]
     allow_all_origins = True
+elif not allow_all_origins:
+    # Always allow local frontend dev hosts even when env var is restrictive.
+    for local_origin in ("http://localhost:5500", "http://127.0.0.1:5500"):
+        if local_origin not in cors_origins:
+            cors_origins.append(local_origin)
 
 CONFIG_PATH = Path(os.getenv("CONFIG_PATH", PIPELINE_ROOT / "configs" / "pipeline_config.yaml"))
 MODEL_DIR = Path(os.getenv("MODEL_DIR", PIPELINE_ROOT / "results" / "checkpoints"))
@@ -119,6 +124,10 @@ trial_feature_columns: list[str] = []
 anomaly_models: dict[str, Any] = {}
 anomaly_scalers: dict[str, Any] = {}
 trial_feature_medians: dict[str, float] = {}
+expected_patient_feature_count: int | None = None
+expected_trial_feature_count: int | None = None
+patient_schema_mismatch: bool = False
+trial_schema_mismatch: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +159,8 @@ def load_resources() -> None:
     global config, signal_processor, feature_extractor
     global models, patient_feature_columns, trial_feature_columns
     global anomaly_models, anomaly_scalers, trial_feature_medians
+    global expected_patient_feature_count, expected_trial_feature_count
+    global patient_schema_mismatch, trial_schema_mismatch
 
     config = load_config()
     signal_processor = SignalProcessor(config)
@@ -163,7 +174,10 @@ def load_resources() -> None:
     patient_df = pd.read_parquet(PATIENT_FEATURES_PATH)
     trial_df = pd.read_parquet(TRIAL_FEATURES_PATH)
 
-    patient_meta_cols = ["participant_id", "cohort", "risk_label"]
+    patient_meta_cols = [
+        "participant_id", "cohort", "risk_label",
+        "fall_probability", "laterality_biased", "n_trials",
+    ]
     trial_meta_cols = [
         "trial_id", "participant_id", "cohort",
         "risk_label", "fall_probability", "laterality_biased",
@@ -189,12 +203,60 @@ def load_resources() -> None:
         if model_path.exists():
             models[model_name] = load_pickle(model_path)
 
+    # Align runtime feature vectors to the fitted model input width.
+    expected_patient_feature_count = None
+    for preferred_name in ["ensemble", "lightgbm", "xgboost", "random_forest", "svm"]:
+        model = models.get(preferred_name)
+        if model is None:
+            continue
+        for attr_name in ("n_features_in_",):
+            n_features = getattr(model, attr_name, None)
+            if isinstance(n_features, int) and n_features > 0:
+                expected_patient_feature_count = n_features
+                break
+        if expected_patient_feature_count is None and hasattr(model, "named_steps"):
+            imputer = model.named_steps.get("imputer") if isinstance(model.named_steps, dict) else None
+            n_features = getattr(imputer, "n_features_in_", None)
+            if isinstance(n_features, int) and n_features > 0:
+                expected_patient_feature_count = n_features
+        if expected_patient_feature_count is not None:
+            break
+
     for model_name in ["isolation_forest", "lof", "one_class_svm"]:
         model_path = ANOMALY_DIR / f"{model_name}_model.pkl"
         scaler_path = ANOMALY_DIR / f"{model_name}_scaler.pkl"
         if model_path.exists() and scaler_path.exists():
             anomaly_models[model_name] = load_pickle(model_path)
             anomaly_scalers[model_name] = load_pickle(scaler_path)
+
+    expected_trial_feature_count = None
+    for scaler in anomaly_scalers.values():
+        n_features = getattr(scaler, "n_features_in_", None)
+        if isinstance(n_features, int) and n_features > 0:
+            expected_trial_feature_count = n_features
+            break
+
+    patient_schema_mismatch = (
+        expected_patient_feature_count is not None
+        and len(patient_feature_columns) != expected_patient_feature_count
+    )
+    trial_schema_mismatch = (
+        expected_trial_feature_count is not None
+        and len(trial_feature_columns) != expected_trial_feature_count
+    )
+
+    if patient_schema_mismatch:
+        logger.warning(
+            "Patient feature schema mismatch: runtime=%d expected=%s",
+            len(patient_feature_columns),
+            expected_patient_feature_count,
+        )
+    if trial_schema_mismatch:
+        logger.warning(
+            "Trial feature schema mismatch: runtime=%d expected=%s",
+            len(trial_feature_columns),
+            expected_trial_feature_count,
+        )
 
     logger.info(
         "Resources loaded — models: %s | anomaly models: %s",
@@ -533,6 +595,15 @@ def build_trial_feature_vector(trial_features: dict[str, Any]) -> pd.DataFrame:
 
 
 def predict_risk(feature_vector: pd.DataFrame) -> tuple[dict[str, Any], str]:
+    if patient_schema_mismatch:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Model artifact schema mismatch: retrain/export checkpoints with current "
+                "feature pipeline before submission use."
+            ),
+        )
+
     if not models:
         raise HTTPException(status_code=500, detail="No trained prediction models are available.")
 
@@ -571,6 +642,15 @@ def predict_risk(feature_vector: pd.DataFrame) -> tuple[dict[str, Any], str]:
 
 
 def predict_anomaly(trial_vector: pd.DataFrame) -> tuple[str, dict[str, Any]]:
+    if trial_schema_mismatch:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Anomaly artifact schema mismatch: retrain/export anomaly models with current "
+                "feature pipeline before submission use."
+            ),
+        )
+
     if not anomaly_models or not anomaly_scalers:
         return "Unknown", {"available": False}
 

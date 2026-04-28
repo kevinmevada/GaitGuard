@@ -46,7 +46,7 @@ preprocessing:
   highpass_cutoff_hz: 0.1
   madgwick_beta: 0.1
   min_trial_length_s: 10.0
-  gait_event_source: "dataset"
+  gait_event_source: "algorithm"
 
 # Feature Engineering
 features:

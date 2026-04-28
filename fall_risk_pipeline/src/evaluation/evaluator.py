@@ -52,7 +52,7 @@ class Evaluator:
         Set to False for full per-fold Optuna retuning (publication mode).
     """
 
-    def __init__(self, config: dict, fast: bool = True):
+    def __init__(self, config: dict, fast: bool = False):
         self.config = config
         self.fast = fast
 
@@ -91,7 +91,12 @@ class Evaluator:
         ]
         all_results: dict[str, dict] = {}
 
-        for name in tqdm(model_names, desc="Evaluating models"):
+        for name in tqdm(
+            model_names,
+            desc="Evaluating models",
+            colour="red",
+            bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+        ):
             if self.fast:
                 result = self._fast_evaluate_model(name, X, y, groups)
             else:
@@ -243,7 +248,13 @@ class Evaluator:
 
         fold_results = Parallel(n_jobs=-1, prefer="processes")(
             delayed(self._evaluate_one_subject)(subj, name, X, y, groups)
-            for subj in tqdm(unique_subjects, desc=f"  {name} folds", leave=False)
+            for subj in tqdm(
+                unique_subjects,
+                desc=f"  {name} folds",
+                leave=False,
+                colour="red",
+                bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+            )
         )
 
         all_probs, all_true = [], []
@@ -302,7 +313,13 @@ class Evaluator:
 
         fold_results = Parallel(n_jobs=-1, prefer="processes")(
             delayed(self._evaluate_ensemble_one_subject)(subj, model_names, X, y, groups)
-            for subj in tqdm(unique_subjects, desc="  ensemble folds", leave=False)
+            for subj in tqdm(
+                unique_subjects,
+                desc="  ensemble folds",
+                leave=False,
+                colour="red",
+                bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+            )
         )
 
         all_probs, all_true = [], []
@@ -339,14 +356,40 @@ class Evaluator:
         with open(path, "rb") as f:
             return pickle.load(f)
 
+    def _optimal_threshold(self, y_true: np.ndarray, y_prob: np.ndarray) -> float:
+        fpr, tpr, thresholds = roc_curve(y_true, y_prob)
+        youden = tpr - fpr
+        idx = int(np.argmax(youden))
+        threshold = float(thresholds[idx])
+        if not np.isfinite(threshold):
+            return 0.5
+        return max(0.0, min(1.0, threshold))
+
+    def _bootstrap_auc_ci(self, y_true: np.ndarray, y_prob: np.ndarray, n_bootstrap: int = 1000) -> tuple[float, float]:
+        rng = np.random.default_rng(self.trainer.random_state)
+        idx_all = np.arange(len(y_true))
+        samples: list[float] = []
+        for _ in range(n_bootstrap):
+            idx = rng.choice(idx_all, size=len(idx_all), replace=True)
+            yt = y_true[idx]
+            yp = y_prob[idx]
+            if len(np.unique(yt)) < 2:
+                continue
+            samples.append(float(roc_auc_score(yt, yp)))
+        if not samples:
+            return float("nan"), float("nan")
+        return float(np.percentile(samples, 2.5)), float(np.percentile(samples, 97.5))
+
     def _build_metric_payload(self, name: str, y_true: np.ndarray, y_prob: np.ndarray):
         if len(y_true) == 0:
             raise ValueError(f"{name} evaluation failed: no valid grouped splits")
 
-        y_pred      = (y_prob >= 0.5).astype(int)
+        threshold = self._optimal_threshold(y_true, y_prob)
+        y_pred      = (y_prob >= threshold).astype(int)
         auc_roc     = roc_auc_score(y_true, y_prob)
         auc_pr      = average_precision_score(y_true, y_prob)
         fpr, tpr, _ = roc_curve(y_true, y_prob)
+        auc_ci_low, auc_ci_high = self._bootstrap_auc_ci(y_true, y_prob)
 
         cm = confusion_matrix(y_true, y_pred)
         if cm.shape == (2, 2):
@@ -361,6 +404,9 @@ class Evaluator:
             "model":            name,
             "auc":              float(auc_roc),
             "auc_pr":           float(auc_pr),
+            "auc_ci_low":       auc_ci_low,
+            "auc_ci_high":      auc_ci_high,
+            "decision_threshold": threshold,
             "f1":               float(f1_score(y_true, y_pred, zero_division=0)),
             "accuracy":         float(accuracy_score(y_true, y_pred)),
             "sensitivity":      float(sensitivity),
@@ -479,10 +525,14 @@ class Evaluator:
             rows.append({
                 "model":               name,
                 "auc":                 res["auc"],
+                "auc_ci_low":          res.get("auc_ci_low", float("nan")),
+                "auc_ci_high":         res.get("auc_ci_high", float("nan")),
                 "accuracy":            res["accuracy"],
                 "f1":                  res["f1"],
                 "sensitivity":         res.get("sensitivity", 0.0),
                 "specificity":         res.get("specificity", 0.0),
+                "decision_threshold":  res.get("decision_threshold", 0.5),
+                "evaluation_mode":     "fast" if self.fast else "full_nested",
                 "validation_strategy": self.validation_strategy,
                 "participants":        n_participants,
             })

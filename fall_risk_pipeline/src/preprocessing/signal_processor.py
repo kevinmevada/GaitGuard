@@ -50,7 +50,13 @@ class SignalProcessor:
         meta = pd.read_csv(meta_path)
         signals_dir = self.proc_dir / "signals"
 
-        for row in tqdm(meta.itertuples(index=False), total=len(meta), desc="Preprocessing"):
+        for row in tqdm(
+            meta.itertuples(index=False),
+            total=len(meta),
+            desc="Preprocessing",
+            colour="red",
+            bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+        ):
             trial_id = row.trial_id
 
             try:

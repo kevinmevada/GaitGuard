@@ -137,7 +137,7 @@ Trial-level: median imputation for missing values
 
 [PREDICT RISK]
 Load ensemble (4 models from checkpoints/)
-Soft voting with calibrated probabilities
+Soft voting probabilities (calibration evaluated separately)
 Return risk_score (0-100), risk_probability (0-1)
 
 [ANOMALY DETECTION]
@@ -309,7 +309,7 @@ Individual Classifiers (Bayesian hyperparameter tuning via Optuna):
 - Random Forest: bagged tree baseline for internal comparison
 - SVM: nonlinear kernel baseline for internal comparison
 
-Ensemble Strategy: Soft voting with calibrated probabilities
+Ensemble Strategy: Soft voting probabilities
 - Predicted Probabilities = (p_xgb + p_lgb + p_rf + p_svm) / 4
 - Historical internal benchmark: retained for reference only until validation is rerun
 
@@ -627,7 +627,6 @@ Response:
   "status": "healthy",
   "models_loaded": 5,
   "anomaly_models_loaded": 3,
-  "feature_count": 41,
   "api_version": "2.0.0"
 }
 ```
@@ -644,16 +643,16 @@ Visit: http://localhost:8001/docs
 
 Location: test/P1-P6/
 
-6 complete trial datasets with known risk labels:
+6 complete trial datasets for smoke testing (not publication metrics):
 
 | Patient | Risk Level | Score | Files |
 |---------|-----------|-------|-------|
-| P1 | Low | 2-3 | head_raw.csv, lower_back_raw.csv, left_foot_raw.csv, right_foot_raw.csv, metadata.json |
-| P2 | Low | 2-3 | Files included |
-| P3 | High | 85-88 | Files included (with detected anomalies) |
-| P4 | High | 85-88 | Files included |
-| P5 | High | 85-88 | Files included |
-| P6 | High | 85-88 | Files included |
+| P1 | Example | N/A | head_raw.csv, lower_back_raw.csv, left_foot_raw.csv, right_foot_raw.csv, metadata.json |
+| P2 | Example | N/A | Files included |
+| P3 | Synthetic example | N/A | Files included (with detected anomalies) |
+| P4 | Synthetic example | N/A | Files included |
+| P5 | Synthetic example | N/A | Files included |
+| P6 | Synthetic example | N/A | Files included |
 
 Each dataset contains:
 - 4 sensor CSV files (time, acc_x/y/z, gyr_x/y/z, mag_x/y/z columns)
@@ -818,7 +817,7 @@ P2/ ... P6/                    5 more test patients
 | pytest | Unit testing |
 | PyYAML | Configuration management |
 | Jinja2 | Report templating |
-| pingouin | Statistical tests (DeLong) |
+| pingouin | Statistical analysis utilities |
 | statsmodels | Calibration metrics |
 
 ---

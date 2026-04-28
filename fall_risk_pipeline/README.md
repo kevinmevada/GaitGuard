@@ -1,6 +1,6 @@
 # Fall Risk Prediction System from Wearable IMU Gait Data
 
-A full professional ML pipeline for IEEE publication, built on the SpringerNature clinical gait dataset (Figshare 28806086). Achieves 90%+ accuracy via multi-model comparison, hyperparameter tuning, and ensemble learning.
+A full professional ML pipeline for research reporting and reproducible internal evaluation, built on the SpringerNature clinical gait dataset (Figshare 28806086).
 
 ## Dataset
 **A Dataset of Clinical Gait Signals with Wearable Sensors from Healthy, Neurological, and Orthopedic Cohorts**  
@@ -40,7 +40,7 @@ fall_risk_pipeline/
 4. **Feature Engineering** — temporal, spatial, spectral, variability, asymmetry  
 5. **Model Training** — XGBoost, Random Forest, SVM, LightGBM, 1D-CNN, LSTM  
 6. **Hyperparameter Tuning** — Optuna-based Bayesian optimization per model  
-7. **Model Comparison** — AUC-ROC, F1, calibration, DeLong test  
+7. **Model Comparison** — AUC-ROC, F1, calibration plots, and cross-model comparison  
 8. **Best Model Selection** — ensemble if beneficial  
 9. **Explainability** — SHAP global + local, feature importance  
 10. **Report Generation** — IEEE-ready tables and figures  

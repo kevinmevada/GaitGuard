@@ -64,7 +64,8 @@ def run_stage(stage: str, config: dict):
             ModelTrainer(config).run()
         elif stage == "evaluate":
             from src.evaluation.evaluator import Evaluator
-            Evaluator(config).run()
+            # Default to submission-grade evaluation unless explicitly changed in code.
+            Evaluator(config, fast=False).run()
         elif stage == "predict":
             from src.evaluation.predictions import PredictionGenerator
             PredictionGenerator(config).run()
