@@ -485,12 +485,14 @@ nav {
 .cohort-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; margin-top: 64px; background: var(--border); border: 0.5px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
 .cohort-cell {
   background: var(--white); padding: 44px 36px;
+  display: flex;
+  flex-direction: column;
   transition: background 0.2s;
 }
 .cohort-cell:hover { background: #fafafa; }
 .cohort-icon { font-size: 32px; margin-bottom: 20px; }
 .cohort-name { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; color: var(--dark-gray); margin-bottom: 12px; }
-.cohort-desc { font-size: 15px; line-height: 1.65; color: var(--mid-gray); margin-bottom: 28px; }
+.cohort-desc { font-size: 15px; line-height: 1.65; color: var(--mid-gray); margin-bottom: 28px; flex: 1; }
 .cohort-stat { display: flex; flex-direction: column; gap: 6px; padding-top: 22px; border-top: 0.5px solid var(--border); }
 .cohort-pct { font-size: 36px; font-weight: 600; letter-spacing: -0.03em; color: var(--dark-gray); line-height: 1; }
 .cohort-pct-label { font-size: 14px; color: var(--mid-gray); }
