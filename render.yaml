@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: gaitguard-api
+    env: python
+    plan: free
+    rootDir: api
+    buildCommand: ./build.sh
+    startCommand: python -m uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: LOG_LEVEL
+        value: INFO
+      - key: CORS_ORIGINS
+        sync: false
+      - key: MODEL_DIR
+        value: ../fall_risk_pipeline/results/checkpoints
+      - key: ANOMALY_DIR
+        value: ../fall_risk_pipeline/results/anomaly_detection
+      - key: PATIENT_FEATURES_PATH
+        value: ../fall_risk_pipeline/data/features/patient_features.parquet
+      - key: TRIAL_FEATURES_PATH
+        value: ../fall_risk_pipeline/data/features/trial_features.parquet
