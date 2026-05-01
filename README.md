@@ -1,3 +1,4 @@
+```md
 # GaitGuard: Anomalous Gait Detection System
 
 A machine learning system for detecting anomalous gait patterns from multi-sensor wearable IMU data.
@@ -412,3 +413,4 @@ This project is intended for research and educational purposes.
 If you use this system in your research, cite the original dataset:
 
 SpringerNature Figshare DOI: 10.6084/m9.figshare.28806086
+```
