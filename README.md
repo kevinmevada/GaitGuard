@@ -1,6 +1,6 @@
-# GaitGuard: Clinical Fall Risk Prediction System
+# GaitGuard: Anomalous Gait Detection System
 
-A machine learning system for exploring fall-risk prediction from multi-sensor wearable IMU data.
+A machine learning system for detecting anomalous gait patterns from multi-sensor wearable IMU data.
 
 ---
 
@@ -17,35 +17,36 @@ A machine learning system for exploring fall-risk prediction from multi-sensor w
 9. [Test Data](#test-data)
 10. [File Structure](#file-structure)
 11. [Technologies](#technologies)
+12. [Usage Boundaries](#usage-boundaries)
 
 ---
 
 ## Project Overview
 
-GaitGuard is a research-oriented fall risk prediction system intended for experimentation, review, and further validation.
+GaitGuard is a research-oriented anomalous gait detection system intended for experimentation, internal review, and reproducible ML workflows.
 
 ### Purpose
 
-- Predict fall probability (0-100 score) for individual patients
-- Identify gait abnormalities and biomechanical risk factors
-- Support clinical decision-making for fall prevention
-- Provide explainability via SHAP feature importance analysis
-- Detect anomalous gait patterns using unsupervised learning
+- Detect anomalous gait patterns relative to a training cohort of expected gaits
+- Highlight gait irregularities and biomechanical pattern shifts
+- Provide explainability via SHAP-style feature contribution analysis
+- Support model development and anomaly benchmarking on open gait datasets
+- Long-term aim: contribute to fall-prevention research (non-diagnostic)
 
 ### Key Statistics
 
 - Status: research prototype with internal evaluation artifacts in this repository
-- Dataset: 1,356 trials from 260 participants (8 clinical cohorts)
+- Dataset: 1,356 trials from 260 participants (8 open-data cohorts)
 - Features: 41 temporal, spatial, spectral, and asymmetry indicators
 - Models: 4-model ensemble (XGBoost, LightGBM, Random Forest, SVM)
 - Anomaly Detection: 3 unsupervised methods (Isolation Forest, LOF, One-Class SVM)
 
-### Clinical Cohorts
+### Open Data Cohorts
 
-- Healthy (5.2% fall probability)
-- Hip OA (28.5%), Knee OA (24.1%)
-- ACL injury (18.7%), CIPN (41.8%), RIL (38.9%)
-- Parkinson's Disease (67.3%), CVA/Stroke (54.2%)
+- Healthy (baseline gait patterns)
+- Hip OA, Knee OA
+- ACL injury, CIPN, RIL
+- Parkinson's Disease, CVA/Stroke
 
 Data Source: SpringerNature Figshare DOI: 10.6084/m9.figshare.28806086
 
@@ -53,14 +54,14 @@ Data Source: SpringerNature Figshare DOI: 10.6084/m9.figshare.28806086
 
 ## System Architecture
 
-```
+```text
 GaitGuard System
 
 Web Frontend (HTML5 + Three.js + Canvas)
 - File upload (drag-drop, ZIP or individual files)
 - Real-time signal visualization
 - Interactive 3D human model with sensors
-- Results dashboard (risk gauge, anomaly warnings)
+- Results dashboard (model score gauge, anomaly warnings)
 
 (HTTP REST API)
 
@@ -80,11 +81,10 @@ Signal Processing | Feature Extraction | Models
 - Sensor fusion | Asymmetry | SVM
 - | Variability | Ensemble
 
-Risk Score (0-100)
-Risk Level (High/Mod/Low)
-Confidence Score
+Model Score (0-100)
+Model Confidence
 Anomaly Status
-SHAP Feature Importance
+SHAP Feature Contributions
 ```
 
 ---
@@ -93,13 +93,13 @@ SHAP Feature Importance
 
 ### Training Pipeline (Offline)
 
-```
+```text
 Raw Dataset (Figshare)
 [INGEST] Load CSVs, validate metadata
-data/raw to data/processed/signals/
+data/raw -> data/processed/signals/
 [PREPROCESS] Filter, detect gait events, sensor fusion
 data/processed/signals_clean/
-[EDA] Exploratory data analysis, visualize distributions
+[EDA] Exploratory analysis, visualize distributions
 figures/eda/
 [FEATURES] Extract 41 features per trial, aggregate to patient level
 data/features/trial_features.parquet + patient_features.parquet
@@ -109,13 +109,13 @@ results/checkpoints/*.pkl
 results/metrics/, results/figures/
 [ANOMALY] Unsupervised outlier detection (IF, LOF, One-Class SVM)
 results/anomaly_detection/
-[REPORT] Generate IEEE-ready tables, figures, results summary
+[REPORT] Generate tables, figures, and summary artifacts
 results/metrics/ieee_table.tex, pipeline_report.md
 ```
 
 ### Inference Pipeline (Online - API)
 
-```
+```text
 User (Frontend)
 [Upload IMU Files + Metadata]
 (ZIP: 4 CSV + 1 JSON OR individual files)
@@ -126,23 +126,20 @@ Validate CSV structure
 Parse JSON metadata
 
 [NORMALIZE] Convert column names, handle timestamps, interpolate
-
 [PREPROCESS] Butterworth filter, gravity removal, gait event detection
-
 [EXTRACT FEATURES] Compute 41 features from processed signals
-
 [BUILD FEATURE VECTORS]
 Patient-level: mean/std aggregation
 Trial-level: median imputation for missing values
 
-[PREDICT RISK]
+[MODEL INFERENCE]
 Load ensemble (4 models from checkpoints/)
-Soft voting probabilities (calibration evaluated separately)
-Return risk_score (0-100), risk_probability (0-1)
+Soft voting probabilities
+Return legacy fields: risk_score, risk_probability (model-derived scores)
 
 [ANOMALY DETECTION]
 Run 3 unsupervised methods (IF, LOF, One-Class SVM)
-Majority voting: 2 votes or more to Detected
+Majority voting: 2 votes or more -> Detected
 
 [DERIVE DISPLAY FEATURES]
 Extract 5 key biomechanics:
@@ -151,95 +148,69 @@ Extract 5 key biomechanics:
 3. Cadence Instability
 4. Head Acceleration RMS
 5. Step Time Symmetry
-
-[SHAP NORMALIZATION]
-Z-score each feature against population
-Map 2 sigma to 0-100% contribution
-Invert symmetry (higher symmetry = lower risk)
-
-[RESPONSE JSON]
-{
-  "success": true,
-  "risk_score": 65,
-  "risk_level": "moderate",
-  "risk_probability": 0.65,
-  "confidence": 0.89,
-  "anomaly_status": "Normal",
-  "features": {...},
-  "graph_values": {...},
-  "shap_values": [...],
-  "model_used": "ensemble"
-}
-
-Frontend (Display Results)
-Risk gauge (visual 0-100 scale)
-Anomaly warnings
-Feature cards
-Model confidence
-Cohort comparison
 ```
 
 ---
 
 ## Components
 
-### Fall Risk Pipeline (fall_risk_pipeline/)
+### Pipeline (`fall_risk_pipeline/`)
 
 Professional 10-stage ML pipeline:
 
 | Stage | Module | Purpose |
 |-------|--------|---------|
-| Ingestion | src/ingestion/data_loader.py | Parse raw CSV files, validate metadata, create trial records |
-| Preprocessing | src/preprocessing/signal_processor.py | Butterworth filtering, gravity removal, gait event detection, sensor fusion |
+| Ingestion | `src/ingestion/data_loader.py` | Parse raw CSV files, validate metadata, create trial records |
+| Preprocessing | `src/preprocessing/signal_processor.py` | Butterworth filtering, gravity removal, gait event detection, sensor fusion |
 | EDA | Notebooks, visualizations | Exploratory analysis, signal distributions, outlier identification |
-| Features | src/features/feature_extractor.py | Extract 41 temporal/spatial/spectral/asymmetry features |
-| Training | src/models/trainer.py | Optuna Bayesian hyperparameter tuning, train 4 models |
-| Evaluation | src/evaluation/evaluator.py, reporter.py | Internal validation, SHAP analysis, metrics calculation |
-| Prediction | src/evaluation/predictions.py | Generate predictions for new data |
-| Anomaly | src/models/anomaly_detector.py | Unsupervised outlier detection (3 methods) |
-| Report | src/evaluation/reporter.py | Generate IEEE tables, publication-ready figures |
+| Features | `src/features/feature_extractor.py` | Extract 41 temporal/spatial/spectral/asymmetry features |
+| Training | `src/models/trainer.py` | Optuna hyperparameter tuning, train 4 models |
+| Evaluation | `src/evaluation/evaluator.py`, `reporter.py` | Internal validation, SHAP analysis, metrics calculation |
+| Prediction | `src/evaluation/predictions.py` | Generate predictions for new data |
+| Anomaly | `src/models/anomaly_detector.py` | Unsupervised outlier detection (3 methods) |
+| Report | `src/evaluation/reporter.py` | Generate tables and figures |
 
-Config: configs/pipeline_config.yaml - sampling rate, filter specs, model hyperparams, feature list
+Config: `configs/pipeline_config.yaml`
 
-### REST API (api/main.py)
+### REST API (`api/main.py`)
 
 FastAPI service for real-time inference:
 
-Key Functions:
-- parse_uploaded_files() - Handle ZIP or individual file uploads
-- normalize_sensor_dataframe() - Column mapping, timestamp handling, data imputation
-- preprocess_sensor_data() - Apply signal processing pipeline
-- extract_trial_features() - Compute 41 features from processed signals
-- predict_risk() - Ensemble inference with soft voting
-- predict_anomaly() - 3-method majority voting for outlier detection
-- derive_display_features() - Extract 5 key biomechanics for UI
-- scale_display_shap() - Z-score normalization for SHAP-style contributions
+Key functions:
+- `parse_uploaded_files()` - Handle ZIP or individual file uploads
+- `normalize_sensor_dataframe()` - Column mapping, timestamp handling, imputation
+- `preprocess_sensor_data()` - Apply signal processing pipeline
+- `extract_trial_features()` - Compute 41 features from processed signals
+- `predict_risk()` - Ensemble inference with soft voting (legacy naming)
+- `predict_anomaly()` - 3-method majority voting for outlier detection
+- `derive_display_features()` - Extract 5 key biomechanics for UI
+- `scale_display_shap()` - Z-score normalization for feature contributions
 
 Endpoints:
-POST /predict - Upload trial data to get risk prediction
-GET / - API status
-GET /health - Health check
-GET /docs - Interactive Swagger UI
+- `POST /predict` - Upload trial data to get anomaly-focused model output
+- `GET /` - API status
+- `GET /health` - Health check
+- `GET /docs` - Interactive Swagger UI
 
-Runs at: http://localhost:8001
+Runs at: `http://localhost:8001`
 
-### Web Frontend (Front_end/)
+### Web Frontend (`Front_end/`)
 
-Clinical dashboard with:
-- index.html - Semantic HTML structure
-- main.js - API communication, Three.js 3D model, signal visualization
-- style.css - Apple Design System aesthetics (dark theme, glassmorphism)
+Research dashboard with:
+- `index.html` - Semantic HTML structure
+- `main.js` - API communication, Three.js model, signal visualization
+- `style.css` - UI design system
 
 Features:
 - Drag-drop file upload
-- Real-time IMU signal visualization (Canvas API)
+- Real-time IMU signal visualization
 - Interactive 3D human model with sensor placement
-- Model performance table (all 4 models + ensemble)
+- Model performance table
 - Pipeline stage animation
-- Risk gauge (0-100 visual scale, color-coded)
+- Model score gauge (0-100 visual scale)
 - Anomaly detection warnings
-- Feature importance cards
-- Responsive design (mobile-friendly)
+- Feature contribution cards
+- Responsive design
 
 ---
 
@@ -268,86 +239,24 @@ Sensor Fusion (Madgwick Algorithm)
 
 ### Feature Engineering (41 Features)
 
-1. Temporal/Gait Cycle (8 features)
-- Stride time (mean, std, CV)
-- Cadence, stride length
-- Stance/swing ratio, double support ratio
+1. Temporal/Gait Cycle
+2. Spatial
+3. Spectral
+4. Trunk Dynamics
+5. Asymmetry/Bilateral
+6. Head/Postural
 
-2. Spatial (5 features)
-- Step length (mean, std, asymmetry)
-- Gait speed, step width
+### Ensemble & Anomaly Methods
 
-3. Spectral (6 features)
-- Dominant frequency (Welch periodogram)
-- Spectral entropy
-- Band power (0-1 Hz, 1-3 Hz)
-- Spectral centroid
+- Ensemble strategy: soft voting across XGBoost, LightGBM, Random Forest, SVM
+- Unsupervised anomaly methods: Isolation Forest, LOF, One-Class SVM
+- Voting: majority (2/3 methods flag anomaly) -> `Detected`
 
-4. Trunk Dynamics (12 features)
-- RMS acceleration (AP, ML, vertical, resultant)
-- Jerk (mean, max)
-- Lyapunov exponent (gait chaos)
-- Approximate entropy
+### Explainability (SHAP-style)
 
-5. Asymmetry/Bilateral (10 features)
-- Stride time asymmetry (L/R)
-- Swing time asymmetry
-- Step length asymmetry
-- RMS asymmetry across sensors
-- Lateral variability
-
-6. Head/Postural (5 features)
-- Head acceleration RMS
-- Head tilt angle
-- Postural stability index
-
-### Model Ensemble
-
-Individual Classifiers (Bayesian hyperparameter tuning via Optuna):
-- XGBoost: tree-based baseline for internal comparison
-- LightGBM: gradient boosting baseline for internal comparison
-- Random Forest: bagged tree baseline for internal comparison
-- SVM: nonlinear kernel baseline for internal comparison
-
-Ensemble Strategy: Soft voting probabilities
-- Predicted Probabilities = (p_xgb + p_lgb + p_rf + p_svm) / 4
-- Historical internal benchmark: retained for reference only until validation is rerun
-
-### Anomaly Detection
-
-3 Independent Methods (unsupervised outlier scoring):
-
-1. Isolation Forest
-   - Anomaly score: Depth in isolation tree
-   - Threshold: Default (anomaly_score > 0.5)
-
-2. Local Outlier Factor (LOF)
-   - Anomaly score: Ratio of local density to neighbors
-   - Threshold: LOF > 1.5 (compared to neighbors)
-
-3. One-Class SVM
-   - Anomaly score: Distance to hyperplane
-   - Threshold: Decision function < 0
-
-Voting: majority (2/3 methods flag anomaly) to Detected
-
-### Explainability (SHAP)
-
-SHAP TreeExplainer for model interpretability:
-- Global: Average |SHAP value| across all samples to feature importance ranking
-- Local: Per-patient feature contributions to that patient's prediction
-- Visualization: Waterfall plots, force plots, dependence plots
-
-Display Features Normalization:
-```
-z-score = (feature_value - population_mean) / population_std
-mapping:  z = -2 to 0%   (2 sigma below mean)
-          z =  0 to 50%  (at population mean)
-          z = +2 to 100% (2 sigma above mean)
-
-For Step Time Symmetry: inverted ratio (1 - ratio)
-Rationale: Higher symmetry = lower fall risk contribution
-```
+- Global: average feature contribution ranking
+- Local: per-trial feature contributions
+- Display normalization via z-score mapping to 0-100 contribution scale
 
 ---
 
@@ -356,430 +265,111 @@ Rationale: Higher symmetry = lower fall risk contribution
 ### Environment Setup
 
 ```bash
-Navigate to workspace
 cd c:\Users\mevad\Desktop\GI
-
-Create virtual environment (if not exists)
 python -m venv venv
-
-Activate virtual environment (PowerShell)
 .\venv\Scripts\Activate.ps1
-
-Install dependencies
 pip install -r fall_risk_pipeline/requirements.txt
 pip install -r api/requirements.txt
 ```
 
 ### Configuration File
 
-fall_risk_pipeline/configs/pipeline_config.yaml:
-
-```yaml
-dataset:
-  sampling_rate: 100
-  sensors:
-    - head
-    - lower_back
-    - left_foot
-    - right_foot
-  sensor_columns:
-    - time
-    - acc_x
-    - acc_y
-    - acc_z
-    - gyr_x
-    - gyr_y
-    - gyr_z
-    - mag_x
-    - mag_y
-    - mag_z
-  min_trial_length: 10  # seconds
-
-preprocessing:
-  lowpass_cutoff: 15    # Hz
-  highpass_cutoff: 0.1  # Hz
-  butter_order: 4
-  madgwick_beta: 0.1
-
-models:
-  enabled:
-    - xgboost
-    - lightgbm
-    - random_forest
-    - svm
-  training:
-    cv_folds: 5
-    optuna_trials: 50
-    timeout: 1200  # seconds
-  ensemble:
-    method: soft_voting
-    top_models: 3
-
-anomaly_detection:
-  methods:
-    - isolation_forest
-    - lof
-    - one_class_svm
-  voting_threshold: 2  # majority
-
-output:
-  shap_samples: 200
-  figure_dpi: 300
-  figure_format: pdf
-```
+Primary config: `fall_risk_pipeline/configs/pipeline_config.yaml`
 
 ### Dataset Organization
 
-```
+```text
 fall_risk_pipeline/data/
-raw/
-  healthy/
-  neuro/
-  ortho/
-  [download dataset here]
-processed/
-  signals/
-  signals_clean/
-  trial_metadata.csv
-features/
-  trial_features.parquet
-  patient_features.parquet
+  raw/
+  processed/
+  features/
 ```
 
 Download Dataset:
-1. Visit: https://springernature.figshare.com/articles/dataset/.../28806086
+1. Visit https://springernature.figshare.com/articles/dataset/.../28806086
 2. Download ZIP
-3. Extract to fall_risk_pipeline/data/raw/
-
-### Model Checkpoints
-
-Trained models are loaded from: fall_risk_pipeline/results/checkpoints/
-
-```
-results/checkpoints/
-ensemble.pkl           # Soft voting ensemble
-xgboost.pkl           # XGBoost classifier
-lightgbm.pkl          # LightGBM classifier
-random_forest.pkl     # Random Forest classifier
-svm.pkl               # SVM classifier
-
-results/anomaly_detection/
-isolation_forest_model.pkl
-isolation_forest_scaler.pkl
-lof_model.pkl
-lof_scaler.pkl
-one_class_svm_model.pkl
-one_class_svm_scaler.pkl
-```
+3. Extract into `fall_risk_pipeline/data/raw/`
 
 ---
 
 ## Running the System
 
-### Option 1: Run Training Pipeline (Offline)
+### Option 1: Run Training Pipeline
 
 ```bash
 cd fall_risk_pipeline
-
-Run all stages
 python main.py --config configs/pipeline_config.yaml
-
-Or run specific stages
-python main.py --stage ingest
-python main.py --stage preprocess
-python main.py --stage eda
-python main.py --stage features
-python main.py --stage train
-python main.py --stage evaluate
-python main.py --stage anomaly
-python main.py --stage report
 ```
 
-Output: Trained models in results/checkpoints/, metrics in results/metrics/
-
-### Option 2: Run API Server (Real-time Inference)
+### Option 2: Run API Server
 
 ```bash
-Method 1: Using provided startup script
 cd api
 python start_api.py
-
-Method 2: Direct run
-python -m uvicorn main:app --host 0.0.0.0 --port 8001 --reload
-
-Method 3: Production deployment
-python -m uvicorn main:app --host 0.0.0.0 --port 8001
 ```
 
-API available at: http://localhost:8001
-Swagger Docs: http://localhost:8001/docs
-ReDoc: http://localhost:8001/redoc
-
-### Option 3: Open Frontend Dashboard
+Or:
 
 ```bash
-Open the web UI (assuming local server)
+python -m uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+```
+
+### Option 3: Open Frontend
+
+```bash
 start http://localhost:8001
-OR
-Open to local file (limited functionality)
-start Front_end/index.html
 ```
 
 ---
 
 ## API Endpoints
 
-### POST /predict
+### `POST /predict`
 
-Upload trial data and get risk prediction
+Upload trial data and receive anomaly-focused model output.
 
-Request:
-```
-POST /predict
-Content-Type: multipart/form-data
+**Note:** Response fields currently include legacy names (`risk_score`, `risk_probability`) for compatibility.
 
-files:
-  - head_raw.csv
-  - lower_back_raw.csv
-  - left_foot_raw.csv
-  - right_foot_raw.csv
-  - metadata.json
-```
+### `GET /`
 
-Metadata JSON:
-```json
-{
-  "participant_id": "P001",
-  "trial_id": "trial_001",
-  "cohort": "healthy",
-  "sampling_rate": 100,
-  "age": 65,
-  "gender": "M"
-}
-```
+API status.
 
-Response (200 OK):
-```json
-{
-  "success": true,
-  "participant_id": "P001",
-  "trial_id": "trial_001",
-  "risk_score": 35,
-  "risk_level": "low",
-  "risk_probability": 0.35,
-  "confidence": 0.92,
-  "anomaly_status": "Normal",
-  "features": {
-    "stride_variability": 0.08,
-    "lateral_asymmetry": 0.12,
-    "cadence_instability": 0.05,
-    "head_accel_rms": 2.3,
-    "step_time_symmetry": 0.95
-  },
-  "graph_values": {
-    "stride_variability": 42,
-    "lateral_asymmetry": 38,
-    "cadence_instability": 35,
-    "head_accel_rms": 45,
-    "step_time_symmetry": 88
-  },
-  "shap_values": [42, 38, 35, 45, 88],
-  "model_used": "ensemble",
-  "metadata": {
-    "patient_name": "P001",
-    "trial_id": "trial_001",
-    "cohort": "healthy",
-    "confidence": "92%",
-    "anomaly": "Normal"
-  },
-  "anomaly_details": {
-    "available": true,
-    "methods": {
-      "isolation_forest": {"label": "normal", "score": 0.2},
-      "lof": {"label": "normal", "score": 0.3},
-      "one_class_svm": {"label": "normal", "score": 0.1}
-    },
-    "votes": 0
-  }
-}
-```
+### `GET /health`
 
-### GET /
+Health check.
 
-API status
+### `GET /docs`
 
-Response:
-```json
-{
-  "message": "GaitGuard API is running",
-  "models_loaded": ["ensemble", "xgboost", "lightgbm", "random_forest", "svm"],
-  "anomaly_models_loaded": ["isolation_forest", "lof", "one_class_svm"]
-}
-```
-
-### GET /health
-
-Health check
-
-Response:
-```json
-{
-  "status": "healthy",
-  "models_loaded": 5,
-  "anomaly_models_loaded": 3,
-  "api_version": "2.0.0"
-}
-```
-
-### GET /docs
-
-Interactive Swagger documentation
-
-Visit: http://localhost:8001/docs
+Interactive Swagger docs.
 
 ---
 
 ## Test Data
 
-Location: test/P1-P6/
+Location: `test/P1-P6/`
 
-6 complete trial datasets for smoke testing (not publication metrics):
+Each test dataset contains:
+- 4 sensor CSV files (`head_raw.csv`, `lower_back_raw.csv`, `left_foot_raw.csv`, `right_foot_raw.csv`)
+- 1 `metadata.json` file
 
-| Patient | Risk Level | Score | Files |
-|---------|-----------|-------|-------|
-| P1 | Example | N/A | head_raw.csv, lower_back_raw.csv, left_foot_raw.csv, right_foot_raw.csv, metadata.json |
-| P2 | Example | N/A | Files included |
-| P3 | Synthetic example | N/A | Files included (with detected anomalies) |
-| P4 | Synthetic example | N/A | Files included |
-| P5 | Synthetic example | N/A | Files included |
-| P6 | Synthetic example | N/A | Files included |
+Use with:
 
-Each dataset contains:
-- 4 sensor CSV files (time, acc_x/y/z, gyr_x/y/z, mag_x/y/z columns)
-- 1 metadata.json file
-- Complete trial (30-60 seconds of walking)
-
-How to use:
 ```bash
-Test via API
 cd api
 python start_api.py
-
-Then upload via frontend or curl
-curl -X POST http://localhost:8001/predict \
-  -F "files=@test/P1/head_raw.csv" \
-  -F "files=@test/P1/lower_back_raw.csv" \
-  -F "files=@test/P1/left_foot_raw.csv" \
-  -F "files=@test/P1/right_foot_raw.csv" \
-  -F "files=@test/P1/metadata.json"
 ```
 
 ---
 
 ## File Structure
 
-```
-GI/
-README.md                          This file
-datset_link.txt                    Figshare dataset URL
-needed_sensors.txt                 Data specification
-file_structure                     Directory tree reference
+Key directories:
 
-api/
-main.py                        FastAPI application (core backend)
-start_api.py                   Startup script
-requirements.txt               API dependencies
-data/
-  features/                    Feature cache
-  processed/
-    signals_clean/             Preprocessed signals
-
-fall_risk_pipeline/
-main.py                        Pipeline entry point
-requirements.txt               Pipeline dependencies
-
-configs/
-pipeline_config.yaml           System configuration
-
-src/
-ingestion/
-data_loader.py               CSV parsing, metadata validation
-
-preprocessing/
-signal_processor.py          Filtering, gait detection, fusion
-
-features/
-feature_extractor.py         41 feature computation
-
-models/
-trainer.py                   Model training, Optuna tuning
-anomaly_detector.py          Unsupervised outlier detection
-
-evaluation/
-evaluator.py                 Grouped evaluation, metrics
-predictions.py               Generate predictions
-reporter.py                  IEEE tables, SHAP plots
-
-data/
-README.md                    Data format specification
-raw/
-  healthy/                   Raw dataset by cohort
-  neuro/
-  ortho/
-processed/
-  signals/                   Converted parquet
-  signals_clean/             Filtered signals
-  trial_metadata.csv         Trial-level metadata
-features/
-  trial_features.parquet     Per-trial (1K+ rows)
-  patient_features.parquet   Aggregated (260 rows)
-
-results/
-checkpoints/                 Saved models (.pkl)
-  ensemble.pkl
-  xgboost.pkl
-  lightgbm.pkl
-  random_forest.pkl
-  svm.pkl
-
-anomaly_detection/           Anomaly models + scalers
-  isolation_forest_model.pkl
-  lof_model.pkl
-  one_class_svm_model.pkl
-
-figures/
-  eda/                       Distribution plots, correlations
-  models/                    ROC, calibration, confusion matrix
-  shap/                      Feature importance visualizations
-
-metrics/
-  metrics.csv                AUC, F1, accuracy, etc.
-  predictions.csv            Per-sample predictions
-  model_comparison_cv.csv   Cross-validation results
-  ieee_table.tex             Publication table
-  pipeline_report.md         Summary report
-
-Front_end/
-index.html                     Main dashboard HTML
-main.js                        API client, visualization logic
-style.css                      Design system (Apple-inspired)
-
-examples/
-head_raw.csv                   Example sensor data
-lower_back_raw.csv
-left_foot_raw.csv
-right_foot_raw.csv
-metadata.json
-
-test/
-P1/                            Patient 1 (low risk)
-  head_raw.csv
-  lower_back_raw.csv
-  left_foot_raw.csv
-  right_foot_raw.csv
-  metadata.json
-P2/ ... P6/                    5 more test patients
-```
+- `api/` - FastAPI inference service
+- `fall_risk_pipeline/` - training/evaluation pipeline
+- `Front_end/` - frontend dashboard
+- `test/` - sample upload bundles
+- `examples/` - example sensor files
 
 ---
 
@@ -787,90 +377,27 @@ P2/ ... P6/                    5 more test patients
 
 ### Backend
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| API | FastAPI, Uvicorn | High-speed REST service with auto-docs |
-| ML | scikit-learn, XGBoost, LightGBM | Classification models |
-| Hyperparameter Tuning | Optuna | Bayesian optimization |
-| Data Processing | Pandas, NumPy, SciPy | Signal manipulation, feature extraction |
-| Explainability | SHAP | Model interpretability (TreeExplainer) |
-| Anomaly Detection | scikit-learn | IF, LOF, One-Class SVM |
-| Signal Processing | AHRS, scipy.signal | Sensor fusion, filtering, gait events |
-| Visualization | Matplotlib, Seaborn, Plotly | Publication-quality plots |
-| Logging | Loguru, Rich | Structured logging, pretty output |
+- FastAPI, Uvicorn
+- scikit-learn, XGBoost, LightGBM
+- Optuna
+- Pandas, NumPy, SciPy
+- SHAP
 
 ### Frontend
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| Structure | HTML5 | Semantic markup |
-| Styling | CSS3 | Apple Design System (dark theme, glassmorphism) |
-| 3D Visualization | Three.js | Interactive human model, sensor visualization |
-| Signal Plotting | Canvas API, D3.js | Real-time signal visualization |
-| API Client | Fetch API, async/await | Async HTTP communication |
-| Responsive | CSS Grid, Flexbox | Mobile-friendly layout |
-
-### Utilities
-
-| Tool | Purpose |
-|------|---------|
-| pytest | Unit testing |
-| PyYAML | Configuration management |
-| Jinja2 | Report templating |
-| pingouin | Statistical analysis utilities |
-| statsmodels | Calibration metrics |
+- HTML5, CSS3
+- Three.js
+- Canvas API
+- Fetch API
 
 ---
 
-## Model Performance (Historical Internal Results)
+## Usage Boundaries
 
-| Model | Status | Intended Use | Validation State | Notes |
-|-------|--------|--------------|------------------|-------|
-| XGBoost | Internal | Baseline | Rerun Required | Grouped validation updated in code |
-| LightGBM | Internal | Baseline | Rerun Required | Grouped validation updated in code |
-| Random Forest | Internal | Baseline | Rerun Required | Grouped validation updated in code |
-| SVM | Internal | Baseline | Rerun Required | Grouped validation updated in code |
-| Ensemble | Internal | Research | Rerun Required | Do not cite historical metrics |
-
-### Feature Importance (Top 10 by SHAP)
-
-1. Stride Time Asymmetry (L/R) - 15.2%
-2. Head Acceleration RMS - 12.8%
-3. Cadence Instability - 11.3%
-4. Lateral Asymmetry - 10.9%
-5. Lyapunov Exponent (trunk) - 9.8%
-6. Spectral Entropy (lower back) - 8.7%
-7. Swing Time CV - 7.2%
-8. Step Length Asymmetry - 6.8%
-
----
-
-## Security Features
-
-The application includes the following security measures for production deployment:
-
-- CORS configuration with origin validation
-- Environment variable loading via python-dotenv
-- File size limits (50MB per file, 200MB total)
-- Rate limiting (10 requests per minute)
-- File content validation (injection detection, size checks)
-- Request validation (file count limits, metadata validation)
-- Configurable paths via environment variables
-- Health check timeout protection
-- Error message control (debug vs production)
-
----
-
-## Deployment
-
-The application can be deployed to various platforms including:
-
-- Render (recommended for ease of use)
-- Railway
-- AWS (Elastic Beanstalk, Lightsail)
-- DigitalOcean App Platform
-
-See deployment guides for specific platform instructions.
+- GaitGuard is for research and informational purposes only.
+- Outputs are not medical advice, diagnosis, or treatment guidance.
+- The system does not establish clinical validity or provide clinical decision support.
+- The long-term objective is to contribute evidence and tools for fall-prevention research.
 
 ---
 
@@ -882,6 +409,6 @@ This project is intended for research and educational purposes.
 
 ## Citation
 
-If you use this system in your research, please cite the original dataset:
+If you use this system in your research, cite the original dataset:
 
 SpringerNature Figshare DOI: 10.6084/m9.figshare.28806086
