@@ -25,10 +25,11 @@ A machine learning system for detecting anomalous gait patterns from multi-senso
 ## Project Overview
 
 GaitGuard is a research-oriented anomalous gait detection system intended for experimentation, internal review, and reproducible ML workflows.
+We attempt to do anomaly detection based on open gait data. For now, that is it.
 
 ### Purpose
 
-- Detect anomalous gait patterns relative to a training cohort of expected gaits
+- Detect anomalous gaits based on a training cohort of expected gaits
 - Highlight gait irregularities and biomechanical pattern shifts
 - Provide explainability via SHAP-style feature contribution analysis
 - Support model development and anomaly benchmarking on open gait datasets
@@ -157,7 +158,7 @@ Extract 5 key biomechanics:
 
 ### Pipeline (`fall_risk_pipeline/`)
 
-Professional 10-stage ML pipeline:
+10-stage ML pipeline:
 
 | Stage | Module | Purpose |
 |-------|--------|---------|
@@ -188,7 +189,7 @@ Key functions:
 - `scale_display_shap()` - Z-score normalization for feature contributions
 
 Endpoints:
-- `POST /predict` - Upload trial data to get anomaly-focused model output
+- `POST /predict` - Upload trial data to get anomaly-focused model output for informational use
 - `GET /` - API status
 - `GET /health` - Health check
 - `GET /docs` - Interactive Swagger UI
@@ -397,8 +398,8 @@ Key directories:
 
 - GaitGuard is for research and informational purposes only.
 - Outputs are not medical advice, diagnosis, or treatment guidance.
-- The system does not establish clinical validity or provide clinical decision support.
-- The long-term objective is to contribute evidence and tools for fall-prevention research.
+- The system does not provide clinically validated diagnostics and should not be used for clinical decision-making.
+- The long-term objective is to contribute evidence and tools to fall-prevention research.
 
 ---
 
