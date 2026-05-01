@@ -31,17 +31,17 @@
     <li><a href="#results">Results</a></li>
     <li><a href="#cohorts">Cohorts</a></li>
   </ul>
-  <a href="#upload" class="nav-btn">Get Started</a>
+  <a href="#upload" class="nav-btn">Try it for fun!</a>
 </nav>
 
 <!-- HERO -->
 <section id="hero">
   <canvas id="hero-particles"></canvas>
-  <p class="hero-eyebrow">Research Use Only: Not yet clinically validated for medical diagnosis</p>
-  <h1 class="hero-title">Gait Analysis.<br><em>Precision Redefined.</em></h1>
-  <p class="hero-sub">Advanced ensemble machine learning trained on multi-sensor IMU recordings. Designed to surface clinically relevant gait patterns for expert review and validation.</p>
+  <p class="hero-eyebrow">Research use only: anomaly detection on open gait data. Not medical advice or diagnosis.</p>
+  <h1 class="hero-title">Gait Analysis.<br><em>Anomaly Detection.</em></h1>
+  <p class="hero-sub">Advanced ensemble machine learning designed to detect anomalous gaits based on a training cohort of expected gaits.</p>
   <div class="hero-cta-group">
-    <a href="#upload" class="cta-primary">Analyze Patient Data</a>
+    <a href="#upload" class="cta-primary">Try it for fun!</a>
     <a href="#pipeline" class="cta-secondary">See How It Works</a>
   </div>
   <div class="hero-canvas-container">
@@ -49,8 +49,8 @@
     <div class="hero-canvas-caption"></div>
     <div class="sensor-label sl-head"><div class="sensor-dot"></div>Head IMU</div>
     <div class="sensor-label sl-back"><div class="sensor-dot"></div>Lower Back</div>
-    <div class="sensor-label sl-lfoot"><div class="sensor-dot"></div>L. Foot</div>
-    <div class="sensor-label sl-rfoot"><div class="sensor-dot"></div>R. Foot</div>
+    <div class="sensor-label sl-lfoot"><div class="sensor-dot"></div>LEFT FOOT</div>
+    <div class="sensor-label sl-rfoot"><div class="sensor-dot"></div>RIGHT FOOT</div>
   </div>
 </section>
 
@@ -70,7 +70,7 @@
   </div>
     <div class="metric-cell">
       <div class="metric-num" data-count="8" data-dec="0">-</div>
-      <div class="metric-label">Clinical cohorts represented</div>
+      <div class="metric-label">Open-data cohorts represented</div>
     </div>
 </div>
 
@@ -78,8 +78,8 @@
 <div class="pipeline-wrap" id="pipeline">
   <div class="pipeline-inner">
     <div class="label-tag">Process</div>
-    <h2 class="section-title">From raw sensor data<br>to clinical insight.</h2>
-    <p class="section-body">A fully automated five-stage pipeline transforms multi-sensor IMU recordings into structured gait intelligence within seconds.</p>
+    <h2 class="section-title">From raw sensor data<br>to ML insight.</h2>
+    <p class="section-body">A fully automated five-stage pipeline transforms multi-sensor <a href="https://doi.org/10.6084/m9.figshare.28806086" target="_blank" rel="noopener noreferrer">IMU recordings</a> into structured anomaly insights within seconds.</p>
     <div class="pipeline-grid reveal">
       <div class="pipe-cell">
         <div class="pipe-num">01</div>
@@ -174,6 +174,7 @@
             <div class="axis-label" style="color:#0a84ff">Y - Pitch</div>
             <div class="axis-label" style="color:#bf5af2">Z - Yaw</div>
           </div>
+          <div class="signal-note">*not real data</div>
         </div>
       </div>
     </div>
@@ -313,7 +314,7 @@
   <div class="cohorts-inner">
     <div class="label-tag">Validation</div>
     <h2 class="section-title">Evaluated across multiple<br>patient populations.</h2>
-    <p class="section-body">Built from a mixed clinical dataset spanning multiple cohorts. Real-world deployment still requires site-specific validation and governance.</p>
+    <p class="section-body">Trained on an open dataset spanning multiple cohorts.</p>
     <div class="cohort-grid reveal">
       <div class="cohort-cell">
         <div class="cohort-icon">Elderly</div>
@@ -340,9 +341,9 @@
 <!-- UPLOAD -->
 <div id="upload">
   <div class="section upload-section">
-    <div class="label-tag">Custom Analysis</div>
+    <div class="label-tag">Try it for fun!</div>
     <h2 class="section-title">For custom analysis</h2>
-    <p class="section-body" style="margin: 0 auto; text-align: center;">Upload multi-sensor IMU recordings to identify gait anomalies and generate a structured, model-driven report.</p>
+    <p class="section-body" style="margin: 0 auto; text-align: center;">Upload multi-sensor IMU recordings similar to the original dataset to identify gait anomalies. We'll then generate a structured, model-driven report for informational purposes only.</p>
     <div class="dropzone" id="dropzone">
       <div class="dz-icon">Files</div>
       <div class="dz-title">Drop trial files or ZIP archive here</div>
@@ -381,7 +382,7 @@
 <!-- FOOTER -->
 <footer>
   <div class="footer-brand">Kevin Mevada</div>
-  <div class="footer-copy">© 2025 GaitGuard. Clinical Fall Risk Intelligence Platform.</div>
+  <div class="footer-copy">© 2025 GaitGuard. Anomalous Gait Detection Intelligence Platform.</div>
   <div class="footer-links">
     <a href="https://www.linkedin.com/in/kevinmevada/" target="_blank" title="LinkedIn">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
