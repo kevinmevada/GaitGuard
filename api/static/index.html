@@ -38,7 +38,7 @@
 <!-- HERO -->
 <section id="hero">
   <canvas id="hero-particles"></canvas>
-  <p class="hero-eyebrow">Research use only: anomaly detection on open gait data. Not medical advice or diagnosis.</p>
+  <p class="hero-eyebrow">Research prototype — not for clinical use without validation. Not medical advice or diagnosis.</p>
   <h1 class="hero-title">Gait Analysis.<br><em>Anomaly Detection.</em></h1>
   <p class="hero-sub">Advanced ensemble machine learning designed to detect anomalous gaits based on a training cohort of expected gaits.</p>
   <div class="hero-cta-group">
@@ -98,7 +98,7 @@
         <div class="pipe-num">03</div>
         <div class="pipe-icon-wrap">Lab</div>
         <div class="pipe-name">Feature Extraction</div>
-        <div class="pipe-desc">41 biomechanical features per trial — including cadence, stride length, asymmetry index, and harmonic ratio.</div>
+        <div class="pipe-desc">Trial-level gait features — cadence, stride timing, asymmetry, spectral and trunk dynamics (no uncalibrated step length or gait speed).</div>
               </div>
       <div class="pipe-cell">
         <div class="pipe-num">04</div>
@@ -237,26 +237,26 @@
   <div class="section">
     <div class="label-tag">Output</div>
     <h2 class="section-title">Structured reports.<br>Every trial.</h2>
-    <p class="section-body">Each patient trial produces a structured risk report with probability score, anomaly status, and SHAP-attributed risk factor breakdown.</p>
+    <p class="section-body">Each patient trial produces a structured risk report with probability score, anomaly status, and display gauges for internal review (not SHAP).</p>
     <div class="results-layout reveal">
       <div class="trial-list" id="trial-list">
-        <div class="trial-row active" data-score="78" data-risk="high" data-name="Patient P-0041" data-id="Trial 001 · Elderly Cohort" data-anomaly="Detected" data-graph='{"confidence":87,"anomaly":100,"cohort":70,"trials":20}' data-meta='{"Confidence":"87%","Anomaly":"Detected","Cohort":"Elderly","Trials":"1"}'>
+        <div class="trial-row active" data-score="78" data-risk="high" data-name="Patient P-0041" data-id="Trial 001 · Elderly Cohort" data-anomaly="Detected" data-graph='{"confidence":87,"anomaly":100,"risk_score":78,"trials":20}' data-meta='{"Confidence":"87%","Anomaly":"Detected","Cohort":"Elderly","Trials":"1"}'>
           <div><div class="trial-name">Patient P-0041</div><div class="trial-id">Trial 001 · Elderly</div></div>
           <div class="risk-pill r-high">High</div>
         </div>
-        <div class="trial-row" data-score="42" data-risk="mod" data-name="Patient P-0087" data-id="Trial 002 · Post-Surgical" data-anomaly="Normal" data-graph='{"confidence":91,"anomaly":20,"cohort":60,"trials":20}' data-meta='{"Confidence":"91%","Anomaly":"Normal","Cohort":"Post-Surg","Trials":"1"}'>
+        <div class="trial-row" data-score="42" data-risk="mod" data-name="Patient P-0087" data-id="Trial 002 · Post-Surgical" data-anomaly="Normal" data-graph='{"confidence":91,"anomaly":0,"risk_score":42,"trials":20}' data-meta='{"Confidence":"91%","Anomaly":"Normal","Cohort":"Post-Surg","Trials":"1"}'>
           <div><div class="trial-name">Patient P-0087</div><div class="trial-id">Trial 002 · Post-Surgical</div></div>
           <div class="risk-pill r-mod">Moderate</div>
         </div>
-        <div class="trial-row" data-score="18" data-risk="low" data-name="Patient P-0023" data-id="Trial 003 · Healthy Control" data-anomaly="Normal" data-graph='{"confidence":96,"anomaly":20,"cohort":20,"trials":20}' data-meta='{"Confidence":"96%","Anomaly":"Normal","Cohort":"Control","Trials":"1"}'>
+        <div class="trial-row" data-score="18" data-risk="low" data-name="Patient P-0023" data-id="Trial 003 · Healthy Control" data-anomaly="Normal" data-graph='{"confidence":96,"anomaly":0,"risk_score":18,"trials":20}' data-meta='{"Confidence":"96%","Anomaly":"Normal","Cohort":"Control","Trials":"1"}'>
           <div><div class="trial-name">Patient P-0023</div><div class="trial-id">Trial 003 · Control</div></div>
           <div class="risk-pill r-low">Low</div>
         </div>
-        <div class="trial-row" data-score="61" data-risk="mod" data-name="Patient P-0055" data-id="Trial 004 · Neurological" data-anomaly="Detected" data-graph='{"confidence":83,"anomaly":100,"cohort":85,"trials":20}' data-meta='{"Confidence":"83%","Anomaly":"Detected","Cohort":"Neuro","Trials":"1"}'>
+        <div class="trial-row" data-score="61" data-risk="mod" data-name="Patient P-0055" data-id="Trial 004 · Neurological" data-anomaly="Detected" data-graph='{"confidence":83,"anomaly":100,"risk_score":61,"trials":20}' data-meta='{"Confidence":"83%","Anomaly":"Detected","Cohort":"Neuro","Trials":"1"}'>
           <div><div class="trial-name">Patient P-0055</div><div class="trial-id">Trial 004 · Neurological</div></div>
           <div class="risk-pill r-mod">Moderate</div>
         </div>
-        <div class="trial-row" data-score="89" data-risk="high" data-name="Patient P-0012" data-id="Trial 005 · Elderly Cohort" data-anomaly="Detected" data-graph='{"confidence":92,"anomaly":100,"cohort":70,"trials":20}' data-meta='{"Confidence":"92%","Anomaly":"Detected","Cohort":"Elderly","Trials":"1"}'>
+        <div class="trial-row" data-score="89" data-risk="high" data-name="Patient P-0012" data-id="Trial 005 · Elderly Cohort" data-anomaly="Detected" data-graph='{"confidence":92,"anomaly":100,"risk_score":89,"trials":20}' data-meta='{"Confidence":"92%","Anomaly":"Detected","Cohort":"Elderly","Trials":"1"}'>
           <div><div class="trial-name">Patient P-0012</div><div class="trial-id">Trial 005 · Elderly</div></div>
           <div class="risk-pill r-high">High</div>
         </div>
@@ -275,22 +275,22 @@
         </div>
         <div class="rc-body">
           <div class="shap-section">
-            <div class="shap-title">Metadata Graph</div>
+            <div class="shap-title">Display gauges <span style="font-weight:400;opacity:.7">(UI only, not SHAP)</span></div>
             <div id="shap-bars">
               <div class="shap-bar">
-                <div class="shap-row"><span class="shap-name">Confidence</span><span class="shap-val">87%</span></div>
+                <div class="shap-row"><span class="shap-name">Model confidence</span><span class="shap-val">87%</span></div>
                 <div class="shap-track"><div class="shap-fill fill-success" style="width:87%"></div></div>
               </div>
               <div class="shap-bar">
-                <div class="shap-row"><span class="shap-name">Anomaly</span><span class="shap-val">20%</span></div>
-                <div class="shap-track"><div class="shap-fill fill-blue" style="width:20%"></div></div>
+                <div class="shap-row"><span class="shap-name">Anomaly vote</span><span class="shap-val">100%</span></div>
+                <div class="shap-track"><div class="shap-fill fill-danger" style="width:100%"></div></div>
               </div>
               <div class="shap-bar">
-                <div class="shap-row"><span class="shap-name">Cohort</span><span class="shap-val">70%</span></div>
-                <div class="shap-track"><div class="shap-fill fill-warn" style="width:70%"></div></div>
+                <div class="shap-row"><span class="shap-name">Risk score</span><span class="shap-val">78%</span></div>
+                <div class="shap-track"><div class="shap-fill fill-warn" style="width:78%"></div></div>
               </div>
               <div class="shap-bar">
-                <div class="shap-row"><span class="shap-name">Trials</span><span class="shap-val">20%</span></div>
+                <div class="shap-row"><span class="shap-name">Trial coverage</span><span class="shap-val">20%</span></div>
                 <div class="shap-track"><div class="shap-fill fill-blue" style="width:20%"></div></div>
               </div>
             </div>

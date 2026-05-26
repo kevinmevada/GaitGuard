@@ -34,6 +34,9 @@ from sklearn.neighbors import LocalOutlierFactor
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import OneClassSVM
 
+from src.models.anomaly_feature_schema import save_trial_feature_schema
+from src.utils.reproducibility import get_pipeline_seed
+
 console = Console()
 
 
@@ -53,6 +56,7 @@ class GaitAnomalyDetector:
 
     def __init__(self, config: dict):
         self.config = config
+        self.random_state = get_pipeline_seed(config)
         self.feat_dir = Path(config["paths"]["features"])
         self.results_dir = Path(config["paths"]["results"]) / "anomaly_detection"
         self.results_dir.mkdir(parents=True, exist_ok=True)
@@ -60,6 +64,8 @@ class GaitAnomalyDetector:
         self.models: Dict[str, Any] = {}
         self.scalers: Dict[str, StandardScaler] = {}
         self.anomaly_scores: Dict[str, np.ndarray] = {}
+        self.trial_feature_columns: List[str] = []
+        self._healthy_mask_size: int = 0
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -68,7 +74,8 @@ class GaitAnomalyDetector:
     def run(self) -> Dict[str, Any]:
         logger.info("Starting anomaly detection analysis...")
 
-        X, metadata = self._load_data()
+        X, metadata, feature_cols = self._load_data()
+        self.trial_feature_columns = feature_cols
 
         # FIX: fit scalers only on the "Healthy" (normal) cohort rows so that
         # test-sample statistics do not influence the scaling step.
@@ -79,6 +86,7 @@ class GaitAnomalyDetector:
                 "Results may be optimistic."
             )
             healthy_mask = np.ones(len(X), dtype=bool)
+        self._healthy_mask_size = int(healthy_mask.sum())
 
         results: Dict[str, Any] = {}
 
@@ -130,12 +138,12 @@ class GaitAnomalyDetector:
     # Data loading
     # ------------------------------------------------------------------
 
-    def _load_data(self) -> Tuple[np.ndarray, pd.DataFrame]:
+    def _load_data(self) -> Tuple[np.ndarray, pd.DataFrame, List[str]]:
         df = pd.read_parquet(self.feat_dir / "trial_features.parquet")
 
         meta_cols = [
             "trial_id", "participant_id", "cohort", "risk_label",
-            "fall_probability", "laterality_biased",
+            "multiclass_label", "fall_probability", "laterality_biased",
         ]
 
         feature_cols = [col for col in df.columns if col not in meta_cols]
@@ -144,10 +152,10 @@ class GaitAnomalyDetector:
         X = df[feature_cols].replace([np.inf, -np.inf], np.nan)
         X = X.fillna(X.median(numeric_only=True))
         X = X.values
-        metadata = df[meta_cols].copy()
+        metadata = df[[c for c in meta_cols if c in df.columns]].copy()
 
         logger.info(f"Loaded {X.shape[0]} trials with {X.shape[1]} features")
-        return X, metadata
+        return X, metadata, feature_cols
 
     # ------------------------------------------------------------------
     # Detection methods
@@ -163,7 +171,7 @@ class GaitAnomalyDetector:
 
         iso_forest = IsolationForest(
             contamination=0.1,
-            random_state=42,
+            random_state=self.random_state,
             n_estimators=100,
         )
         iso_forest.fit(X_scaled[healthy_mask])          # train on normals only
@@ -427,6 +435,17 @@ class GaitAnomalyDetector:
         for method_name, scaler in self.scalers.items():
             with open(self.results_dir / f"{method_name}_scaler.pkl", "wb") as f:
                 pickle.dump(scaler, f)
+
+        if self.trial_feature_columns:
+            schema_path = save_trial_feature_schema(
+                self.results_dir,
+                self.trial_feature_columns,
+                healthy_n_samples=self._healthy_mask_size,
+            )
+            logger.info(
+                f"Anomaly trial feature schema saved ({len(self.trial_feature_columns)} columns) "
+                f"→ {schema_path}"
+            )
 
         logger.info("Results saved to anomaly detection directory")
 

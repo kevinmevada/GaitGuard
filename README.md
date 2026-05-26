@@ -39,7 +39,7 @@ We attempt to do anomaly detection based on open gait data. For now, that is it.
 
 - Status: research prototype with internal evaluation artifacts in this repository
 - Dataset: 1,356 trials from 260 participants (8 open-data cohorts)
-- Features: 41 temporal, spatial, spectral, and asymmetry indicators
+- Features: trial-level temporal, spectral (incl. centroid), trunk, orientation, and asymmetry indicators (no uncalibrated step length / gait speed)
 - Models: 4-model ensemble (XGBoost, LightGBM, Random Forest, SVM)
 - Anomaly Detection: 3 unsupervised methods (Isolation Forest, LOF, One-Class SVM)
 
@@ -51,6 +51,10 @@ We attempt to do anomaly detection based on open gait data. For now, that is it.
 - Parkinson's Disease, CVA/Stroke
 
 Data Source: SpringerNature Figshare DOI: 10.6084/m9.figshare.28806086
+
+### Ethics
+
+This study used a publicly available, de-identified dataset (DOI: [10.6084/m9.figshare.28806086](https://doi.org/10.6084/m9.figshare.28806086)). The original data collection was approved by the **Comité de Protection des Personnes Île-de-France II** (CPP 2014-10-04 RNI), with written informed consent obtained by the original investigators (Voisard et al., *Scientific Data* 2025, [10.1038/s41597-025-05959-w](https://doi.org/10.1038/s41597-025-05959-w)). **No new human data were collected.** See [`docs/ethics.md`](docs/ethics.md) and [`docs/paper/ethics_statement.md`](docs/paper/ethics_statement.md).
 
 ---
 
@@ -71,7 +75,7 @@ FastAPI Backend (api/main.py)
 - File validation and parsing
 - Data normalization
 - Preprocessing pipeline
-- Feature extraction (41 features)
+- Feature extraction (trial-level IMU features)
 - Model ensemble inference
 - Anomaly detection (3 methods)
 - JSON response generation
@@ -103,7 +107,7 @@ data/raw -> data/processed/signals/
 data/processed/signals_clean/
 [EDA] Exploratory analysis, visualize distributions
 figures/eda/
-[FEATURES] Extract 41 features per trial, aggregate to patient level
+[FEATURES] Extract trial-level features per walk, aggregate to patient level
 data/features/trial_features.parquet + patient_features.parquet
 [TRAIN] Optuna hyperparameter tuning, train 4 models
 results/checkpoints/*.pkl
@@ -129,10 +133,13 @@ Parse JSON metadata
 
 [NORMALIZE] Convert column names, handle timestamps, interpolate
 [PREPROCESS] Butterworth filter, gravity removal, gait event detection
-[EXTRACT FEATURES] Compute 41 features from processed signals
+[EXTRACT FEATURES] Compute trial-level features from processed signals
 [BUILD FEATURE VECTORS]
-Patient-level: mean/std aggregation
-Trial-level: median imputation for missing values
+Patient-level schema for risk model: **single trial** mapped to
+`_mean` (trial value), `_std=0`, `_range=0`, `_trend=NaN` — not
+multi-trial patient aggregation (training used ~5 trials/participant).
+Trial-level vector: median imputation for anomaly models.
+See `docs/inference_single_trial_limitation.md`.
 
 [MODEL INFERENCE]
 Load ensemble (4 models from checkpoints/)
@@ -165,8 +172,9 @@ Extract 5 key biomechanics:
 | Ingestion | `src/ingestion/data_loader.py` | Parse raw CSV files, validate metadata, create trial records |
 | Preprocessing | `src/preprocessing/signal_processor.py` | Butterworth filtering, gravity removal, gait event detection, sensor fusion |
 | EDA | Notebooks, visualizations | Exploratory analysis, signal distributions, outlier identification |
-| Features | `src/features/feature_extractor.py` | Extract 41 temporal/spatial/spectral/asymmetry features |
-| Training | `src/models/trainer.py` | Optuna hyperparameter tuning, train 4 models |
+| Features | `src/features/feature_extractor.py` | Extract temporal/spectral/trunk/orientation/asymmetry trial features |
+| Feature selection | `src/features/feature_selector.py` | RFECV / SHAP pruning to ≤20 features; before/after grouped CV report |
+| Training | `src/models/trainer.py` | Optuna hyperparameter tuning, train 4 models on selected features |
 | Evaluation | `src/evaluation/evaluator.py`, `reporter.py` | Internal validation, SHAP analysis, metrics calculation |
 | Prediction | `src/evaluation/predictions.py` | Generate predictions for new data |
 | Anomaly | `src/models/anomaly_detector.py` | Unsupervised outlier detection (3 methods) |
@@ -182,8 +190,9 @@ Key functions:
 - `parse_uploaded_files()` - Handle ZIP or individual file uploads
 - `normalize_sensor_dataframe()` - Column mapping, timestamp handling, imputation
 - `preprocess_sensor_data()` - Apply signal processing pipeline
-- `extract_trial_features()` - Compute 41 features from processed signals
-- `predict_risk()` - Ensemble inference with soft voting (legacy naming)
+- `extract_trial_features()` - Compute features from one processed trial
+- `build_patient_feature_vector()` - Degenerate patient-schema projection (1 trial)
+- `predict_risk()` - Ensemble inference on patient-schema vector
 - `predict_anomaly()` - 3-method majority voting for outlier detection
 - `derive_display_features()` - Extract 5 key biomechanics for UI
 - `scale_display_shap()` - Z-score normalization for feature contributions
@@ -226,7 +235,8 @@ Butterworth Bandpass Filter
 - Purpose: Remove noise, preserve gait-relevant frequencies
 
 Gait Event Detection
-- Method: Peak detection on vertical foot acceleration
+- Method: Peak detection on inverted foot `acc_z` (75th-percentile height, 0.3 s spacing)
+- Validation: `python main.py --stage validate_gait_events` compares detected heel strikes to Figshare `gait_events.csv` or `leftGaitEvents` / `rightGaitEvents` in `*_meta.json` (±50 ms); reports precision/recall in `results/metrics/gait_event_validation_summary.csv`
 - Purpose: Identify heel strikes, compute stride/step metrics
 
 Gravity Removal
@@ -235,18 +245,75 @@ Gravity Removal
 - Purpose: Isolate dynamic acceleration
 
 Sensor Fusion (Madgwick Algorithm)
-- Input: Accelerometer, gyroscope, magnetometer
-- Output: Quaternion-based orientation
-- Purpose: Fuse 9-axis IMU data into unified posture estimate
+- Applied to: Head and lower-back IMUs (`ahrs.filters.Madgwick`)
+- Input: Accelerometer + gyroscope (optional magnetometer if enabled in config)
+- Output: Quaternion time series → trunk tilt, pitch/roll variability, postural sway velocity features (`lb_*`, `head_*`)
+- Purpose: Postural stability features for fall-risk modelling (same path in API inference)
 
-### Feature Engineering (41 Features)
+### Feature Engineering (trial-level IMU features)
 
-1. Temporal/Gait Cycle
-2. Spatial
-3. Spectral
-4. Trunk Dynamics
-5. Asymmetry/Bilateral
-6. Head/Postural
+Trial-level blocks (see `fall_risk_pipeline/src/features/feature_extractor.py`):
+
+1. **Temporal / gait cycle** — stride time, cadence, stance ratio, step count (per foot + aggregates)
+2. **Spectral (lower back)** — Welch PSD on gravity-reduced `acc_z`: `lb_dominant_freq`, **`lb_spectral_centroid`** (\(\sum fP/\sum P\)), `lb_spectral_entropy`, band power (`lb_power_0_1hz`, `lb_power_1_3hz`, `lb_power_3_10hz`), `lb_harmonic_ratio` (see `fall_risk_pipeline/docs/spectral_features.md`)
+3. **Trunk dynamics** — RMS, jerk, Lyapunov, approximate entropy
+4. **Orientation (Madgwick)** — tilt, pitch/roll variability, postural sway velocity
+5. **Asymmetry** — stride-time and RMS asymmetry indices
+
+**Not extracted:** absolute step length, gait speed, or step width (uncalibrated IMU; see `fall_risk_pipeline/docs/spatial_features.md`).
+
+Patient-level matrices aggregate each trial feature with **mean, std, range, and trend** across ordered within-session trials. Re-run `features` after spectral or aggregation changes. With **P/N ≈ 3.25** on the full matrix, use `select_features` (≤20) before final models.
+
+### Class labels and imbalance
+
+| Multiclass (`COHORT_LABEL_MAP`) | Cohorts | Binary `risk_label` (threshold ≥ 1) |
+|---|---|---|
+| 0 | Healthy | 0 (low risk) |
+| 1 | HipOA, KneeOA, ACL | 1 (high risk) |
+| 2 | PD, CVA, CIPN, RIL | 1 (high risk) |
+
+Healthy is ~5.2% reference fall probability but can represent a large share of participants; **class counts are reported explicitly** in `results/metrics/class_distribution_report.md` and `class_distribution_by_cohort.csv` before training.
+
+**Class weights:** Random Forest, LightGBM, and SVM use `class_weight='balanced'`. XGBoost uses `scale_pos_weight = n_negative / n_positive` computed on each training split (not tuned via Optuna).
+
+### Feature Selection (≤20 features before final models)
+
+Pipeline stage: `select_features` (after `features`, before `train`).
+
+| Method | Role |
+|--------|------|
+| **RFECV** | Primary export — recursive feature elimination with subject-grouped CV (Guyon & Elisseeff, 2002) |
+| **SHAP pruning** | Secondary ranking — mean \|SHAP\| from a surrogate Random Forest, top-20 features |
+| **Before/after report** | Grouped CV AUC on all features vs selected set (`feature_selection_comparison.csv`) |
+
+Artifacts:
+
+- `data/features/selected_features.json`
+- `results/metrics/feature_selection_report.md`
+- `results/metrics/feature_selection_comparison.csv`
+
+**References**
+
+- Tibshirani, R. (1996). Regression shrinkage and selection via the lasso. *J. R. Stat. Soc. B*, 58(1), 267–288.
+- Guyon, I., & Elisseeff, A. (2002). An introduction to variable and feature selection. *J. Mach. Learn. Res.*, 3, 1157–1182.
+
+### Statistical comparison (Table 1)
+
+After subject-grouped evaluation, paired tests use the **same LOSO out-of-fold predictions** for every model:
+
+| Test | Target | Implementation |
+|------|--------|----------------|
+| **DeLong** | ROC AUC | Sun & Xu (2014); `auc_pairwise_pvalues.csv` |
+| **Bootstrap MWU / Wilcoxon** | AUC (sensitivity) | 1,000 paired bootstrap replicates (`pingouin`) |
+| **McNemar** | Accuracy / discrete class labels | `statsmodels.stats.contingency_tables.mcnemar` on aggregated per-fold discordant pairs; `mcnemar_pairwise_pvalues.csv` |
+
+`metrics.csv` and `ieee_table.tex` (Table 1) include `p_delong_vs_best` and `p_mcnemar_vs_best` vs the reference model (highest AUC by default).
+
+### Classification threshold (Youden J)
+
+Discrete metrics (accuracy, F1, sensitivity) use **Youden J thresholds fit on each LOSO training fold** and applied to the held-out test fold — not tuned on the same OOF predictions (which would be optimistic).
+
+`metrics_threshold_comparison.csv` also reports **fixed 0.5** and **pooled eval-Youden** (optimistic baseline) with Δ accuracy/F1 vs the train-fold strategy.
 
 ### Ensemble & Anomaly Methods
 
@@ -254,11 +321,11 @@ Sensor Fusion (Madgwick Algorithm)
 - Unsupervised anomaly methods: Isolation Forest, LOF, One-Class SVM
 - Voting: majority (2/3 methods flag anomaly) -> `Detected`
 
-### Explainability (SHAP-style)
+### Explainability (SHAP)
 
-- Global: average feature contribution ranking
-- Local: per-trial feature contributions
-- Display normalization via z-score mapping to 0-100 contribution scale
+- **LOSO aggregate** (default): SHAP on every held-out fold (checkpoint refit per fold), concatenated OOF explanations → global mean |SHAP| and summary plot
+- **full_checkpoint** (optional): `TreeExplainer` on full-data model with training-set background sample
+- Artifacts: `results/figures/shap/`, `results/metrics/shap_importance_<model>.csv`
 
 ---
 
@@ -291,6 +358,15 @@ Download Dataset:
 1. Visit https://springernature.figshare.com/articles/dataset/.../28806086
 2. Download ZIP
 3. Extract into `fall_risk_pipeline/data/raw/`
+
+---
+
+## Model checkpoints (not in git)
+
+Classification `.pkl` files and anomaly models under `fall_risk_pipeline/results/` are **generated artifacts** (ignored via `*.pkl`). Clonees must either:
+
+1. **Train:** `cd fall_risk_pipeline && python main.py --stage train` and `--stage anomaly`
+2. **Download:** set `GAITGUARD_HF_REPO=your-org/gaitguard-models` and run `python scripts/download_models.py` (see [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md))
 
 ---
 
@@ -328,9 +404,15 @@ start http://localhost:8001
 
 ### `POST /predict`
 
-Upload trial data and receive anomaly-focused model output.
+Upload **one trial** of IMU data. Risk models expect patient-level feature names but receive a **degenerate single-trial projection** (see `docs/inference_single_trial_limitation.md`).
 
-**Note:** Response fields currently include legacy names (`risk_score`, `risk_probability`) for compatibility.
+Response includes:
+- `risk_score`, `risk_level` — model-derived screening scores
+- `inference_scope` — documents single-trial vs patient-level training (260 participants, 1356 trials)
+- `limitations` — confidence is max class probability, not calibrated clinical certainty
+- `metadata.inference_note` — short duplicate of the scope note for UIs
+
+**Note:** Legacy field names (`risk_probability`) remain for compatibility.
 
 ### `GET /`
 
@@ -396,10 +478,13 @@ Key directories:
 
 ## Usage Boundaries
 
+**Research prototype — not for clinical use without validation.**
+
 - GaitGuard is for research and informational purposes only.
 - Outputs are not medical advice, diagnosis, or treatment guidance.
-- The system does not provide clinically validated diagnostics and should not be used for clinical decision-making.
-- The long-term objective is to contribute evidence and tools to fall-prevention research.
+- Screening notes (e.g. “may warrant further clinical assessment”) are non-directive and must not replace clinician judgment.
+- The system does not provide clinically validated diagnostics and must not be used for clinical decision-making without independent prospective validation.
+- **Retrospective** analysis on a **single** public dataset; **no prospective follow-up** or **participant-level fall outcomes** (cohort-level labels only). See [`docs/limitations.md`](docs/limitations.md) and [`docs/paper/limitations.md`](docs/paper/limitations.md).
 
 ---
 
@@ -413,5 +498,5 @@ This project is intended for research and educational purposes.
 
 If you use this system in your research, cite the original dataset:
 
-SpringerNature Figshare DOI: 10.6084/m9.figshare.28806086
-```
+> Voisard C, et al. A dataset of clinical gait signals with wearable sensors from healthy, neurological, and orthopedic cohorts. *Scientific Data*. 2025. https://doi.org/10.1038/s41597-025-05959-w  
+> Dataset: https://doi.org/10.6084/m9.figshare.28806086

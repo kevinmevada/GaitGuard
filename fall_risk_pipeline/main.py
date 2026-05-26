@@ -10,6 +10,8 @@ from pathlib import Path
 
 import yaml
 from loguru import logger
+
+from src.utils.reproducibility import get_pipeline_seed, set_global_seed
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
@@ -17,7 +19,20 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 console = Console()
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(os.cpu_count() or 1))
 
-STAGES = ["ingest", "preprocess", "eda", "features", "train", "evaluate", "predict", "anomaly", "report"]
+STAGES = [
+    "ingest",
+    "validate_gait_events",
+    "preprocess",
+    "eda",
+    "features",
+    "select_features",
+    "train",
+    "evaluate",
+    "ablation",
+    "predict",
+    "anomaly",
+    "report",
+]
 
 
 def load_config(path: str) -> dict:
@@ -43,13 +58,16 @@ def setup_logging(config: dict):
     logger.add(log_dir / "pipeline.log", level="DEBUG", rotation="5 MB")
 
 
-def run_stage(stage: str, config: dict):
+def run_stage(stage: str, config: dict, *, fast_eval: bool = False):
     t0 = time.time()
 
     try:
         if stage == "ingest":
             from src.ingestion.data_loader import DataLoader
             DataLoader(config).run()
+        elif stage == "validate_gait_events":
+            from src.preprocessing.gait_event_validation import GaitEventValidator
+            GaitEventValidator(config).run()
         elif stage == "preprocess":
             from src.preprocessing.signal_processor import SignalProcessor
             SignalProcessor(config).run()
@@ -59,13 +77,19 @@ def run_stage(stage: str, config: dict):
         elif stage == "features":
             from src.features.feature_extractor import FeatureExtractor
             FeatureExtractor(config).run()
+        elif stage == "select_features":
+            from src.features.feature_selector import FeatureSelector
+            FeatureSelector(config).run()
         elif stage == "train":
             from src.models.trainer import ModelTrainer
             ModelTrainer(config).run()
         elif stage == "evaluate":
             from src.evaluation.evaluator import Evaluator
-            # Default to submission-grade evaluation unless explicitly changed in code.
-            Evaluator(config, fast=False).run()
+
+            Evaluator(config, fast=fast_eval).run()
+        elif stage == "ablation":
+            from src.evaluation.feature_ablation import run_feature_ablation
+            run_feature_ablation(config)
         elif stage == "predict":
             from src.evaluation.predictions import PredictionGenerator
             PredictionGenerator(config).run()
@@ -91,10 +115,39 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/pipeline_config.yaml")
     parser.add_argument("--stage", default="all")
+    parser.add_argument(
+        "--fast-eval",
+        action="store_true",
+        help="Use per-fold checkpoint refit for evaluate/ablation (faster). "
+        "Omit for full nested Optuna LOSO (paper-grade, much slower).",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     setup_logging(config)
+
+    rep_cfg = config.get("reproducibility") or {}
+    seed = get_pipeline_seed(config)
+    set_global_seed(seed, deterministic_torch=bool(rep_cfg.get("deterministic_torch", True)))
+    logger.info(
+        "Global RNG seed={} (reproducibility.seed / models.evaluation.random_state); "
+        "see docs/reproducibility.md",
+        seed,
+    )
+    eval_rs = (config.get("models") or {}).get("evaluation", {}).get("random_state")
+    if eval_rs is not None and int(eval_rs) != seed:
+        logger.warning(
+            "reproducibility.seed ({}) differs from models.evaluation.random_state ({}); "
+            "stages using evaluation.random_state will not match global seed.",
+            seed,
+            eval_rs,
+        )
+    if os.environ.get("PYTHONHASHSEED") is None:
+        logger.warning(
+            "PYTHONHASHSEED was not set before process start; export PYTHONHASHSEED={} "
+            "for fully stable hash-based ordering across runs.",
+            seed,
+        )
 
     console.print(Panel.fit("[bold]Fall Risk Prediction Pipeline[/bold]", border_style="cyan"))
 
@@ -110,7 +163,7 @@ def main():
         task_id = progress.add_task("Starting pipeline...", total=len(stages))
         for stage in stages:
             progress.update(task_id, description=f"Running stage: {stage}")
-            run_stage(stage, config)
+            run_stage(stage, config, fast_eval=args.fast_eval)
             progress.advance(task_id)
             next_stage = "Pipeline complete" if progress.tasks[0].completed >= len(stages) else "Waiting for next stage..."
             progress.update(task_id, description=next_stage)

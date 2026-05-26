@@ -5,7 +5,6 @@ FINAL FIXED VERSION (robust + safe)
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import matplotlib
@@ -48,10 +47,7 @@ class EDAAnalyzer:
         self.proc_dir = Path(config["paths"]["processed_data"])
         self.feat_dir = Path(config["paths"]["features"])
         self.out_dir = Path(config["paths"]["figures_eda"])
-        self.graphs_dir = Path(config["paths"]["graphs"])
-
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        self.graphs_dir.mkdir(parents=True, exist_ok=True)
 
         self.fmt = config["reporting"]["figure_format"]
         self.dpi = config["reporting"]["figure_dpi"]
@@ -107,18 +103,8 @@ class EDAAnalyzer:
         self.generated_graphs.append(name)
 
     def save_all_graphs(self) -> None:
-        """Copy generated figures to graphs_dir (skipped if paths are identical)."""
-        # FIX: guard against copying a file over itself.
-        if self.out_dir.resolve() == self.graphs_dir.resolve():
-            return
-
-        for name in self.generated_graphs:
-            extensions = list(dict.fromkeys([self.fmt, "png"]))
-            for ext in extensions:
-                src = self.out_dir / f"{name}.{ext}"
-                dst = self.graphs_dir / f"{name}.{ext}"
-                if src.exists():
-                    shutil.copy2(src, dst)
+        """Figures already saved via _save(); nothing more to do."""
+        pass
 
     # ─────────────────────────────────────────
 

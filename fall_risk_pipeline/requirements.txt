@@ -23,6 +23,8 @@ shap>=0.44.0
 # Signal Processing
 ahrs>=0.3.1          # Madgwick/Mahony filter
 PyWavelets>=1.4.0    # Wavelet features
+nolds>=0.6.2         # Lyapunov exponent (Rosenstein); AMI/FNN embedding in delay_embedding.py
+antropy>=0.1.6       # Approximate entropy (ApEn)
 
 # Visualization
 matplotlib>=3.7.0

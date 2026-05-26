@@ -1,8 +1,13 @@
 """
 src/features/feature_extractor.py
 ===================================
-Stage 4: Extract temporal, spatial, spectral, trunk-dynamics, and asymmetry
-features from preprocessed IMU signals.
+Stage 4: Extract temporal gait-cycle, spectral, trunk-dynamics, orientation,
+nonlinear dynamics, and asymmetry features from preprocessed IMU signals.
+
+Absolute spatial metrics (step length, gait speed, step width) are not extracted;
+see docs/spatial_features.md.
+Patient rows aggregate each trial feature with mean, std, range, and
+session-ordered linear trend across trials.
 
 Output:
   data/features/trial_features.parquet    — one row per trial
@@ -31,10 +36,29 @@ from tqdm import tqdm
 
 # Import the authoritative set of label-derived columns from data_loader so
 # there is a single source of truth across the whole pipeline.
+from src.dataset.label_policy import multiclass_label_from_cohort
 from src.ingestion.data_loader import METADATA_ONLY_COLS
+from src.features.nonlinear_metrics import (
+    approximate_entropy,
+    largest_lyapunov_exponent,
+)
+from src.features.patient_temporal_aggregation import (
+    aggregate_trial_values,
+    order_trial_group,
+    parse_patient_aggregation_config,
+)
 
 # All columns that are metadata / bookkeeping and must never be model features.
-_META_COLS = METADATA_ONLY_COLS | {"trial_id", "participant_id", "n_trials"}
+_META_COLS = METADATA_ONLY_COLS | {"trial_id", "participant_id", "n_trials", "session"}
+
+
+def spectral_centroid_hz(freqs: np.ndarray, pxx: np.ndarray) -> float:
+    """First moment of the PSD: sum(f * P) / sum(P) in Hz."""
+    pxx = np.asarray(pxx, dtype=float)
+    total = float(pxx.sum())
+    if total < 1e-12:
+        return float("nan")
+    return float(np.sum(np.asarray(freqs, dtype=float) * pxx) / total)
 
 
 class FeatureExtractor:
@@ -45,6 +69,10 @@ class FeatureExtractor:
         self.out_dir  = Path(config["paths"]["features"])
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.fs = config["dataset"]["sampling_rate"]
+        feat_cfg = config.get("features", {})
+        self._lyap_cfg = feat_cfg.get("lyapunov", {})
+        self._apen_cfg = feat_cfg.get("approximate_entropy", {})
+        self._patient_agg_cfg = parse_patient_aggregation_config(feat_cfg)
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -96,10 +124,15 @@ class FeatureExtractor:
         # everything in _META_COLS from numeric aggregation.
         feats: dict = {
             "trial_id":       trial_id,
+            "session":        row.get("session"),
             "participant_id": row["participant_id"],
             # Metadata-only — label-derived, excluded from feature aggregation:
             "cohort":            row["cohort"],
             "risk_label":        row["risk_label"],
+            "multiclass_label":  row.get(
+                "multiclass_label",
+                multiclass_label_from_cohort(str(row["cohort"])),
+            ),
             "fall_probability":  row.get("fall_probability"),
             "laterality_biased": row.get("laterality_biased", False),
         }
@@ -108,6 +141,7 @@ class FeatureExtractor:
         if lb is not None:
             feats.update(self._trunk_dynamics(lb, prefix="lb"))
             feats.update(self._spectral_features(lb, prefix="lb"))
+            feats.update(self._orientation_features(lb, prefix="lb"))
 
         lf = signals.get("left_foot")
         rf = signals.get("right_foot")
@@ -118,6 +152,7 @@ class FeatureExtractor:
         hd = signals.get("head")
         if hd is not None:
             feats.update(self._trunk_dynamics(hd, prefix="head"))
+            feats.update(self._orientation_features(hd, prefix="head"))
 
         return feats
 
@@ -155,16 +190,38 @@ class FeatureExtractor:
         if "acc_resultant" in df.columns:
             res = df["acc_resultant"].values
             f[f"{prefix}_rms_total"] = float(np.sqrt(np.mean(res ** 2)))
-            f[f"{prefix}_lyapunov"]  = self._lyapunov_exponent(res)
+            f[f"{prefix}_lyapunov"] = largest_lyapunov_exponent(res, self._lyap_cfg)
+            f[f"{prefix}_apen"] = approximate_entropy(res, self._apen_cfg)
 
         return f
+
+    def _orientation_features(self, df: pd.DataFrame, prefix: str = "lb") -> dict:
+        """Trunk tilt and postural stability from Madgwick quaternion fusion."""
+        if "tilt_rad" not in df.columns:
+            return {}
+
+        tilt_deg = np.rad2deg(df["tilt_rad"].values.astype(float))
+        pitch_deg = np.rad2deg(df["pitch_rad"].values.astype(float))
+        roll_deg = np.rad2deg(df["roll_rad"].values.astype(float))
+
+        tilt_rate = np.diff(tilt_deg) * self.fs
+        sway_vel = float(np.mean(np.abs(tilt_rate))) if len(tilt_rate) else float("nan")
+
+        return {
+            f"{prefix}_tilt_mean_deg": float(np.mean(tilt_deg)),
+            f"{prefix}_tilt_std_deg": float(np.std(tilt_deg)),
+            f"{prefix}_tilt_range_deg": float(np.ptp(tilt_deg)),
+            f"{prefix}_pitch_std_deg": float(np.std(pitch_deg)),
+            f"{prefix}_roll_std_deg": float(np.std(roll_deg)),
+            f"{prefix}_postural_sway_vel": sway_vel,
+        }
 
     def _spectral_features(self, df: pd.DataFrame, prefix: str = "lb") -> dict:
         """Compute frequency-domain features.
 
-        FIX: prefers acc_z_grav_free over acc_z so that the gravity DC
-        component does not dominate low-frequency band power or distort
-        spectral entropy and harmonic ratio.
+        Welch PSD on lower-back vertical acceleration (prefers acc_z_grav_free).
+        Outputs: dominant frequency, spectral centroid, entropy, band power,
+        and harmonic ratio.
         """
         f: dict = {}
 
@@ -187,8 +244,9 @@ class FeatureExtractor:
         dom_idx = int(np.argmax(pxx))
         dominant_freq = float(freqs[dom_idx])
 
-        f[f"{prefix}_dominant_freq"]    = dominant_freq
-        f[f"{prefix}_spectral_entropy"] = float(sp_entropy(pxx / (pxx.sum() + 1e-10)))
+        f[f"{prefix}_dominant_freq"]      = dominant_freq
+        f[f"{prefix}_spectral_centroid"]  = spectral_centroid_hz(freqs, pxx)
+        f[f"{prefix}_spectral_entropy"]   = float(sp_entropy(pxx / (pxx.sum() + 1e-10)))
 
         def band_power(f_lo: float, f_hi: float) -> float:
             mask = (freqs >= f_lo) & (freqs < f_hi)
@@ -299,45 +357,13 @@ class FeatureExtractor:
 
         return f
 
-    def _lyapunov_exponent(self, signal: np.ndarray, m: int = 5, tau: int = 10) -> float:
-        """Approximate largest Lyapunov exponent (Rosenstein algorithm).
-
-        NOTE: the inner loop is O(n_anchors × N) and is intentionally capped
-        at 200 anchor points to keep runtime manageable. For production use
-        consider a vectorised implementation or nolds.lyap_r.
-        """
-        N = len(signal)
-        if N < m * tau + 50:
-            return float("nan")
-
-        n_pts = N - (m - 1) * tau
-        emb = np.array([[signal[i + j * tau] for j in range(m)] for i in range(n_pts)])
-
-        divs = []
-        n_anchors = min(n_pts, 200)
-        for i in range(n_anchors):
-            dists = np.linalg.norm(emb - emb[i], axis=1)
-            # Exclude temporal neighbours to avoid trivially close points.
-            lo = max(0, i - 10)
-            hi = min(n_pts, i + 11)
-            dists[lo:hi] = np.inf
-            j = int(np.argmin(dists))
-            if np.isinf(dists[j]):
-                continue
-            steps = min(20, n_pts - max(i, j) - 1)
-            if steps > 0:
-                future_dists = [
-                    np.linalg.norm(emb[i + s] - emb[j + s]) + 1e-10
-                    for s in range(steps)
-                ]
-                divs.append(float(np.mean(np.log(future_dists))))
-
-        return float(np.mean(divs)) if divs else float("nan")
-
     # ── Patient aggregation ────────────────────────────────────────────────────
 
     def _aggregate_to_patient(self, trial_df: pd.DataFrame) -> pd.DataFrame:
         """Aggregate trial-level rows to one row per patient.
+
+        Statistics per feature (configurable): mean, std, range (max-min across
+        trials), trend (OLS slope vs ordered trial index within session).
 
         FIX: previously fall_probability, laterality_biased, and cohort were
         included as numeric feature columns, leaking label information into the
@@ -345,7 +371,7 @@ class FeatureExtractor:
         so the output contains only genuine signal-derived features plus the
         bookkeeping columns needed for CV grouping and label lookup.
         """
-        # Columns that are real features (not metadata).
+        agg_cfg = self._patient_agg_cfg
         feat_cols = [
             c for c in trial_df.columns
             if c not in _META_COLS
@@ -354,24 +380,26 @@ class FeatureExtractor:
 
         patient_rows = []
         for pid, grp in trial_df.groupby("participant_id"):
+            ordered = order_trial_group(grp, agg_cfg["trial_order"])
             row: dict = {
-                # Bookkeeping only — excluded from model input by the trainer.
                 "participant_id":    pid,
                 "cohort":            grp["cohort"].iloc[0],
                 "risk_label":        int(grp["risk_label"].iloc[0]),
+                "multiclass_label":  int(
+                    grp["multiclass_label"].iloc[0]
+                    if "multiclass_label" in grp.columns
+                    else grp["risk_label"].iloc[0]
+                ),
                 "fall_probability":  grp["fall_probability"].iloc[0],
                 "laterality_biased": grp["laterality_biased"].iloc[0],
                 "n_trials":          len(grp),
             }
 
             for col in feat_cols:
-                vals = grp[col].dropna().values
-                if len(vals) > 0:
-                    row[f"{col}_mean"] = float(np.mean(vals))
-                    row[f"{col}_std"]  = float(np.std(vals))
-                else:
-                    row[f"{col}_mean"] = np.nan
-                    row[f"{col}_std"]  = np.nan
+                vals = ordered[col].values.astype(float)
+                stats = aggregate_trial_values(vals, agg_cfg)
+                for stat_name, stat_val in stats.items():
+                    row[f"{col}_{stat_name}"] = stat_val
 
             patient_rows.append(row)
 

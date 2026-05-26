@@ -1,16 +1,20 @@
 # configs/pipeline_config.yaml
 # Master configuration for the fall risk prediction pipeline
 
+# Reproducibility (applied at pipeline entry via main.py → set_global_seed)
+reproducibility:
+  seed: 42
+  deterministic_torch: true   # cudnn deterministic mode when PyTorch/CUDA is used
+
 # Paths
 paths:
   raw_data: "data/raw"
   processed_data: "data/processed"
   features: "data/features"
   results: "results"
-  figures_eda: "results/figures/eda"
+  figures_eda: "results/figures/eda"      # EDA plots (single output; no duplicate graphs/)
   figures_models: "results/figures/models"
   figures_shap: "results/figures/shap"
-  graphs: "results/graphs"
   metrics: "results/metrics"
   checkpoints: "results/checkpoints"
   logs: "logs"
@@ -31,8 +35,14 @@ dataset:
     CIPN: 2
     RIL: 2
 
-  label_mode: "binary"
+  # Primary training target: 3-class pathology tiers (see docs/label_binning.md).
+  label_mode: "multiclass"
+  # Binary sensitivity only (label_mode: binary): high-risk if multiclass tier >= threshold.
+  # threshold_ge_1 merges orthopedic + neurological (clinically heterogeneous).
+  # threshold_ge_2 = neurological-only high risk (multiclass tier >= 2).
   high_risk_threshold: 1
+  binary_strategy: "threshold_ge_1"
+  report_class_distribution: true
   probability_calibration: false
 
   laterality_flags:
@@ -44,9 +54,18 @@ preprocessing:
   lowpass_cutoff_hz: 15.0
   lowpass_order: 4
   highpass_cutoff_hz: 0.1
+  madgwick_enabled: true
   madgwick_beta: 0.1
+  madgwick_sensors: ["head", "lower_back"]
+  gyro_in_degrees: true          # dataset gyro columns are deg/s; ahrs expects rad/s
+  madgwick_use_magnetometer: false
   min_trial_length_s: 10.0
-  gait_event_source: "algorithm"
+  gait_event_source: "algorithm"   # algorithm | dataset (use Figshare HS when validated)
+
+  gait_event_validation:
+    tolerance_ms: 50               # ± window for TP matching vs ground-truth heel strikes
+
+  # Run: python main.py --stage validate_gait_events  (requires raw_data with annotations)
 
 # Feature Engineering
 features:
@@ -60,15 +79,18 @@ features:
     - double_support_ratio
     - step_count
 
-  spatial:
-    - step_length_mean
-    - step_length_std
-    - gait_speed
-    - step_width_mean
+  # Spatial metrics (step length, gait speed, step width) are NOT computed —
+  # require calibration or displacement integration; see docs/spatial_features.md
+  spatial: []
 
   spectral:
     - dominant_frequency
+    - spectral_centroid
     - spectral_entropy
+    - power_0_1hz
+    - power_1_3hz
+    - power_3_10hz
+    - harmonic_ratio
 
   trunk_dynamics:
     - rms_acc_ap
@@ -77,6 +99,16 @@ features:
     - rms_acc_total
     - jerk_mean
     - jerk_max
+    - lyapunov
+    - apen
+
+  orientation:
+    - tilt_mean_deg
+    - tilt_std_deg
+    - tilt_range_deg
+    - pitch_std_deg
+    - roll_std_deg
+    - postural_sway_vel
 
   asymmetry:
     - stride_time_asymmetry
@@ -86,7 +118,50 @@ features:
     - turn_duration_mean
     - turn_velocity_mean
 
-  patient_aggregation: "mean_std"
+  # Patient-level stats across within-session trials (ordered by session, trial_id)
+  patient_aggregation:
+    include_mean: true
+    include_std: true
+    include_range: true    # max - min across trials (intra-session variability)
+    include_trend: true    # linear slope vs trial order (fatigue / adaptation)
+    trial_order: ["session", "trial_id"]
+    min_trials_for_trend: 2
+
+  # Nonlinear dynamics on acc_resultant (validated on synthetic signals; see tests)
+  lyapunov:
+    use_nolds: true
+    min_length: 200
+    max_lag: 50
+    min_embedding_dim: 2
+    max_embedding_dim: 10
+    fnn_threshold: 0.10
+    fnn_rtol: 10.0
+    fnn_atol: 2.0
+    max_anchors: 200
+    validation_n_samples: 8000
+    validation_fixed_embedding_dim: 3
+    validation_fixed_lag: 2
+    validation_sine_lyap_max: 0.02
+    validation_chaotic_lyap_min: 0.05
+    validation_chaotic_vs_sine_factor: 3.0
+
+  approximate_entropy:
+    order: 2
+    metric: chebyshev
+    tolerance: null          # null => 0.2 * std(signal)
+    min_length: 200
+    validation_noise_vs_sine_factor: 1.5
+
+# Feature selection (dimensionality control before final models)
+# N=260 participants; patient matrix ≈ 4× trial features (mean/std/range/trend) — use RFECV cap ≤20.
+# RFECV (Guyon 2002) + SHAP pruning cap p at ≤20; Lasso-style sparsity per Tibshirani 1996.
+feature_selection:
+  enabled: true
+  max_features: 20
+  min_features: 5
+  primary_method: "rfecv"   # rfecv | shap | intersection
+  compare_before_after: true
+  cv_folds: 5
 
 # Models (tabular only)
 models:
@@ -109,14 +184,32 @@ models:
     mode: "paper"
     strategy: "nested_group_cv"
     fast_strategy: "grouped_checkpoint_cv"
-    random_state: 42
+    random_state: 42   # keep equal to reproducibility.seed
     nested_n_trials: 10
     nested_timeout_per_model: 300
+    # Paired AUC significance (DeLong + bootstrap MWU/Wilcoxon) for Table 1
+    auc_pairwise_tests: true
+    auc_reference_model: null   # null => highest-AUC model (usually ensemble)
+    delong_bootstrap_n: 1000
+    # Paired classification significance (McNemar on LOSO OOF predictions)
+    mcnemar_tests: true
+    mcnemar_reference_model: null   # null => same as auc_reference_model or highest accuracy
+    mcnemar_exact: false            # exact binomial McNemar when n_discordant is small
+    # Classification threshold: Youden J fit on each LOSO train fold, applied to test fold
+    threshold_strategy: train_fold_youden   # primary (unbiased)
+    report_threshold_comparison: true       # also save 0.5 vs eval-Youden (optimistic) metrics
 
   ensemble:
     enabled: true
-    method: "soft_voting"
+    method: "soft_voting"          # primary deployable checkpoint → also saved as ensemble.pkl
+    compare_methods: true          # nested LOSO: soft voting vs stacking meta-learner
+    methods:
+      - soft_voting
+      - stacking
     top_k: 3
+    stacking:
+      meta_learner: logistic_regression
+      cv_folds: 5                  # inner group-CV on LOSO train fold for meta features
 
 # Deep Learning (disabled for now)
 deep_learning:
@@ -129,10 +222,20 @@ deep_learning:
   early_stopping_patience: 15
   device: "auto"
 
+# Feature ablation (LOSO AUC; run after train, ideally after evaluate for SHAP context)
+ablation:
+  reference_model: xgboost      # checkpoint re-fit per LOSO fold on each feature set
+  top_k_shap: 10
+  n_bootstrap: 1000
+
 # Explainability
 explainability:
   shap_enabled: true
-  n_shap_samples: 200
+  # loso_aggregate: SHAP on every LOSO held-out fold, concatenate for global importance
+  # full_checkpoint: TreeExplainer on full-data checkpoint (background = training subsample)
+  shap_strategy: loso_aggregate
+  n_shap_samples: 200        # cap on total OOF rows explained (subsamples folds if needed)
+  shap_background_samples: 100
   top_features_plot: 20
 
 # Reporting

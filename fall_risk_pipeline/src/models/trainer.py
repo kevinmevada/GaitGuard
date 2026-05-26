@@ -13,7 +13,7 @@ import xgboost as xgb
 from loguru import logger
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import StratifiedGroupKFold, cross_val_score
 from sklearn.neural_network import MLPClassifier
@@ -25,18 +25,16 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore")
 console = Console()
 
-# Columns that must never enter the feature matrix.
-# fall_probability  — a hand-coded cohort lookup; directly encodes the label.
-# laterality_biased — True only for HipOA / CVA (both high-risk); encodes cohort identity.
-# n_trials          — administrative count, not a gait measurement.
-NON_FEATURE_COLS = {
-    "participant_id",
-    "cohort",
-    "risk_label",
-    "fall_probability",
-    "laterality_biased",
-    "n_trials",
-}
+from src.dataset.label_balance import balanced_scale_pos_weight
+from src.dataset.label_policy import is_binary_task, label_mode_description
+from src.evaluation.roc_auc_scoring import roc_auc_from_proba, roc_auc_scoring_name
+from src.features.feature_matrix import NON_FEATURE_COLS, load_patient_feature_matrix
+from src.models.ensemble_builder import (
+    build_ensemble_estimator,
+    ensemble_model_name,
+    primary_ensemble_checkpoint_name,
+    resolve_ensemble_methods,
+)
 
 
 class ModelTrainer:
@@ -57,10 +55,18 @@ class ModelTrainer:
         self.cv_folds = tcfg["cv_folds"]
         self.cv_jobs = -1
         self.random_state = config["models"]["evaluation"]["random_state"]
+        self._fit_y: np.ndarray | None = None
 
     def run(self):
-        X, y, groups = self._load_data()
-        logger.info(f"Data: {X.shape}, Labels: {np.bincount(y)}")
+        X, y, groups, _, patient_df = self._load_data()
+        counts = dict(zip(*np.unique(y, return_counts=True)))
+        logger.info(
+            f"Data: {X.shape} | {label_mode_description(self.config)} | "
+            f"label counts: {counts}"
+        )
+        if is_binary_task(y, self.config):
+            spw = balanced_scale_pos_weight(y)
+            logger.info(f"XGBoost scale_pos_weight (balanced)={spw:.3f}")
 
         models_to_run = [
             model_name
@@ -69,7 +75,8 @@ class ModelTrainer:
         ]
         results = {}
 
-        total_steps = len(models_to_run) + int(self.config["models"]["ensemble"]["enabled"])
+        ensemble_methods = resolve_ensemble_methods(self.config)
+        total_steps = len(models_to_run) + len(ensemble_methods)
         with Progress(
             SpinnerColumn(),
             TextColumn("[bold magenta]{task.description}"),
@@ -90,7 +97,7 @@ class ModelTrainer:
                 best_params, _ = self._run_optuna(
                     model_name, X, y, groups, n_trials=self.n_trials, timeout=self.timeout
                 )
-                best_pipeline = self._build_pipeline_from_params(model_name, best_params)
+                best_pipeline = self._build_pipeline_from_params(model_name, best_params, y)
                 best_pipeline.fit(X, y)
 
                 results[model_name] = {
@@ -104,39 +111,64 @@ class ModelTrainer:
                 self._save_model(model_name, best_pipeline)
                 progress.advance(task_id)
 
-            if self.config["models"]["ensemble"]["enabled"]:
-                progress.update(task_id, description="Training model: ensemble")
-                top_k = self.config["models"]["ensemble"]["top_k"]
-                sorted_models = sorted(results.items(), key=lambda item: item[1]["cv_auc"], reverse=True)
+            if ensemble_methods:
+                ens_cfg = self.config["models"]["ensemble"]
+                top_k = ens_cfg["top_k"]
+                sorted_models = sorted(
+                    results.items(), key=lambda item: item[1]["cv_auc"], reverse=True
+                )
                 top_models = sorted_models[:top_k]
-
-                ensemble = self._build_ensemble(top_models)
-
-                cv = StratifiedGroupKFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
-                scores = cross_val_score(
-                    ensemble,
-                    X,
-                    y,
-                    cv=cv,
-                    scoring="roc_auc",
-                    groups=groups,
+                cv = StratifiedGroupKFold(
+                    n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
                 )
 
-                auc_mean = float(np.mean(scores))
-                auc_std = float(np.std(scores))
+                for method in ensemble_methods:
+                    model_key = ensemble_model_name(method)
+                    progress.update(
+                        task_id, description=f"Training model: {model_key}"
+                    )
+                    ensemble = build_ensemble_estimator(
+                        top_models,
+                        method,
+                        cv_folds=self.cv_folds,
+                        random_state=self.random_state,
+                    )
+                    fit_params = (
+                        {"groups": groups} if method == "stacking" else None
+                    )
+                    scores = cross_val_score(
+                        ensemble,
+                        X,
+                        y,
+                        cv=cv,
+                        scoring=roc_auc_scoring_name(y, self.config),
+                        groups=groups,
+                        params=fit_params,
+                    )
+                    auc_mean = float(np.mean(scores))
+                    auc_std = float(np.std(scores))
 
-                ensemble.fit(X, y)
+                    if method == "stacking":
+                        ensemble.fit(X, y, groups=groups)
+                    else:
+                        ensemble.fit(X, y)
 
-                results["ensemble"] = {
-                    "pipeline": ensemble,
-                    "cv_auc": auc_mean,
-                    "cv_std": auc_std,
-                    "params": {"top_models": [name for name, _ in top_models]},
-                }
-
-                logger.info(f"ensemble AUC = {auc_mean:.4f} ± {auc_std:.4f}")
-                self._save_model("ensemble", ensemble)
-                progress.advance(task_id)
+                    results[model_key] = {
+                        "pipeline": ensemble,
+                        "cv_auc": auc_mean,
+                        "cv_std": auc_std,
+                        "params": {
+                            "ensemble_method": method,
+                            "top_models": [name for name, _ in top_models],
+                        },
+                    }
+                    logger.info(
+                        f"{model_key} ({method}) AUC = {auc_mean:.4f} ± {auc_std:.4f}"
+                    )
+                    self._save_model(model_key, ensemble)
+                    if model_key == primary_ensemble_checkpoint_name(self.config):
+                        self._save_model("ensemble", ensemble)
+                    progress.advance(task_id)
 
             progress.update(task_id, description="Training complete")
 
@@ -144,17 +176,9 @@ class ModelTrainer:
         return results
 
     def _load_data(self):
-        path = self.feat_dir / "patient_features.parquet"
-        df = pd.read_parquet(path)
-
-        # Exclude all non-feature columns — including leakage columns.
-        feat_cols = [c for c in df.columns if c not in NON_FEATURE_COLS]
-        feat_cols = df[feat_cols].select_dtypes(include=np.number).columns.tolist()
-
-        X = df[feat_cols].values.astype(np.float32)
-        y = df["risk_label"].values.astype(int)
-        groups = df["participant_id"].values
-        return X, y, groups
+        X, y, groups, feat_cols, df = load_patient_feature_matrix(self.config)
+        logger.info(f"Feature matrix: {X.shape[1]} columns (selection applied if configured)")
+        return X, y, groups, feat_cols, df
 
     def _nested_cv(self, name: str, X, y, groups) -> tuple[float, float]:
         """Nested CV: outer loop estimates generalisation, inner loop tunes.
@@ -175,12 +199,10 @@ class ModelTrainer:
                 n_trials=self.n_trials, timeout=self.timeout,
             )
 
-            pipeline = self._build_pipeline_from_params(name, best_params)
+            pipeline = self._build_pipeline_from_params(name, best_params, y_train)
             pipeline.fit(X_train, y_train)
-            proba = pipeline.predict_proba(X_val)[:, 1]
-
-            from sklearn.metrics import roc_auc_score
-            outer_scores.append(roc_auc_score(y_val, proba))
+            proba = pipeline.predict_proba(X_val)
+            outer_scores.append(self._roc_auc_from_proba(y_val, proba))
 
         return float(np.mean(outer_scores)), float(np.std(outer_scores))
 
@@ -189,6 +211,9 @@ class ModelTrainer:
         cv = StratifiedGroupKFold(
             n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
         )
+        self._fit_y = np.asarray(y).astype(int)
+
+        scoring = roc_auc_scoring_name(y, self.config)
 
         def objective(trial):
             pipeline = self._build_pipeline(name, trial)
@@ -197,7 +222,7 @@ class ModelTrainer:
                 X,
                 y,
                 cv=cv,
-                scoring="roc_auc",
+                scoring=scoring,
                 groups=groups,
                 n_jobs=self.cv_jobs,
             )
@@ -207,7 +232,10 @@ class ModelTrainer:
             direction="maximize",
             sampler=optuna.samplers.TPESampler(seed=self.random_state),
         )
-        study.optimize(objective, n_trials=n_trials, timeout=timeout)
+        try:
+            study.optimize(objective, n_trials=n_trials, timeout=timeout)
+        finally:
+            self._fit_y = None
         return study.best_params, study.best_value
 
     def _build_pipeline(self, name, trial):
@@ -218,16 +246,41 @@ class ModelTrainer:
             ("clf", clf),
         ])
 
-    def _build_pipeline_from_params(self, name, params):
-        clf = self._build_classifier_from_params(name, params)
+    def _build_pipeline_from_params(self, name, params, y: np.ndarray | None = None):
+        clf = self._build_classifier_from_params(name, params, y)
         return Pipeline([
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
             ("clf", clf),
         ])
 
+    def _roc_auc_from_proba(self, y_true: np.ndarray, proba: np.ndarray) -> float:
+        return roc_auc_from_proba(y_true, proba, self.config)
+
+    def _xgboost_kwargs(self, y: np.ndarray) -> dict:
+        y = np.asarray(y).astype(int)
+        n_classes = len(np.unique(y))
+        if n_classes <= 2 and is_binary_task(y, self.config):
+            return {
+                "scale_pos_weight": balanced_scale_pos_weight(y),
+                "eval_metric": "logloss",
+            }
+        return {
+            "objective": "multi:softprob",
+            "num_class": int(n_classes),
+            "eval_metric": "mlogloss",
+        }
+
+    def _resolve_y(self, y: np.ndarray | None) -> np.ndarray:
+        if y is not None:
+            return np.asarray(y).astype(int)
+        if self._fit_y is not None:
+            return self._fit_y
+        raise ValueError("y is required to set balanced class weights for XGBoost")
+
     def _sample_classifier(self, name, trial):
         if name == "xgboost":
+            y_ref = self._resolve_y(None)
             return xgb.XGBClassifier(
                 n_estimators=trial.suggest_int("n_estimators", 50, 300),
                 max_depth=trial.suggest_int("max_depth", 2, 6),
@@ -237,10 +290,9 @@ class ModelTrainer:
                 reg_alpha=trial.suggest_float("reg_alpha", 0.01, 10.0, log=True),
                 reg_lambda=trial.suggest_float("reg_lambda", 0.01, 10.0, log=True),
                 min_child_weight=trial.suggest_int("min_child_weight", 1, 10),
-                scale_pos_weight=trial.suggest_float("scale_pos_weight", 1.0, 10.0, log=True),
                 random_state=self.random_state,
                 n_jobs=1,
-                eval_metric="logloss",
+                **self._xgboost_kwargs(y_ref),
             )
 
         if name == "lightgbm":
@@ -294,11 +346,31 @@ class ModelTrainer:
 
         raise ValueError(f"Unknown model {name}")
 
-    def _build_classifier_from_params(self, name, params):
+    def _build_classifier_from_params(
+        self, name, params, y: np.ndarray | None = None
+    ):
         if name == "xgboost":
-            return xgb.XGBClassifier(**params, random_state=self.random_state, n_jobs=1, eval_metric="logloss")
+            y_ref = self._resolve_y(y)
+            clean = {
+                k: v
+                for k, v in params.items()
+                if k not in ("scale_pos_weight", "objective", "num_class", "eval_metric")
+            }
+            return xgb.XGBClassifier(
+                **clean,
+                random_state=self.random_state,
+                n_jobs=1,
+                **self._xgboost_kwargs(y_ref),
+            )
         if name == "lightgbm":
-            return lgb.LGBMClassifier(**params, random_state=self.random_state, n_jobs=1, verbose=-1)
+            lgb_params = dict(params)
+            lgb_params.setdefault("class_weight", "balanced")
+            return lgb.LGBMClassifier(
+                **lgb_params,
+                random_state=self.random_state,
+                n_jobs=1,
+                verbose=-1,
+            )
         if name == "random_forest":
             return RandomForestClassifier(**params, random_state=self.random_state, n_jobs=1, class_weight="balanced")
         if name == "svm":
@@ -306,14 +378,6 @@ class ModelTrainer:
         if name == "mlp":
             return MLPClassifier(**params, early_stopping=True, validation_fraction=0.1, n_iter_no_change=15, max_iter=500)
         raise ValueError(name)
-
-    def _build_ensemble(self, top_models: list) -> VotingClassifier:
-        """Build a VotingClassifier from full pipelines (imputer + scaler + clf)."""
-        estimators = [
-            (name, res["pipeline"])
-            for name, res in top_models
-        ]
-        return VotingClassifier(estimators=estimators, voting="soft")
 
     def _save_model(self, name, pipeline):
         path = self.ckpt_dir / f"{name}.pkl"

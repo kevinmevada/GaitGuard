@@ -14,6 +14,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from sklearn.metrics import roc_auc_score
 
+from src.utils.reproducibility import get_pipeline_seed
+
 
 # ─────────────────────────────────────────
 # Dataset
@@ -140,6 +142,9 @@ class DeepModelTrainer:
         self.max_epochs = dl_cfg["max_epochs"]
         self.lr = dl_cfg["learning_rate"]
         self.patience = dl_cfg["early_stopping_patience"]
+        self.seed = get_pipeline_seed(config)
+        self._train_generator = torch.Generator()
+        self._train_generator.manual_seed(self.seed)
 
         dev = dl_cfg["device"]
         if dev == "auto":
@@ -157,7 +162,12 @@ class DeepModelTrainer:
         train_ds = GaitSequenceDataset(X_train, y_train)
         val_ds = GaitSequenceDataset(X_val, y_val)
 
-        train_dl = DataLoader(train_ds, batch_size=self.batch_size, shuffle=True)
+        train_dl = DataLoader(
+            train_ds,
+            batch_size=self.batch_size,
+            shuffle=True,
+            generator=self._train_generator,
+        )
         val_dl = DataLoader(val_ds, batch_size=self.batch_size)
 
         counts = np.bincount(y_train)

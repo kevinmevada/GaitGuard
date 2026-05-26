@@ -35,11 +35,28 @@ Pipeline workflow.png
 .ipynb_checkpoints/
 *.ipynb
 
-# Data (exclude raw and processed data, features, results)
-data/
-data/raw/
-data/processed/
-data/features/
-results/
-fall_risk_pipeline/data/
-fall_risk_pipeline/results/
+# Data and generated artifacts (reproducibility — train or download locally)
+*.parquet
+*.pkl
+
+data/*
+!data/features/
+data/features/*
+!data/features/README.md
+
+/results/
+
+fall_risk_pipeline/data/*
+!fall_risk_pipeline/data/features/
+fall_risk_pipeline/data/features/*
+!fall_risk_pipeline/data/features/README.md
+
+# Pipeline outputs (metrics, figures, checkpoints) — not versioned
+fall_risk_pipeline/results/*
+!fall_risk_pipeline/results/README.md
+!fall_risk_pipeline/results/checkpoints/
+fall_risk_pipeline/results/checkpoints/*
+!fall_risk_pipeline/results/checkpoints/README.md
+!fall_risk_pipeline/results/anomaly_detection/
+fall_risk_pipeline/results/anomaly_detection/*
+!fall_risk_pipeline/results/anomaly_detection/README.md

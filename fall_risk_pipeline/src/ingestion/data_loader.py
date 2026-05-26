@@ -47,6 +47,7 @@ LATERALITY_BIASED_COHORTS = {"HipOA", "CVA"}
 METADATA_ONLY_COLS = {
     "cohort",
     "risk_label",
+    "multiclass_label",
     "fall_probability",
     "laterality_biased",
 }
@@ -81,6 +82,7 @@ class TrialRecord:
         risk_label: int,
         laterality_biased: bool,
         fall_probability: float,
+        multiclass_label: int | None = None,
     ):
         self.trial_id = trial_id
         self.participant_id = participant_id
@@ -91,6 +93,9 @@ class TrialRecord:
         self.laterality = laterality
         self.signals = signals
         self.gait_events = gait_events
+        self.multiclass_label = (
+            int(multiclass_label) if multiclass_label is not None else int(risk_label)
+        )
         self.risk_label = risk_label
         self.laterality_biased = laterality_biased
         self.fall_probability = fall_probability
@@ -112,9 +117,11 @@ class TrialRecord:
             "sex":              self.sex,
             "laterality":       self.laterality,
             "risk_label":       self.risk_label,
+            "multiclass_label": self.multiclass_label,
             "laterality_biased": self.laterality_biased,
             "fall_probability": self.fall_probability,
             "duration_s":       self.duration_s,
+            "has_gait_events_gt": self.gait_events is not None and not self.gait_events.empty,
         }
 
 
@@ -127,8 +134,9 @@ class DataLoader:
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
         self.min_duration = config["preprocessing"]["min_trial_length_s"]
-        self.label_mode   = config["dataset"]["label_mode"]
-        self.threshold    = config["dataset"]["high_risk_threshold"]
+        from src.dataset.label_policy import get_dataset_label_config
+
+        self._label_cfg = get_dataset_label_config(config)
         self.fs           = config["dataset"]["sampling_rate"]
 
     # ─────────────────────────────────────────
@@ -207,9 +215,9 @@ class DataLoader:
         # Ordered from most specific to most general to avoid mis-classification.
         if "healthy" in tokens or "hs" in tokens:
             return "Healthy"
-        if "hipoa" in tokens:
+        if "hipoa" in tokens or "hoa" in tokens:
             return "HipOA"
-        if "kneeoa" in tokens:
+        if "kneeoa" in tokens or "koa" in tokens:
             return "KneeOA"
         if "cipn" in tokens:
             return "CIPN"
@@ -233,15 +241,12 @@ class DataLoader:
             meta["cohort"] = self._infer_cohort(trial_dir)
 
         cohort    = meta.get("cohort", "Unknown")
-        raw_label = COHORT_LABEL_MAP.get(cohort, 0)
+        from src.dataset.label_policy import resolve_labels
 
-        risk_label = (
-            int(raw_label >= self.threshold)
-            if self.label_mode == "binary"
-            else raw_label
-        )
-
-        fall_probability = COHORT_FALL_PROBABILITIES.get(cohort, 10.0) / 100.0
+        resolved = resolve_labels(cohort, self.config)
+        risk_label = resolved.training_label
+        fall_probability = resolved.fall_probability
+        multiclass_label = resolved.multiclass_label
 
         signals: dict[str, pd.DataFrame] = {}
 
@@ -265,10 +270,9 @@ class DataLoader:
         if not signals:
             raise ValueError("No valid signals")
 
-        gait_events = None
-        events_path = trial_dir / "gait_events.csv"
-        if events_path.exists():
-            gait_events = pd.read_csv(events_path)
+        from src.preprocessing.gait_events_gt import load_ground_truth_gait_events
+
+        gait_events = load_ground_truth_gait_events(trial_dir)
 
         return TrialRecord(
             trial_id=trial_dir.name,
@@ -281,6 +285,7 @@ class DataLoader:
             signals=signals,
             gait_events=gait_events,
             risk_label=risk_label,
+            multiclass_label=multiclass_label,
             laterality_biased=cohort in LATERALITY_BIASED_COHORTS,
             fall_probability=fall_probability,
         )
@@ -369,5 +374,32 @@ class DataLoader:
 
                 path = signals_dir / f"{rec.trial_id}_{pos}.parquet"
                 df.to_parquet(path, index=False)
+
+            if rec.gait_events is not None and not rec.gait_events.empty:
+                ge_dir = self.out_dir / "gait_events"
+                ge_dir.mkdir(exist_ok=True)
+                rec.gait_events.to_csv(ge_dir / f"{rec.trial_id}.csv", index=False)
+
+        metrics_dir = Path(self.config["paths"]["metrics"])
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            from src.dataset.label_balance import save_class_distribution_reports
+
+            if "participant_id" in meta_df.columns:
+                participants = meta_df.drop_duplicates("participant_id")
+                save_class_distribution_reports(
+                    participants, metrics_dir, config=self.config
+                )
+            else:
+                save_class_distribution_reports(meta_df, metrics_dir, config=self.config)
+        except Exception as exc:
+            logger.warning(f"Class distribution report skipped: {exc}")
+
+        try:
+            from src.reporting.demographics_table import generate_demographics_table
+
+            generate_demographics_table(self.config)
+        except Exception as exc:
+            logger.warning(f"Demographics table skipped: {exc}")
 
         logger.info("Data saved successfully")

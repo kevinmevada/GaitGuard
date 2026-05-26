@@ -1,10 +1,11 @@
 """
 FastAPI service for GaitGuard fall-risk prediction.
 
-This API accepts uploaded IMU trial files, runs the same single-trial
-preprocessing and feature extraction logic used by the training pipeline,
-adapts the result into the patient-level feature schema expected by the saved
-models, and returns a frontend-friendly prediction payload.
+This API accepts uploaded IMU trial files, runs single-trial preprocessing and
+feature extraction, then projects one trial into the patient-level feature schema
+expected by saved models (degenerate aggregation: mean=trial value, std/range=0,
+trend=NaN). Training used 260 participants with multi-trial aggregation (~1356
+trials); inference is explicitly single-trial — see docs/inference_single_trial_limitation.md.
 """
 
 from __future__ import annotations
@@ -44,6 +45,47 @@ log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
 logger = logging.getLogger(__name__)
 
+# Training: 260 participants, 1356 trials, patient-level CV by participant_id.
+# Inference: one uploaded trial → patient feature column names (not multi-trial stats).
+INFERENCE_SCOPE = {
+    "granularity": "single_trial",
+    "model_training_granularity": "patient_level",
+    "training_participants": 260,
+    "training_trials": 1356,
+    "patient_aggregation": "degenerate_single_trial",
+}
+
+INFERENCE_SCOPE_NOTE = (
+    "Models were trained on patient-level rows (N≈260) with mean, std, range, and "
+    "trend across multiple within-session trials (1356 trials total; CV grouped by "
+    "participant_id). This request used one trial: values map to *_mean, *_std=0, "
+    "*_range=0, *_trend=NaN. The score is trial-level screening, not a multi-trial "
+    "patient summary."
+)
+
+CONFIDENCE_LIMITATION_NOTE = (
+    "confidence is max(predicted class probability), not calibrated clinical "
+    "certainty. Single-trial input omits cross-trial variability (std, range) and "
+    "session trajectory (trend) present in training — interpret scores cautiously."
+)
+
+PAPER_INFERENCE_LIMITATION = (
+    "Deployment inference accepted one uploaded trial per API request. To match "
+    "the trained feature schema, trial values populated patient-level mean columns "
+    "while standard deviation and range were set to zero and trend was undefined; "
+    "scores therefore do not replicate full multi-trial patient aggregation used in "
+    "training (260 participants, 1356 trials). Reported confidence reflects the "
+    "model maximum class probability, not external clinical calibration."
+)
+
+DISPLAY_GAUGES_NOTE = (
+    "Sidebar gauge bars (display_gauges) are UI-only. They are not SHAP values and "
+    "must not be reported as clinical confidence in publications. confidence and "
+    "risk_score are classifier outputs; anomaly is the fraction of anomaly detectors "
+    "voting anomaly; trials is upload coverage vs mean training trials per participant, "
+    "not a model score."
+)
+
 # Rate limiting
 try:
     from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -65,6 +107,21 @@ PIPELINE_ROOT = PROJECT_ROOT / "fall_risk_pipeline"
 sys.path.insert(0, str(PIPELINE_ROOT))
 
 from src.features.feature_extractor import FeatureExtractor  # type: ignore
+from src.models.anomaly_feature_schema import (  # type: ignore
+    load_trial_feature_schema,
+    validate_trial_columns_for_anomaly_scalers,
+)
+from src.evaluation.clinical_threshold import (  # type: ignore
+    assign_risk_level,
+    default_clinical_threshold,
+    elevated_risk_probability,
+    load_clinical_threshold_artifact,
+)
+from src.evaluation.research_disclaimers import (  # type: ignore
+    RESEARCH_PROTOTYPE_DISCLAIMER,
+    limitations_payload,
+    screening_note,
+)
 from src.preprocessing.signal_processor import SignalProcessor  # type: ignore
 
 
@@ -91,6 +148,12 @@ MODEL_DIR = Path(os.getenv("MODEL_DIR", PIPELINE_ROOT / "results" / "checkpoints
 ANOMALY_DIR = Path(os.getenv("ANOMALY_DIR", PIPELINE_ROOT / "results" / "anomaly_detection"))
 PATIENT_FEATURES_PATH = Path(os.getenv("PATIENT_FEATURES_PATH", PIPELINE_ROOT / "data" / "features" / "patient_features.parquet"))
 TRIAL_FEATURES_PATH = Path(os.getenv("TRIAL_FEATURES_PATH", PIPELINE_ROOT / "data" / "features" / "trial_features.parquet"))
+CLINICAL_THRESHOLD_PATH = Path(
+    os.getenv(
+        "CLINICAL_THRESHOLD_PATH",
+        PIPELINE_ROOT / "results" / "metrics" / "clinical_threshold.json",
+    )
+)
 
 REQUIRED_FILES = {
     "head_raw.csv": "head",
@@ -126,8 +189,11 @@ anomaly_scalers: dict[str, Any] = {}
 trial_feature_medians: dict[str, float] = {}
 expected_patient_feature_count: int | None = None
 expected_trial_feature_count: int | None = None
+anomaly_feature_schema: dict[str, Any] | None = None
 patient_schema_mismatch: bool = False
 trial_schema_mismatch: bool = False
+anomaly_schema_message: str = ""
+clinical_threshold: dict[str, Any] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -160,9 +226,28 @@ def load_resources() -> None:
     global models, patient_feature_columns, trial_feature_columns
     global anomaly_models, anomaly_scalers, trial_feature_medians
     global expected_patient_feature_count, expected_trial_feature_count
-    global patient_schema_mismatch, trial_schema_mismatch
+    global anomaly_feature_schema, patient_schema_mismatch, trial_schema_mismatch
+    global anomaly_schema_message, clinical_threshold
 
     config = load_config()
+    loaded_threshold = load_clinical_threshold_artifact(CLINICAL_THRESHOLD_PATH)
+    if loaded_threshold:
+        clinical_threshold = loaded_threshold
+        pc = loaded_threshold.get("primary_cutoff", {})
+        logger.info(
+            "Clinical cutoff loaded (Youden J): prob=%.3f sens=%.3f spec=%.3f [%s]",
+            pc.get("probability", 0.5),
+            pc.get("sensitivity", float("nan")),
+            pc.get("specificity", float("nan")),
+            pc.get("source", "unknown"),
+        )
+    else:
+        clinical_threshold = default_clinical_threshold()
+        logger.warning(
+            "clinical_threshold.json not found at %s — using default 0.5; "
+            "run `python main.py --stage evaluate` in fall_risk_pipeline.",
+            CLINICAL_THRESHOLD_PATH,
+        )
     signal_processor = SignalProcessor(config)
     feature_extractor = FeatureExtractor(config)
 
@@ -179,8 +264,8 @@ def load_resources() -> None:
         "fall_probability", "laterality_biased", "n_trials",
     ]
     trial_meta_cols = [
-        "trial_id", "participant_id", "cohort",
-        "risk_label", "fall_probability", "laterality_biased",
+        "trial_id", "participant_id", "cohort", "risk_label",
+        "multiclass_label", "fall_probability", "laterality_biased",
     ]
 
     patient_feature_columns = (
@@ -188,15 +273,29 @@ def load_resources() -> None:
         .select_dtypes(include=np.number)
         .columns.tolist()
     )
-    trial_feature_columns = (
+
+    selected_path = PIPELINE_ROOT / "data" / "features" / "selected_features.json"
+    if selected_path.exists():
+        try:
+            with open(selected_path, encoding="utf-8") as fh:
+                selected_payload = json.load(fh)
+            selected_names = selected_payload.get("features", [])
+            if isinstance(selected_names, list) and selected_names:
+                patient_feature_columns = [
+                    c for c in patient_feature_columns if c in selected_names
+                ]
+                logger.info(
+                    "Using %d selected patient-level features for inference",
+                    len(patient_feature_columns),
+                )
+        except Exception as exc:
+            logger.warning("Could not load selected_features.json: %s", exc)
+    parquet_trial_columns = (
         trial_df[[c for c in trial_df.columns if c not in trial_meta_cols]]
         .select_dtypes(include=np.number)
         .columns.tolist()
     )
-    trial_feature_medians = cast(
-        dict[str, float],
-        trial_df[trial_feature_columns].median(numeric_only=True).fillna(0.0).to_dict(),
-    )
+    trial_feature_columns = list(parquet_trial_columns)
 
     for model_name in ["ensemble", "lightgbm", "random_forest", "xgboost", "svm"]:
         model_path = MODEL_DIR / f"{model_name}.pkl"
@@ -229,20 +328,42 @@ def load_resources() -> None:
             anomaly_models[model_name] = load_pickle(model_path)
             anomaly_scalers[model_name] = load_pickle(scaler_path)
 
-    expected_trial_feature_count = None
-    for scaler in anomaly_scalers.values():
-        n_features = getattr(scaler, "n_features_in_", None)
-        if isinstance(n_features, int) and n_features > 0:
-            expected_trial_feature_count = n_features
-            break
+    anomaly_feature_schema = load_trial_feature_schema(ANOMALY_DIR)
+    if anomaly_scalers:
+        if anomaly_feature_schema is not None:
+            trial_feature_columns = list(anomaly_feature_schema["feature_columns"])
+        ok, anomaly_schema_message = validate_trial_columns_for_anomaly_scalers(
+            trial_feature_columns,
+            anomaly_scalers,
+            anomaly_feature_schema,
+        )
+        trial_schema_mismatch = not ok
+        expected_trial_feature_count = len(trial_feature_columns)
+        missing_in_parquet = [
+            c for c in trial_feature_columns if c not in parquet_trial_columns
+        ]
+        if missing_in_parquet:
+            trial_schema_mismatch = True
+            anomaly_schema_message = (
+                f"{anomaly_schema_message}; parquet missing columns: "
+                f"{missing_in_parquet[:5]}{'...' if len(missing_in_parquet) > 5 else ''}"
+            )
+    else:
+        expected_trial_feature_count = len(trial_feature_columns)
+        trial_schema_mismatch = False
+        anomaly_schema_message = ""
+
+    trial_feature_medians = cast(
+        dict[str, float],
+        trial_df.reindex(columns=trial_feature_columns)
+        .median(numeric_only=True)
+        .fillna(0.0)
+        .to_dict(),
+    )
 
     patient_schema_mismatch = (
         expected_patient_feature_count is not None
         and len(patient_feature_columns) != expected_patient_feature_count
-    )
-    trial_schema_mismatch = (
-        expected_trial_feature_count is not None
-        and len(trial_feature_columns) != expected_trial_feature_count
     )
 
     if patient_schema_mismatch:
@@ -252,10 +373,41 @@ def load_resources() -> None:
             expected_patient_feature_count,
         )
     if trial_schema_mismatch:
-        logger.warning(
-            "Trial feature schema mismatch: runtime=%d expected=%s",
+        logger.error(
+            "Anomaly trial feature schema mismatch: %s (runtime n=%d, scaler n=%s)",
+            anomaly_schema_message,
             len(trial_feature_columns),
             expected_trial_feature_count,
+        )
+    elif anomaly_scalers:
+        logger.info(
+            "Anomaly scalers aligned: n_features_in_=%s, columns=%d (Healthy-fit schema)",
+            expected_trial_feature_count,
+            len(trial_feature_columns),
+        )
+
+    if os.getenv("GAITGUARD_STRICT_SCHEMA", "").lower() in ("1", "true", "yes"):
+        if patient_schema_mismatch:
+            raise RuntimeError(
+                f"Patient feature schema mismatch (expected {expected_patient_feature_count}, "
+                f"got {len(patient_feature_columns)})."
+            )
+        if trial_schema_mismatch:
+            raise RuntimeError(f"Anomaly trial feature schema mismatch: {anomaly_schema_message}")
+
+    if not models:
+        logger.warning(
+            "No classification checkpoints in %s — API /predict will fail until you "
+            "train (cd fall_risk_pipeline && python main.py --stage train) or download "
+            "(GAITGUARD_HF_REPO=your-org/gaitguard-models python scripts/download_models.py). "
+            "See docs/MODEL_CARD.md.",
+            MODEL_DIR,
+        )
+    if not anomaly_models:
+        logger.warning(
+            "No anomaly models in %s — train with python main.py --stage anomaly or use "
+            "scripts/download_models.py.",
+            ANOMALY_DIR,
         )
 
     logger.info(
@@ -512,17 +664,9 @@ def preprocess_sensor_data(sensor_frames: dict[str, pd.DataFrame]) -> dict[str, 
 
     processed: dict[str, pd.DataFrame] = {}
     for sensor_name, df in sensor_frames.items():
-        clean = signal_processor._safe_filter(df.copy())
-        clean = signal_processor._compute_resultant(clean)
-
-        if sensor_name == "left_foot":
-            clean = signal_processor._detect_gait_events(clean, "left")
-        elif sensor_name == "right_foot":
-            clean = signal_processor._detect_gait_events(clean, "right")
-        elif sensor_name == "lower_back":
-            clean = signal_processor._remove_gravity(clean)
-
-        processed[sensor_name] = clean
+        processed[sensor_name] = signal_processor.process_sensor_dataframe(
+            df.copy(), sensor_name
+        )
 
     return processed
 
@@ -551,9 +695,11 @@ def extract_trial_features(processed: dict[str, pd.DataFrame], metadata: dict[st
     if lower_back is not None:
         trial_features.update(feature_extractor._trunk_dynamics(lower_back))
         trial_features.update(feature_extractor._spectral_features(lower_back, prefix="lb"))
+        trial_features.update(feature_extractor._orientation_features(lower_back, prefix="lb"))
 
     if head is not None:
         trial_features.update(feature_extractor._trunk_dynamics(head, prefix="head"))
+        trial_features.update(feature_extractor._orientation_features(head, prefix="head"))
 
     if left_foot is not None and right_foot is not None:
         trial_features.update(feature_extractor._gait_cycle_features(left_foot, right_foot))
@@ -563,6 +709,12 @@ def extract_trial_features(processed: dict[str, pd.DataFrame], metadata: dict[st
 
 
 def build_patient_feature_vector(trial_features: dict[str, Any]) -> pd.DataFrame:
+    """
+    Map one trial's features into the patient-level schema expected by checkpoints.
+
+    Training aggregates multiple trials per participant (mean/std/range/trend).
+    Here we use a degenerate mapping: mean=trial value, std=0, range=0, trend=NaN.
+    """
     row: dict[str, Any] = {
         "participant_id": trial_features.get("participant_id", "uploaded_participant"),
         "cohort": trial_features.get("cohort", "unknown"),
@@ -579,6 +731,8 @@ def build_patient_feature_vector(trial_features: dict[str, Any]) -> pd.DataFrame
         if isinstance(value, (int, float, np.integer, np.floating)) and np.isfinite(value):
             row[f"{key}_mean"] = float(value)
             row[f"{key}_std"] = 0.0
+            row[f"{key}_range"] = 0.0
+            row[f"{key}_trend"] = float("nan")
 
     feature_row = {col: row.get(col, np.nan) for col in patient_feature_columns}
     return pd.DataFrame([feature_row], columns=patient_feature_columns)
@@ -620,22 +774,26 @@ def predict_risk(feature_vector: pd.DataFrame) -> tuple[dict[str, Any], str]:
         raise HTTPException(status_code=500, detail="No fitted prediction models are available.")
 
     probabilities = model.predict_proba(feature_vector)[0]
-    risk_probability = float(probabilities[1])
-    risk_score = int(round(risk_probability * 100))
+    elevated_prob = float(elevated_risk_probability(probabilities.reshape(1, -1), config)[0])
+    risk_score = int(round(elevated_prob * 100))
 
-    if risk_score >= 70:
-        risk_level = "high"
-    elif risk_score >= 40:
-        risk_level = "moderate"
-    else:
-        risk_level = "low"
+    primary = clinical_threshold.get("primary_cutoff", {})
+    youden_prob = float(primary.get("probability", 0.5))
+    risk_level = assign_risk_level(elevated_prob, youden_prob)
+
+    note = screening_note(elevated_prob, youden_prob)
 
     return (
         {
             "risk_score": risk_score,
-            "risk_probability": risk_probability,
+            "risk_probability": elevated_prob,
             "risk_level": risk_level,
             "confidence": float(max(probabilities)),
+            "clinical_cutoff_probability": youden_prob,
+            "clinical_cutoff_risk_score": int(round(youden_prob * 100)),
+            "above_clinical_cutoff": elevated_prob >= youden_prob,
+            "screening_note": note,
+            "disclaimer": RESEARCH_PROTOTYPE_DISCLAIMER,
         },
         model_name,
     )
@@ -646,8 +804,9 @@ def predict_anomaly(trial_vector: pd.DataFrame) -> tuple[str, dict[str, Any]]:
         raise HTTPException(
             status_code=500,
             detail=(
-                "Anomaly artifact schema mismatch: retrain/export anomaly models with current "
-                "feature pipeline before submission use."
+                "Anomaly artifact schema mismatch: trial feature columns must match "
+                "trial_feature_schema.json and each scaler's n_features_in_ (Healthy-fit). "
+                f"{anomaly_schema_message} Retrain: python main.py --stage anomaly."
             ),
         )
 
@@ -673,27 +832,57 @@ def predict_anomaly(trial_vector: pd.DataFrame) -> tuple[str, dict[str, Any]]:
     return ("Detected" if votes >= 2 else "Normal"), details
 
 
-def build_metadata_graph(prediction: dict[str, Any], anomaly_status: str, metadata: dict[str, Any]) -> dict[str, float]:
-    confidence = float(prediction.get("confidence", 0.0)) * 100
-    anomaly_score = 100 if anomaly_status == "Detected" else 20
+def build_display_gauges(
+    prediction: dict[str, Any],
+    anomaly_status: str,
+    anomaly_details: dict[str, Any],
+    *,
+    n_trials_in_request: int = 1,
+) -> dict[str, Any]:
+    """UI sidebar bars — not SHAP; see DISPLAY_GAUGES_NOTE and returned schema."""
+    confidence_pct = round(float(prediction.get("confidence", 0.0)) * 100, 2)
+    risk_pct = float(prediction.get("risk_score", 0))
 
-    cohort = str(metadata.get("cohort", "unknown")).lower()
-    cohort_map = {
-        "healthy": 20,
-        "post-surg": 60,
-        "pd": 90,
-        "cva": 85,
-        "control": 20,
-        "elderly": 70,
+    anomaly_pct = 0.0
+    if anomaly_details.get("available"):
+        votes = int(anomaly_details.get("votes", 0))
+        n_methods = len(anomaly_details.get("methods") or {})
+        if n_methods > 0:
+            anomaly_pct = round(100.0 * votes / n_methods, 2)
+        elif anomaly_status == "Detected":
+            anomaly_pct = 100.0
+    elif anomaly_status == "Detected":
+        anomaly_pct = 100.0
+
+    training_trials = float(INFERENCE_SCOPE["training_trials"])
+    training_participants = float(INFERENCE_SCOPE["training_participants"])
+    typical_trials_per_participant = training_trials / max(training_participants, 1.0)
+    trial_coverage_pct = round(
+        min(100.0, 100.0 * n_trials_in_request / max(typical_trials_per_participant, 1.0)),
+        2,
+    )
+
+    values = {
+        "confidence": confidence_pct,
+        "anomaly": anomaly_pct,
+        "risk_score": risk_pct,
+        "trials": trial_coverage_pct,
     }
-    cohort_score = cohort_map.get(cohort, 50)
-    trials_score = min(100, 1 * 20)  # currently always 1 trial
 
     return {
-        "confidence": round(confidence, 2),
-        "anomaly": anomaly_score,
-        "cohort": cohort_score,
-        "trials": trials_score,
+        "display_only": True,
+        "not_shap": True,
+        "description": DISPLAY_GAUGES_NOTE,
+        "values": values,
+        "sources": {
+            "confidence": "max predicted class probability × 100 (classifier)",
+            "anomaly": "anomaly detector votes ÷ number of methods × 100",
+            "risk_score": "classifier risk_score (0–100)",
+            "trials": (
+                "n_trials_in_request vs mean training trials per participant "
+                f"(~{typical_trials_per_participant:.1f}); coverage indicator only"
+            ),
+        },
     }
 
 
@@ -705,7 +894,16 @@ def build_response(
     anomaly_status: str,
     anomaly_details: dict[str, Any],
 ) -> dict[str, Any]:
-    graph_values = build_metadata_graph(prediction, anomaly_status, metadata)
+    n_trials = 1
+    display_gauges = build_display_gauges(
+        prediction,
+        anomaly_status,
+        anomaly_details,
+        n_trials_in_request=n_trials,
+    )
+    gauge_values = display_gauges["values"]
+    # Deprecated alias for older frontends; "cohort" was never a model score.
+    graph_values = {**gauge_values, "cohort": gauge_values["risk_score"]}
 
     participant_id = metadata.get("participant_id") or metadata.get("patient_id") or "Uploaded Patient"
     trial_id = metadata.get("trial_id") or "Uploaded Trial"
@@ -718,14 +916,49 @@ def build_response(
         "risk_score": prediction["risk_score"],
         "risk_level": prediction["risk_level"],
         "anomaly_status": anomaly_status,
+        "display_gauges": display_gauges,
         "graph_values": graph_values,
         "model_used": model_name,
+        "inference_scope": {
+            **INFERENCE_SCOPE,
+            "n_trials_in_request": n_trials,
+            "note": INFERENCE_SCOPE_NOTE,
+        },
+        "clinical_threshold": {
+            "primary_cutoff": clinical_threshold.get("primary_cutoff", {}),
+            "clinical_screening_tools": clinical_threshold.get("clinical_screening_tools", {}),
+            "borderline_moderate_band": clinical_threshold.get("borderline_moderate_band", {}),
+            "this_request": {
+                "elevated_probability": prediction.get("risk_probability"),
+                "above_primary_cutoff": prediction.get("above_clinical_cutoff"),
+                "risk_level_rule": (
+                    "high if elevated_probability ≥ Youden J cutoff; "
+                    "moderate if in [0.5×Youden, Youden); low otherwise. "
+                    "Not Morse/STRATIFY score equivalents."
+                ),
+            },
+        },
+        "disclaimer": RESEARCH_PROTOTYPE_DISCLAIMER,
+        "screening_note": prediction.get("screening_note", ""),
+        "limitations": {
+            **limitations_payload(),
+            "confidence": CONFIDENCE_LIMITATION_NOTE,
+            "display_gauges": DISPLAY_GAUGES_NOTE,
+            "clinical_threshold": (
+                "Risk level uses Youden J from LOSO validation (see clinical_threshold.json), "
+                "not fixed 70/40 score bands. Morse Fall Scale and STRATIFY are cited for "
+                "screening-tool context only; IMU probability is not calibrated to those instruments."
+            ),
+            "paper_methods": PAPER_INFERENCE_LIMITATION,
+        },
         "metadata": {
             "patient_name": participant_id,
             "cohort": cohort,
             "confidence": f"{int(round(prediction['confidence'] * 100))}%",
+            "confidence_meaning": "model max class probability (not clinical calibration)",
             "anomaly": anomaly_status,
-            "trials": "1",
+            "trials": str(n_trials),
+            "inference_note": INFERENCE_SCOPE_NOTE,
         },
         "anomaly_details": anomaly_details,
         "request_id": secrets.token_hex(8),
@@ -749,11 +982,19 @@ async def root() -> dict[str, Any]:
 @app.get("/health")
 async def health_check() -> dict[str, Any]:
     try:
+        status = "healthy"
+        if patient_schema_mismatch or trial_schema_mismatch:
+            status = "degraded"
         return {
-            "status": "healthy",
+            "status": status,
             "models_loaded": len(models),
             "anomaly_models_loaded": len(anomaly_models),
-            "feature_count": len(patient_feature_columns),
+            "patient_feature_count": len(patient_feature_columns),
+            "anomaly_trial_feature_count": len(trial_feature_columns),
+            "expected_anomaly_n_features": expected_trial_feature_count,
+            "patient_schema_mismatch": patient_schema_mismatch,
+            "trial_schema_mismatch": trial_schema_mismatch,
+            "anomaly_schema_message": anomaly_schema_message or None,
             "api_version": "2.0.0",
         }
     except Exception:

@@ -7,6 +7,9 @@ FIX: _remove_gravity now estimates gravity using a very low-pass Butterworth
      The old approach failed when participants were already moving in the first
      second of a trial, producing a biased gravity estimate and distorted
      gravity-free acceleration channels.
+
+Deterministic: no random sampling or shuffling; output depends only on inputs
+and config (see docs/reproducibility.md).
 """
 
 from __future__ import annotations
@@ -36,6 +39,10 @@ class SignalProcessor:
         self.hp_cut  = pp["highpass_cutoff_hz"]
         self.order   = pp["lowpass_order"]
         self.beta    = pp["madgwick_beta"]
+        self.madgwick_enabled = pp.get("madgwick_enabled", True)
+        self.madgwick_sensors = set(pp.get("madgwick_sensors", ["head", "lower_back"]))
+        self.gyro_in_degrees = pp.get("gyro_in_degrees", True)
+        self.madgwick_use_mag = pp.get("madgwick_use_magnetometer", False)
 
         self.use_ds_events = pp["gait_event_source"] == "dataset"
 
@@ -83,28 +90,43 @@ class SignalProcessor:
             if df.empty:
                 continue
 
-            df = self._safe_filter(df)
-            df = self._compute_resultant(df)
-
+            df = self.process_sensor_dataframe(df, pos)
             clean[pos] = df
 
         if not clean:
             raise ValueError("No valid signals")
-
-        if not self.use_ds_events:
-            if "left_foot" in clean:
-                clean["left_foot"]  = self._detect_gait_events(clean["left_foot"],  "left")
-            if "right_foot" in clean:
-                clean["right_foot"] = self._detect_gait_events(clean["right_foot"], "right")
-
-        if "lower_back" in clean:
-            clean["lower_back"] = self._remove_gravity(clean["lower_back"])
 
         for pos, df in clean.items():
             out = self.out_dir / f"{trial_id}_{pos}.parquet"
             df.to_parquet(out, index=False)
 
     # ─────────────────────────────────────────
+
+    def process_sensor_dataframe(self, df: pd.DataFrame, sensor_position: str) -> pd.DataFrame:
+        """
+        Single-sensor preprocessing used by batch trials and live API inference.
+
+        Order: filter → resultants → Madgwick orientation (trunk) → gait events (feet)
+        → gravity removal (lower back).
+        """
+        if df.empty:
+            return df
+
+        df = self._safe_filter(df)
+        df = self._compute_resultant(df)
+
+        if self.madgwick_enabled and sensor_position in self.madgwick_sensors:
+            df = self._attach_orientation(df)
+
+        if not self.use_ds_events and sensor_position == "left_foot":
+            df = self._detect_gait_events(df, "left")
+        elif not self.use_ds_events and sensor_position == "right_foot":
+            df = self._detect_gait_events(df, "right")
+
+        if sensor_position == "lower_back":
+            df = self._remove_gravity(df)
+
+        return df
 
     def _safe_filter(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -191,7 +213,20 @@ class SignalProcessor:
 
     # ─────────────────────────────────────────
 
+    def detect_heel_strike_indices(self, df: pd.DataFrame, side: str) -> np.ndarray:
+        """Return sample indices of detected heel strikes (before mutating caller's frame)."""
+        marked = self._detect_gait_events(df.copy(), side)
+        col = f"heel_strike_{side}"
+        if col not in marked.columns:
+            return np.array([], dtype=int)
+        return np.where(marked[col].values == 1)[0]
+
     def _detect_gait_events(self, df: pd.DataFrame, side: str) -> pd.DataFrame:
+        """
+        Heel-strike peaks on inverted vertical acceleration (75th-percentile height).
+
+        Validated against Figshare annotations via ``validate_gait_events`` stage.
+        """
         if "acc_z" not in df.columns:
             return df
 
@@ -215,24 +250,72 @@ class SignalProcessor:
         return df
 
     # ─────────────────────────────────────────
-    # OPTIONAL: Madgwick (kept for future use)
+    # Madgwick sensor fusion (ahrs)
     # ─────────────────────────────────────────
 
     def compute_orientation(self, df: pd.DataFrame) -> np.ndarray:
+        """Quaternion time series [w, x, y, z] via Madgwick IMU fusion."""
         req = ["acc_x", "acc_y", "acc_z", "gyr_x", "gyr_y", "gyr_z"]
+        n = len(df)
+        if not all(c in df.columns for c in req) or n == 0:
+            return np.tile([1.0, 0.0, 0.0, 0.0], (max(n, 1), 1))
 
-        if not all(c in df.columns for c in req):
-            return np.tile([1, 0, 0, 0], (len(df), 1))
+        from ahrs.filters import Madgwick
 
-        dt  = 1.0 / self.fs
-        q   = np.array([1.0, 0.0, 0.0, 0.0])
-        quats = []
+        acc = df[["acc_x", "acc_y", "acc_z"]].values.astype(float)
+        gyr = df[["gyr_x", "gyr_y", "gyr_z"]].values.astype(float)
+        if self.gyro_in_degrees:
+            gyr = np.deg2rad(gyr)
 
-        acc = df[["acc_x", "acc_y", "acc_z"]].values
-        gyr = df[["gyr_x", "gyr_y", "gyr_z"]].values
+        madgwick = Madgwick(frequency=float(self.fs), beta=float(self.beta))
+        quats = np.zeros((n, 4), dtype=float)
+        quats[0] = np.array([1.0, 0.0, 0.0, 0.0])
 
-        for i in range(len(df)):
-            q = self._madgwick_step(q, acc[i], gyr[i], dt)
-            quats.append(q.copy())
+        mag = None
+        if self.madgwick_use_mag and all(
+            c in df.columns for c in ["mag_x", "mag_y", "mag_z"]
+        ):
+            mag = df[["mag_x", "mag_y", "mag_z"]].values.astype(float)
 
-        return np.array(quats)
+        for i in range(1, n):
+            if mag is not None:
+                quats[i] = madgwick.updateMARG(quats[i - 1], gyr[i], acc[i], mag[i])
+            else:
+                quats[i] = madgwick.updateIMU(quats[i - 1], gyr[i], acc[i])
+
+        return quats
+
+    @staticmethod
+    def _euler_tilt_from_quaternions(quats: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Scalar-first quaternions → roll, pitch, tilt-from-vertical (radians)."""
+        w, x, y, z = quats[:, 0], quats[:, 1], quats[:, 2], quats[:, 3]
+
+        sinr_cosp = 2.0 * (w * x + y * z)
+        cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+        roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+        sinp = 2.0 * (w * y - z * x)
+        pitch = np.arcsin(np.clip(sinp, -1.0, 1.0))
+
+        gx = 2.0 * (x * z - w * y)
+        gy = 2.0 * (y * z + w * x)
+        gz = 1.0 - 2.0 * (x * x + y * y)
+        tilt = np.arctan2(np.sqrt(gx * gx + gy * gy), np.clip(gz, 1e-9, None))
+
+        return roll, pitch, tilt
+
+    def _attach_orientation(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Append quaternion and trunk-orientation columns for feature extraction."""
+        df = df.copy()
+        quats = self.compute_orientation(df)
+        roll, pitch, tilt = self._euler_tilt_from_quaternions(quats)
+
+        df["quat_w"] = quats[:, 0]
+        df["quat_x"] = quats[:, 1]
+        df["quat_y"] = quats[:, 2]
+        df["quat_z"] = quats[:, 3]
+        df["roll_rad"] = roll
+        df["pitch_rad"] = pitch
+        df["tilt_rad"] = tilt
+        df["tilt_deg"] = np.rad2deg(tilt)
+        return df
