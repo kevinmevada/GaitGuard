@@ -1,10 +1,10 @@
 """
 src/ingestion/data_loader.py
-FINAL FIXED VERSION (robust + safe)
 
-FIX: _infer_cohort now matches on full path-segment tokens (split on os.sep and
-     underscore) instead of raw substring search. This prevents false positives
-     such as "thresholds" matching "hs" (Healthy), or "mesh" matching "hs".
+Cohort resolution priority:
+  1. meta.json  → "pathologyKey" (ground-truth label from Figshare dataset)
+  2. meta.json  → "cohort"       (if manually annotated)
+  3. path-token → _infer_cohort  (fallback for unlabeled directories)
 """
 
 from __future__ import annotations
@@ -42,6 +42,18 @@ COHORT_LABEL_MAP = {
 }
 
 LATERALITY_BIASED_COHORTS = {"HipOA", "CVA"}
+
+# Figshare dataset pathologyKey → internal cohort name.
+PATHOLOGY_KEY_MAP = {
+    "HS":   "Healthy",
+    "HOA":  "HipOA",
+    "KOA":  "KneeOA",
+    "ACL":  "ACL",
+    "PD":   "PD",
+    "CVA":  "CVA",
+    "CIPN": "CIPN",
+    "RIL":  "RIL",
+}
 
 # Columns that are label-derived and must never enter feature-space analysis.
 METADATA_ONLY_COLS = {
@@ -83,6 +95,8 @@ class TrialRecord:
         laterality_biased: bool,
         fall_probability: float,
         multiclass_label: int | None = None,
+        uturn_start: int | None = None,
+        uturn_end: int | None = None,
     ):
         self.trial_id = trial_id
         self.participant_id = participant_id
@@ -99,6 +113,8 @@ class TrialRecord:
         self.risk_label = risk_label
         self.laterality_biased = laterality_biased
         self.fall_probability = fall_probability
+        self.uturn_start = uturn_start
+        self.uturn_end = uturn_end
 
     @property
     def duration_s(self) -> float:
@@ -122,6 +138,8 @@ class TrialRecord:
             "fall_probability": self.fall_probability,
             "duration_s":       self.duration_s,
             "has_gait_events_gt": self.gait_events is not None and not self.gait_events.empty,
+            "uturn_start":      self.uturn_start,
+            "uturn_end":        self.uturn_end,
         }
 
 
@@ -238,9 +256,19 @@ class DataLoader:
         meta = self._load_metadata(trial_dir)
 
         if "cohort" not in meta:
-            meta["cohort"] = self._infer_cohort(trial_dir)
+            pkey = meta.get("pathologyKey", "")
+            if pkey in PATHOLOGY_KEY_MAP:
+                meta["cohort"] = PATHOLOGY_KEY_MAP[pkey]
+            else:
+                meta["cohort"] = self._infer_cohort(trial_dir)
 
         cohort    = meta.get("cohort", "Unknown")
+        if cohort == "Unknown":
+            logger.warning(
+                f"Cohort UNKNOWN for {trial_dir.name} "
+                f"(pathologyKey={meta.get('pathologyKey', 'MISSING')}). "
+                f"Check PATHOLOGY_KEY_MAP or _infer_cohort."
+            )
         from src.dataset.label_policy import resolve_labels
 
         resolved = resolve_labels(cohort, self.config)
@@ -274,6 +302,10 @@ class DataLoader:
 
         gait_events = load_ground_truth_gait_events(trial_dir)
 
+        uturn_bounds = meta.get("uturnBoundaries")
+        uturn_start = int(uturn_bounds[0]) if uturn_bounds and len(uturn_bounds) >= 2 else None
+        uturn_end = int(uturn_bounds[1]) if uturn_bounds and len(uturn_bounds) >= 2 else None
+
         return TrialRecord(
             trial_id=trial_dir.name,
             participant_id=str(meta.get("participant_id", "unknown")),
@@ -288,6 +320,8 @@ class DataLoader:
             multiclass_label=multiclass_label,
             laterality_biased=cohort in LATERALITY_BIASED_COHORTS,
             fall_probability=fall_probability,
+            uturn_start=uturn_start,
+            uturn_end=uturn_end,
         )
 
     # ─────────────────────────────────────────

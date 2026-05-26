@@ -915,6 +915,8 @@ def build_response(
         "trial_id": trial_id,
         "risk_score": prediction["risk_score"],
         "risk_level": prediction["risk_level"],
+        "single_trial_limitation": INFERENCE_SCOPE_NOTE,
+        "confidence_limitation": CONFIDENCE_LIMITATION_NOTE,
         "anomaly_status": anomaly_status,
         "display_gauges": display_gauges,
         "graph_values": graph_values,

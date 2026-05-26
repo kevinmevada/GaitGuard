@@ -91,6 +91,17 @@ features:
     - power_1_3hz
     - power_3_10hz
     - harmonic_ratio
+    - wavelet_energy_a4             # DWT approximation band energy (0–3.125 Hz)
+    - wavelet_energy_d1             # DWT detail band energy (25–50 Hz)
+    - wavelet_energy_d2             # DWT detail band energy (12.5–25 Hz)
+    - wavelet_energy_d3             # DWT detail band energy (6.25–12.5 Hz)
+    - wavelet_energy_d4             # DWT detail band energy (3.125–6.25 Hz)
+    - wavelet_ratio_a4              # energy ratio per sub-band
+    - wavelet_ratio_d1
+    - wavelet_ratio_d2
+    - wavelet_ratio_d3
+    - wavelet_ratio_d4
+    - wavelet_entropy               # Shannon entropy of sub-band energy distribution
 
   trunk_dynamics:
     - rms_acc_ap
@@ -101,6 +112,8 @@ features:
     - jerk_max
     - lyapunov
     - apen
+    - head_lb_rms_ratio           # head/LB postural transmission coefficient
+    - head_lb_lyapunov_ratio      # head/LB dynamic stability ratio
 
   orientation:
     - tilt_mean_deg
@@ -117,6 +130,8 @@ features:
   turning:
     - turn_duration_mean
     - turn_velocity_mean
+    - turn_velocity_peak
+    - turn_jerk_mean
 
   # Patient-level stats across within-session trials (ordered by session, trial_id)
   patient_aggregation:
@@ -170,6 +185,7 @@ models:
     - lightgbm
     - random_forest
     - svm
+    - mlp
 
   tuning:
     enabled: true
@@ -187,6 +203,8 @@ models:
     random_state: 42   # keep equal to reproducibility.seed
     nested_n_trials: 10
     nested_timeout_per_model: 300
+    leakage_comparison: true      # run ungrouped StratifiedKFold to quantify subject-leakage bias
+    leakage_kfold_splits: 10
     # Paired AUC significance (DeLong + bootstrap MWU/Wilcoxon) for Table 1
     auc_pairwise_tests: true
     auc_reference_model: null   # null => highest-AUC model (usually ensemble)
@@ -211,16 +229,22 @@ models:
       meta_learner: logistic_regression
       cv_folds: 5                  # inner group-CV on LOSO train fold for meta features
 
-# Deep Learning (disabled for now)
+# Deep Learning
 deep_learning:
-  enabled: false
-  sequence_length: 256
-  overlap: 0.5
-  batch_size: 32
-  max_epochs: 100
+  enabled: true
+  sequence_length: 256           # window length in samples (256 / 100 Hz ≈ 2.56 s)
+  overlap: 0.5                   # 50 % overlap between windows
+  batch_size: 64
+  max_epochs: 80
   learning_rate: 0.001
-  early_stopping_patience: 15
-  device: "auto"
+  early_stopping_patience: 12
+  device: "auto"                 # "auto" → CUDA if available, else CPU
+  models:                        # architectures to evaluate in LOSO
+    - inception_time             # Fawaz et al. 2020 — benchmark leader
+    - gait_transformer           # Transformer encoder for sensor time series
+    - tcn                        # Temporal Convolutional Network (Bai et al. 2018)
+    - cnn1d                      # Residual 1-D CNN with channel attention
+    - bilstm_attention           # Bidirectional LSTM + multi-head attention
 
 # Feature ablation (LOSO AUC; run after train, ideally after evaluate for SHAP context)
 ablation:

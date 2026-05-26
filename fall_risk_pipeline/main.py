@@ -28,6 +28,7 @@ STAGES = [
     "select_features",
     "train",
     "evaluate",
+    "train_deep",
     "ablation",
     "predict",
     "anomaly",
@@ -83,6 +84,13 @@ def run_stage(stage: str, config: dict, *, fast_eval: bool = False):
         elif stage == "train":
             from src.models.trainer import ModelTrainer
             ModelTrainer(config).run()
+        elif stage == "train_deep":
+            dl_cfg = config.get("deep_learning", {})
+            if dl_cfg.get("enabled", False):
+                from src.models.deep_trainer import DeepLearningPipeline
+                DeepLearningPipeline(config).run()
+            else:
+                logger.info("Deep learning disabled in config; skipping train_deep.")
         elif stage == "evaluate":
             from src.evaluation.evaluator import Evaluator
 

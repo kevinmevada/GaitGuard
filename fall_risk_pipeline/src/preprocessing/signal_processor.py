@@ -46,6 +46,16 @@ class SignalProcessor:
 
         self.use_ds_events = pp["gait_event_source"] == "dataset"
 
+        if self.madgwick_enabled:
+            try:
+                from ahrs.filters import Madgwick as _  # noqa: F401
+            except ImportError:
+                logger.error(
+                    "Madgwick enabled in config but 'ahrs' package is not installed. "
+                    "Orientation features will be MISSING. "
+                    "Install with: pip install ahrs>=0.3.1"
+                )
+
     # ─────────────────────────────────────────
 
     def run(self):
@@ -116,7 +126,15 @@ class SignalProcessor:
         df = self._compute_resultant(df)
 
         if self.madgwick_enabled and sensor_position in self.madgwick_sensors:
-            df = self._attach_orientation(df)
+            try:
+                df = self._attach_orientation(df)
+            except ImportError:
+                if not getattr(self, "_ahrs_warned", False):
+                    logger.error(
+                        "ahrs package not installed — orientation features (tilt, roll, pitch) "
+                        "will be MISSING for all trials. Install with: pip install ahrs>=0.3.1"
+                    )
+                    self._ahrs_warned = True
 
         if not self.use_ds_events and sensor_position == "left_foot":
             df = self._detect_gait_events(df, "left")

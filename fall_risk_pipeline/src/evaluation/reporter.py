@@ -36,7 +36,7 @@ class ReportGenerator:
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
 
     def run(self):
-        # Table 1 demographics and class distribution are written at ingest (see data_loader).
+        self._regenerate_demographics()
         self._ensure_significance_pvalues()
 
         metrics_path = self.metrics_dir / "metrics.csv"
@@ -151,6 +151,8 @@ class ReportGenerator:
         ethics_section = self._ethics_section()
         limitations_section = self._limitations_section()
         ensemble_section = self._ensemble_comparison_section()
+        leakage_section = self._leakage_comparison_section()
+        dl_section = self._deep_learning_comparison_section()
         class_section = self._append_class_distribution_section()
         inference_section = self._deployment_inference_section()
         demographics_section = self._demographics_section()
@@ -171,6 +173,7 @@ Generated: {timestamp}
 {ethics_section}
 {limitations_section}
 {ensemble_section}
+{dl_section}
 {inference_section}
 ## Validation
 - Strategy: {validation_strategy}
@@ -223,6 +226,10 @@ Generated: {timestamp}
 - SHAP plots
 - ROC / PR curves
 
+## Subject-Leakage Comparison (Grouped vs Ungrouped CV)
+
+{leakage_section}
+
 ## Reproducibility
 
 python main.py --config configs/pipeline_config.yaml
@@ -231,6 +238,21 @@ python main.py --config configs/pipeline_config.yaml
         path = self.metrics_dir / "pipeline_report.md"
         path.write_text(report, encoding="utf-8")
         logger.info(f"Markdown report saved -> {path}")
+
+    def _regenerate_demographics(self) -> None:
+        """(Re)generate Table 1 demographics from trial_metadata.csv."""
+        try:
+            from src.reporting.demographics_table import generate_demographics_table
+            table = generate_demographics_table(self.config)
+            if table is not None:
+                logger.info("Table 1 demographics (re)generated in report stage.")
+            else:
+                logger.warning(
+                    "Demographics table could not be generated — "
+                    "trial_metadata.csv missing or empty. Run ingest first."
+                )
+        except Exception as exc:
+            logger.warning(f"Demographics table generation failed: {exc}")
 
     def _ensure_significance_pvalues(self) -> None:
         """Recompute DeLong / McNemar p-values from saved OOF predictions if missing."""
@@ -506,6 +528,35 @@ python main.py --config configs/pipeline_config.yaml
         lines.append("")
         return "\n".join(lines)
 
+    def _leakage_comparison_section(self) -> str:
+        lc_path = self.metrics_dir / "leakage_comparison.csv"
+        if not lc_path.exists():
+            return "_Not available — run the evaluate stage to generate._"
+
+        df = pd.read_csv(lc_path)
+        lines = [
+            "Compares LOSO (grouped, no subject leakage) against standard "
+            "StratifiedKFold (ungrouped, permits subject leakage) to quantify "
+            "the optimistic bias introduced when the same participant appears "
+            "in both train and test sets.",
+            "",
+            "| Model | AUC (Grouped LOSO) | AUC (Ungrouped KFold) | Inflation | Inflation % |",
+            "|---|---:|---:|---:|---:|",
+        ]
+        for row in df.itertuples(index=False):
+            lines.append(
+                f"| {row.model} | {row.auc_grouped_loso:.4f} | "
+                f"{row.auc_ungrouped_kfold:.4f} | "
+                f"{row.auc_inflation:+.4f} | "
+                f"{row.inflation_pct:+.1f}% |"
+            )
+        mean_infl = df["inflation_pct"].mean()
+        lines.append("")
+        lines.append(
+            f"**Mean AUC inflation from subject leakage: {mean_infl:+.1f}%**"
+        )
+        return "\n".join(lines)
+
     def _ensemble_comparison_section(self) -> str:
         comp_path = self.metrics_dir / "ensemble_comparison.csv"
         if not comp_path.exists():
@@ -542,5 +593,50 @@ python main.py --config configs/pipeline_config.yaml
                     f"Paired DeLong (soft voting vs stacking): p = {r.get('p_delong_fmt', r.get('p_delong', '—'))}.",
                     "See `ensemble_pairwise_pvalues.csv`.",
                 ])
+        lines.append("")
+        return "\n".join(lines)
+
+    def _deep_learning_comparison_section(self) -> str:
+        dl_path = self.metrics_dir / "deep_learning_metrics.csv"
+        if not dl_path.exists():
+            return ""
+
+        dl = pd.read_csv(dl_path).sort_values("auc", ascending=False)
+        lines = [
+            "## Deep learning comparison (LOSO, raw IMU windows)",
+            "",
+            "Architectures trained end-to-end on windowed raw sensor signals "
+            "(4 IMUs × 13 channels, 256-sample windows at 100 Hz). "
+            "Each model evaluated under the same Leave-One-Subject-Out protocol "
+            "as the classical ML models (N participants).",
+            "",
+            "| Architecture | AUC | 95% CI | Macro F1 | Accuracy |",
+            "|---|---:|---|---:|---:|",
+        ]
+        for row in dl.itertuples(index=False):
+            name = str(row.model).replace("dl_", "").replace("_", " ").title()
+            ci = (
+                f"[{float(row.auc_ci_low):.3f}, {float(row.auc_ci_high):.3f}]"
+                if pd.notna(getattr(row, "auc_ci_low", float("nan")))
+                else "—"
+            )
+            lines.append(
+                f"| {name} | {float(row.auc):.4f} | {ci} | "
+                f"{float(row.macro_f1):.4f} | {float(row.accuracy):.4f} |"
+            )
+
+        metrics_path = self.metrics_dir / "metrics.csv"
+        if metrics_path.exists():
+            mdf = pd.read_csv(metrics_path)
+            classical = mdf[~mdf["model"].str.startswith("dl_")]
+            if not classical.empty:
+                best_cl = classical.loc[classical["auc"].idxmax()]
+                best_dl = dl.iloc[0]
+                lines.extend([
+                    "",
+                    f"Best classical ML: **{best_cl['model']}** (AUC {float(best_cl['auc']):.4f})",
+                    f"Best deep learning: **{best_dl['model']}** (AUC {float(best_dl['auc']):.4f})",
+                ])
+
         lines.append("")
         return "\n".join(lines)

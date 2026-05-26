@@ -145,6 +145,10 @@ class Evaluator:
             self._plot_roc_all(all_results)
             self._plot_pr_curves(all_results)
             self._plot_calibration(all_results)
+        else:
+            self._plot_multiclass_roc(all_results)
+            self._plot_multiclass_calibration(all_results)
+            self._save_per_class_auc_table(all_results)
         self._plot_confusion_matrices(all_results)
 
         best_name = max(all_results, key=lambda n: all_results[n]["auc"])
@@ -167,7 +171,7 @@ class Evaluator:
                 "multiclass uses macro-OVR AUC and argmax predictions."
             )
 
-        self._shap_analysis(best_name, X, y, groups, feat_names)
+        self._shap_analysis(best_name, X, y, groups, feat_names, cohorts)
 
         self._save_oof_predictions(all_results)
         self._export_clinical_threshold(all_results, best_name)
@@ -187,6 +191,9 @@ class Evaluator:
             fold_disc_df.to_csv(
                 self.metrics_dir / "mcnemar_fold_discordant.csv", index=False
             )
+
+        self._leakage_comparison(X, y, groups, all_results)
+
         return all_results
 
     # ------------------------------------------------------------------
@@ -1028,6 +1035,75 @@ class Evaluator:
         ax.set_title("Nested Grouped Calibration")
         self._save(fig, "calibration")
 
+    def _plot_multiclass_calibration(self, results: dict) -> None:
+        """Per-class OvR reliability diagrams + Brier score for multiclass."""
+        from src.dataset.label_policy import MULTICLASS_NAMES
+
+        for name, res in results.items():
+            y_true = np.asarray(res["y_true"]).astype(int)
+            y_proba = res.get("y_proba_full")
+            if y_proba is None:
+                continue
+            y_proba = np.asarray(y_proba, dtype=float)
+            labels = sorted(set(np.unique(y_true)))
+            n_classes = len(labels)
+
+            fig, axes = plt.subplots(1, n_classes, figsize=(5 * n_classes, 4.5), squeeze=False)
+            axes = axes[0]
+
+            brier_scores = {}
+            for i, lbl in enumerate(labels):
+                ax = axes[i]
+                class_name = MULTICLASS_NAMES.get(lbl, str(lbl))
+                y_bin = (y_true == lbl).astype(int)
+                p_bin = y_proba[:, lbl] if lbl < y_proba.shape[1] else np.zeros(len(y_true))
+
+                try:
+                    frac_pos, mean_pred = calibration_curve(y_bin, p_bin, n_bins=10)
+                    ax.plot(mean_pred, frac_pos, "s-", color=self._OVR_COLORS[i % len(self._OVR_COLORS)], lw=2)
+                except (ValueError, IndexError):
+                    pass
+
+                ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5)
+                ax.set_xlabel("Mean predicted probability")
+                ax.set_ylabel("Fraction of positives")
+                ax.set_title(class_name, fontsize=10)
+                ax.set_xlim(-0.02, 1.02)
+                ax.set_ylim(-0.02, 1.02)
+
+                brier = float(np.mean((p_bin - y_bin) ** 2))
+                brier_scores[class_name] = brier
+                ax.text(0.05, 0.9, f"Brier={brier:.3f}", transform=ax.transAxes, fontsize=9)
+
+            fig.suptitle(f"{name} — per-class calibration (OvR)", fontsize=12)
+            fig.tight_layout()
+            self._save(fig, f"calibration_ovr_{name}")
+
+        best_name = max(results, key=lambda n: results[n]["auc"])
+        best_res = results[best_name]
+        y_true = np.asarray(best_res["y_true"]).astype(int)
+        y_proba = best_res.get("y_proba_full")
+        if y_proba is not None:
+            y_proba = np.asarray(y_proba, dtype=float)
+            labels = sorted(set(np.unique(y_true)))
+            brier_rows = []
+            for lbl in labels:
+                class_name = MULTICLASS_NAMES.get(lbl, str(lbl))
+                y_bin = (y_true == lbl).astype(int)
+                p_bin = y_proba[:, lbl] if lbl < y_proba.shape[1] else np.zeros(len(y_true))
+                brier_rows.append({
+                    "model": best_name,
+                    "class": class_name,
+                    "brier_score": float(np.mean((p_bin - y_bin) ** 2)),
+                    "mean_predicted_prob": float(np.mean(p_bin)),
+                    "prevalence": float(np.mean(y_bin)),
+                })
+            if brier_rows:
+                pd.DataFrame(brier_rows).to_csv(
+                    self.metrics_dir / "calibration_brier_scores.csv", index=False
+                )
+                logger.info("Brier scores saved → calibration_brier_scores.csv")
+
     def _plot_confusion_matrices(self, results):
         for name, res in results.items():
             fig, ax = plt.subplots()
@@ -1036,7 +1112,79 @@ class Evaluator:
             ax.set_title(name)
             self._save(fig, f"cm_{name}")
 
-    def _shap_analysis(self, name: str, X, y, groups, feat_names: list[str]) -> None:
+    _OVR_COLORS = ["#2196F3", "#FF9800", "#F44336", "#4CAF50", "#9C27B0"]
+
+    def _plot_multiclass_roc(self, results: dict) -> None:
+        """Per-class OvR ROC curves for every model (multiclass)."""
+        for name, res in results.items():
+            per_class_roc = res.get("per_class_roc")
+            if not per_class_roc:
+                continue
+
+            fig, ax = plt.subplots(figsize=(7, 6))
+            for i, (lbl, roc_data) in enumerate(sorted(per_class_roc.items())):
+                c = self._OVR_COLORS[i % len(self._OVR_COLORS)]
+                ax.plot(
+                    roc_data["fpr"], roc_data["tpr"],
+                    color=c, lw=2,
+                    label=f"{roc_data['name']} (AUC={roc_data['auc']:.3f})",
+                )
+            ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5)
+            auc_macro = res.get("auc", float("nan"))
+            ax.set_xlabel("False Positive Rate")
+            ax.set_ylabel("True Positive Rate")
+            ax.set_title(f"{name} — OvR ROC (macro AUC={auc_macro:.3f})")
+            ax.legend(loc="lower right", fontsize=8)
+            fig.tight_layout()
+            self._save(fig, f"roc_ovr_{name}")
+
+        best_name = max(results, key=lambda n: results[n]["auc"])
+        best_roc = results[best_name].get("per_class_roc")
+        if best_roc:
+            fig, ax = plt.subplots(figsize=(7, 6))
+            for i, (lbl, roc_data) in enumerate(sorted(best_roc.items())):
+                c = self._OVR_COLORS[i % len(self._OVR_COLORS)]
+                ax.plot(
+                    roc_data["fpr"], roc_data["tpr"],
+                    color=c, lw=2,
+                    label=f"{roc_data['name']} (AUC={roc_data['auc']:.3f})",
+                )
+            ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5)
+            ax.set_xlabel("False Positive Rate")
+            ax.set_ylabel("True Positive Rate")
+            ax.set_title(f"Best model ({best_name}) — per-class OvR ROC")
+            ax.legend(loc="lower right", fontsize=8)
+            fig.tight_layout()
+            self._save(fig, "roc_ovr_best")
+
+    def _save_per_class_auc_table(self, results: dict) -> None:
+        """Save per-class AUC / sensitivity / specificity table for all models."""
+        rows = []
+        for name, res in results.items():
+            per_class = res.get("per_class_metrics", {})
+            for class_name, metrics in per_class.items():
+                rows.append({
+                    "model": name,
+                    "class": class_name,
+                    "auc_ovr": metrics.get("auc_ovr", float("nan")),
+                    "avg_precision": metrics.get("avg_precision", float("nan")),
+                    "sensitivity": metrics.get("sensitivity", float("nan")),
+                    "specificity": metrics.get("specificity", float("nan")),
+                    "precision": metrics.get("precision", float("nan")),
+                    "recall": metrics.get("recall", float("nan")),
+                    "f1": metrics.get("f1", float("nan")),
+                    "support": metrics.get("support", 0),
+                })
+        if rows:
+            df = pd.DataFrame(rows)
+            out = self.metrics_dir / "per_class_metrics.csv"
+            df.to_csv(out, index=False)
+            logger.info(f"Per-class AUC/metrics table saved → {out}")
+
+    def _shap_analysis(
+        self, name: str, X, y, groups, feat_names: list[str],
+        cohorts: np.ndarray | None = None,
+    ) -> None:
         if not self.config["explainability"]["shap_enabled"]:
             return
 
@@ -1044,7 +1192,7 @@ class Evaluator:
         if strategy == "full_checkpoint":
             self._shap_full_checkpoint_background(name, X, y, feat_names)
         else:
-            self._shap_loso_aggregate(name, X, y, groups, feat_names)
+            self._shap_loso_aggregate(name, X, y, groups, feat_names, cohorts=cohorts)
 
     def _unwrap_pipeline_model(self, model: Any) -> tuple[Any, Any]:
         """Return (classifier, preprocess_transformer or None)."""
@@ -1094,11 +1242,13 @@ class Evaluator:
             return None
 
     def _shap_loso_aggregate(
-        self, name: str, X: np.ndarray, y: np.ndarray, groups: np.ndarray, feat_names: list[str]
+        self, name: str, X: np.ndarray, y: np.ndarray, groups: np.ndarray,
+        feat_names: list[str], *, cohorts: np.ndarray | None = None,
     ) -> None:
         """
         Compute SHAP on every LOSO held-out fold (refit per fold), concatenate
         all OOF explanations, and aggregate mean |SHAP| for global importance.
+        Then produce per-cohort SHAP breakdowns.
         """
         checkpoint = self._load_checkpoint(name)
         if checkpoint is None:
@@ -1113,6 +1263,7 @@ class Evaluator:
 
         fold_shap_blocks: list[np.ndarray] = []
         fold_x_blocks: list[np.ndarray] = []
+        fold_cohort_blocks: list[np.ndarray] = []
         n_explained = 0
 
         for subj in tqdm(
@@ -1143,6 +1294,8 @@ class Evaluator:
 
             fold_shap_blocks.append(shap_block)
             fold_x_blocks.append(X_proc)
+            if cohorts is not None:
+                fold_cohort_blocks.append(cohorts[idx])
             n_explained += len(X_proc)
 
         if not fold_shap_blocks:
@@ -1161,6 +1314,10 @@ class Evaluator:
             f"SHAP {name}: LOSO aggregate over {shap_all.shape[0]} OOF rows "
             f"({len(fold_shap_blocks)} folds)"
         )
+
+        if cohorts is not None and fold_cohort_blocks:
+            cohort_labels = np.concatenate(fold_cohort_blocks)
+            self._shap_per_cohort(name, shap_all, x_all, cohort_labels, feat_names)
 
     def _shap_full_checkpoint_background(
         self, name: str, X: np.ndarray, y: np.ndarray, feat_names: list[str]
@@ -1253,6 +1410,138 @@ class Evaluator:
         ax.set_title(f"{name} — global feature importance")
         fig.tight_layout()
         self._save_shap(fig, f"shap_bar_{name}")
+
+    def _shap_per_cohort(
+        self,
+        name: str,
+        shap_all: np.ndarray,
+        x_all: np.ndarray,
+        cohort_labels: np.ndarray,
+        feat_names: list[str],
+    ) -> None:
+        """Per-cohort SHAP importance tables and bar plots."""
+        unique_cohorts = np.unique(cohort_labels)
+        top_k = int(self.config["explainability"].get("top_features_plot", 20))
+        all_rows = []
+
+        for cohort in sorted(unique_cohorts):
+            mask = cohort_labels == cohort
+            if mask.sum() < 2:
+                continue
+            shap_c = shap_all[mask]
+            mean_abs_c = np.abs(shap_c).mean(axis=0)
+
+            for i, fname in enumerate(feat_names):
+                all_rows.append({
+                    "cohort": cohort,
+                    "feature": fname,
+                    "mean_abs_shap": float(mean_abs_c[i]),
+                    "std_abs_shap": float(np.abs(shap_c[:, i]).std()),
+                    "n_subjects": int(mask.sum()),
+                })
+
+            order = np.argsort(mean_abs_c)[::-1][:top_k]
+            labels = [feat_names[i] for i in order][::-1]
+            values = mean_abs_c[order][::-1]
+
+            fig, ax = plt.subplots(figsize=(8, max(4, top_k * 0.25)))
+            ax.barh(labels, values, color="steelblue")
+            ax.set_xlabel("Mean |SHAP|")
+            ax.set_title(f"{name} — {cohort} (n={mask.sum()})")
+            fig.tight_layout()
+            self._save_shap(fig, f"shap_bar_{name}_{cohort}")
+
+        if all_rows:
+            df = pd.DataFrame(all_rows)
+            out = self.metrics_dir / f"shap_importance_{name}_per_cohort.csv"
+            df.to_csv(out, index=False)
+            logger.info(
+                f"Per-cohort SHAP saved → {out} "
+                f"({len(unique_cohorts)} cohorts)"
+            )
+
+    def _leakage_comparison(
+        self, X: np.ndarray, y: np.ndarray, groups: np.ndarray,
+        grouped_results: dict[str, dict],
+    ) -> None:
+        """Run ungrouped StratifiedKFold CV to quantify subject-leakage inflation.
+
+        Produces leakage_comparison.csv with grouped (LOSO) vs ungrouped AUC
+        for each model, showing the optimistic bias from subject leakage.
+        """
+        eval_cfg = self.config["models"]["evaluation"]
+        if not eval_cfg.get("leakage_comparison", True):
+            logger.info("Leakage comparison disabled in config — skipping.")
+            return
+
+        from sklearn.model_selection import StratifiedKFold
+        import sklearn.base as skbase
+
+        n_folds = eval_cfg.get("leakage_kfold_splits", 10)
+        rs = eval_cfg["random_state"]
+        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=rs)
+        binary_task = is_binary_task(y, self.config)
+        rows = []
+
+        model_names = [n for n in grouped_results if not n.startswith("ensemble_")]
+
+        for name in model_names:
+            checkpoint = self._load_checkpoint(name)
+            if checkpoint is None:
+                continue
+
+            all_true, all_prob = [], []
+            for train_idx, test_idx in skf.split(X, y):
+                if len(np.unique(y[train_idx])) < 2:
+                    continue
+                fold_model = skbase.clone(checkpoint)
+                fold_model.fit(X[train_idx], y[train_idx])
+
+                if binary_task:
+                    proba = fold_model.predict_proba(X[test_idx])[:, 1]
+                    all_prob.extend(proba.tolist())
+                else:
+                    proba = fold_model.predict_proba(X[test_idx])
+                    all_prob.append(proba)
+                all_true.extend(y[test_idx].tolist())
+
+            if not all_true:
+                continue
+
+            y_true = np.array(all_true)
+            if binary_task:
+                y_prob = np.array(all_prob)
+                ungrouped_auc = float(roc_auc_score(y_true, y_prob))
+            else:
+                y_prob = np.vstack(all_prob)
+                ungrouped_auc = float(
+                    roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro")
+                )
+
+            grouped_auc = float(grouped_results[name]["auc"])
+            inflation = ungrouped_auc - grouped_auc
+
+            rows.append({
+                "model": name,
+                "auc_grouped_loso": grouped_auc,
+                "auc_ungrouped_kfold": ungrouped_auc,
+                "auc_inflation": inflation,
+                "inflation_pct": float(inflation / (grouped_auc + 1e-10) * 100),
+                "grouped_strategy": "LOSO",
+                "ungrouped_strategy": f"StratifiedKFold(k={n_folds})",
+                "n_participants": len(np.unique(groups)),
+            })
+            logger.info(
+                f"  Leakage check {name}: "
+                f"grouped={grouped_auc:.4f} ungrouped={ungrouped_auc:.4f} "
+                f"inflation={inflation:+.4f} ({inflation / (grouped_auc + 1e-10) * 100:+.1f}%)"
+            )
+
+        if rows:
+            df = pd.DataFrame(rows)
+            out = self.metrics_dir / "leakage_comparison.csv"
+            df.to_csv(out, index=False)
+            logger.info(f"Subject-leakage comparison saved → {out}")
 
     def _save_ensemble_comparison(self, ensemble_results: dict[str, dict]) -> None:
         """Write ensemble-method comparison table and paired DeLong p-value."""

@@ -49,7 +49,10 @@ from src.features.patient_temporal_aggregation import (
 )
 
 # All columns that are metadata / bookkeeping and must never be model features.
-_META_COLS = METADATA_ONLY_COLS | {"trial_id", "participant_id", "n_trials", "session"}
+_META_COLS = METADATA_ONLY_COLS | {
+    "trial_id", "participant_id", "n_trials", "session",
+    "uturn_start", "uturn_end",
+}
 
 
 def spectral_centroid_hz(freqs: np.ndarray, pxx: np.ndarray) -> float:
@@ -141,6 +144,7 @@ class FeatureExtractor:
         if lb is not None:
             feats.update(self._trunk_dynamics(lb, prefix="lb"))
             feats.update(self._spectral_features(lb, prefix="lb"))
+            feats.update(self._wavelet_features(lb, prefix="lb"))
             feats.update(self._orientation_features(lb, prefix="lb"))
 
         lf = signals.get("left_foot")
@@ -153,6 +157,16 @@ class FeatureExtractor:
         if hd is not None:
             feats.update(self._trunk_dynamics(hd, prefix="head"))
             feats.update(self._orientation_features(hd, prefix="head"))
+
+        if lb is not None and hd is not None:
+            feats.update(self._head_lb_transmission(feats))
+
+        uturn_start = row.get("uturn_start")
+        uturn_end = row.get("uturn_end")
+        if lb is not None and uturn_start is not None and uturn_end is not None:
+            feats.update(self._turning_features(
+                lb, int(uturn_start), int(uturn_end),
+            ))
 
         return feats
 
@@ -195,9 +209,39 @@ class FeatureExtractor:
 
         return f
 
+    @staticmethod
+    def _head_lb_transmission(feats: dict) -> dict:
+        """Head-to-lower-back postural transmission ratios.
+
+        head_lb_rms_ratio quantifies how much acceleration propagates from the
+        pelvis to the cranium during gait — a proxy for postural shock
+        absorption and trunk rigidity.  head_lb_lyapunov_ratio captures the
+        relative local dynamic stability between the two sites.
+        """
+        eps = 1e-10
+        out: dict = {}
+        lb_rms = feats.get("lb_rms_total")
+        head_rms = feats.get("head_rms_total")
+        if lb_rms is not None and head_rms is not None:
+            out["head_lb_rms_ratio"] = float(head_rms / (lb_rms + eps))
+
+        lb_lyap = feats.get("lb_lyapunov")
+        head_lyap = feats.get("head_lyapunov")
+        if lb_lyap is not None and head_lyap is not None:
+            out["head_lb_lyapunov_ratio"] = float(head_lyap / (lb_lyap + eps))
+
+        return out
+
     def _orientation_features(self, df: pd.DataFrame, prefix: str = "lb") -> dict:
         """Trunk tilt and postural stability from Madgwick quaternion fusion."""
         if "tilt_rad" not in df.columns:
+            if not getattr(self, "_orientation_warned", False):
+                logger.warning(
+                    "Orientation columns (tilt_rad, pitch_rad, roll_rad) missing from "
+                    f"cleaned signals ({prefix}). Likely cause: ahrs package not installed "
+                    "or Madgwick disabled. Orientation features will be NaN for all trials."
+                )
+                self._orientation_warned = True
             return {}
 
         tilt_deg = np.rad2deg(df["tilt_rad"].values.astype(float))
@@ -278,6 +322,88 @@ class FeatureExtractor:
 
         return f
 
+    def _wavelet_features(self, df: pd.DataFrame, prefix: str = "lb") -> dict:
+        """Discrete wavelet transform energy features.
+
+        Decomposes lower-back vertical acceleration into wavelet sub-bands
+        using a Daubechies-4 wavelet (db4, 4 levels).  At 100 Hz the bands
+        approximate: D1 25–50 Hz, D2 12.5–25 Hz, D3 6.25–12.5 Hz,
+        D4 3.125–6.25 Hz, A4 0–3.125 Hz.  Energy ratios across bands capture
+        gait regularity and pathological frequency shifts.
+        """
+        import pywt
+
+        sig_col = (
+            "acc_z_grav_free" if "acc_z_grav_free" in df.columns
+            else "acc_z" if "acc_z" in df.columns
+            else None
+        )
+        if sig_col is None:
+            return {}
+
+        sig = df[sig_col].values.astype(float)
+        if len(sig) < 32:
+            return {}
+
+        wavelet = "db4"
+        max_level = min(4, pywt.dwt_max_level(len(sig), pywt.Wavelet(wavelet).dec_len))
+        if max_level < 1:
+            return {}
+
+        coeffs = pywt.wavedec(sig, wavelet, level=max_level)
+        energies = [float(np.sum(c ** 2)) for c in coeffs]
+        total_energy = sum(energies) + 1e-10
+
+        f: dict = {}
+        f[f"{prefix}_wavelet_energy_a{max_level}"] = energies[0]
+        for i in range(1, len(energies)):
+            f[f"{prefix}_wavelet_energy_d{max_level - i + 1}"] = energies[i]
+
+        for i, e in enumerate(energies):
+            level_name = f"a{max_level}" if i == 0 else f"d{max_level - i + 1}"
+            f[f"{prefix}_wavelet_ratio_{level_name}"] = float(e / total_energy)
+
+        f[f"{prefix}_wavelet_entropy"] = float(
+            -sum((e / total_energy) * np.log2(e / total_energy + 1e-12)
+                 for e in energies)
+        )
+
+        return f
+
+    def _turning_features(
+        self, lb: pd.DataFrame, uturn_start: int, uturn_end: int,
+    ) -> dict:
+        """U-turn features from the lower-back gyroscope during the annotated turn segment.
+
+        The Figshare dataset protocol is 8.5 m walk → 180° U-turn → 8.5 m walk.
+        uturnBoundaries (sample indices) mark the turn segment.  Features:
+          - turn_duration_mean:   duration in seconds
+          - turn_velocity_mean:   mean angular velocity (°/s) during the turn
+          - turn_velocity_peak:   peak angular velocity during the turn
+          - turn_jerk_mean:       mean angular jerk (rate of change of ω)
+        """
+        if uturn_end <= uturn_start or uturn_end > len(lb):
+            return {}
+
+        turn = lb.iloc[uturn_start:uturn_end]
+
+        duration_s = float(len(turn)) / self.fs
+        f: dict = {"turn_duration_mean": duration_s}
+
+        gyr_col = "gyr_z" if "gyr_z" in turn.columns else None
+        if gyr_col is None:
+            return f
+
+        omega = turn[gyr_col].values.astype(float)
+        omega_abs = np.abs(omega)
+        f["turn_velocity_mean"] = float(np.mean(omega_abs))
+        f["turn_velocity_peak"] = float(np.max(omega_abs))
+
+        angular_jerk = np.diff(omega) * self.fs
+        f["turn_jerk_mean"] = float(np.mean(np.abs(angular_jerk))) if len(angular_jerk) > 0 else float("nan")
+
+        return f
+
     def _gait_cycle_features(self, lf: pd.DataFrame, rf: pd.DataFrame) -> dict:
         f: dict = {}
 
@@ -300,20 +426,46 @@ class FeatureExtractor:
 
                 if to_col in df_foot.columns and len(hs_idx) > 1:
                     to_idx = np.where(df_foot[to_col].values == 1)[0]
-                    stances = []
+                    stance_durations = []
+                    swing_durations = []
                     for hs in hs_idx[:-1]:
                         toe_offs_after = to_idx[to_idx > hs]
                         if len(toe_offs_after) > 0:
-                            stances.append((toe_offs_after[0] - hs) / self.fs)
-                    if stances:
-                        st_mean_ref = f.get(f"{side}_stride_time_mean", 1.0)
-                        f[f"{side}_stance_ratio"] = float(
-                            np.mean(stances) / (st_mean_ref + 1e-10)
-                        )
+                            to_sample = toe_offs_after[0]
+                            stance_durations.append((to_sample - hs) / self.fs)
+                            next_hs = hs_idx[hs_idx > to_sample]
+                            if len(next_hs) > 0:
+                                swing_durations.append((next_hs[0] - to_sample) / self.fs)
+                    st_mean_ref = f.get(f"{side}_stride_time_mean", 1.0)
+                    if stance_durations:
+                        mean_stance = float(np.mean(stance_durations))
+                        f[f"{side}_stance_ratio"] = mean_stance / (st_mean_ref + 1e-10)
+                        f[f"{side}_stance_phase_ratio"] = mean_stance / (st_mean_ref + 1e-10)
+                    if swing_durations:
+                        mean_swing = float(np.mean(swing_durations))
+                        f[f"{side}_swing_ratio"] = mean_swing / (st_mean_ref + 1e-10)
+                        f[f"{side}_swing_phase_ratio"] = mean_swing / (st_mean_ref + 1e-10)
 
         cads = [f[k] for k in ("left_cadence", "right_cadence") if k in f]
         if cads:
             f["cadence_mean"] = float(np.mean(cads))
+
+        # Bilateral averages
+        stance_ratios = [f[k] for k in ("left_stance_phase_ratio", "right_stance_phase_ratio") if k in f]
+        if stance_ratios:
+            f["stance_phase_ratio"] = float(np.mean(stance_ratios))
+
+        swing_ratios = [f[k] for k in ("left_swing_phase_ratio", "right_swing_phase_ratio") if k in f]
+        if swing_ratios:
+            f["swing_phase_ratio"] = float(np.mean(swing_ratios))
+
+        # Double support ≈ 1 − (stance + swing) for a single limb, or
+        # equivalently the overlap where both feet are on the ground.
+        # With single-limb events: double_support = stance_ratio − (1 − swing_ratio)
+        # = stance_ratio + swing_ratio − 1.  We clamp to [0, 1].
+        if stance_ratios and swing_ratios:
+            ds = float(np.mean(stance_ratios)) + float(np.mean(swing_ratios)) - 1.0
+            f["double_support_ratio"] = max(0.0, min(1.0, ds))
 
         return f
 
