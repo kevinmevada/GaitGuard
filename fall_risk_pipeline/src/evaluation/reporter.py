@@ -571,15 +571,26 @@ python main.py --config configs/pipeline_config.yaml
             "Train on all subjects from N-1 cohorts, test on the held-out cohort. "
             "Answers: 'Can a model trained without any PD patients still detect PD?'",
             "",
-            "| Held-Out Cohort | N (test) | AUC | Accuracy | F1 (macro) |",
-            "|---|---:|---:|---:|---:|",
+            "| Held-Out Cohort | N (test) | AUC | Mean True-Class Prob. | Accuracy | F1 (macro) |",
+            "|---|---:|---:|---:|---:|---:|",
         ]
         for row in df.itertuples(index=False):
             auc_str = f"{row.auc:.4f}" if pd.notna(row.auc) else "N/A"
+            truep_str = (
+                f"{row.mean_true_class_proba:.4f}"
+                if hasattr(row, "mean_true_class_proba") and pd.notna(row.mean_true_class_proba)
+                else "N/A"
+            )
             lines.append(
                 f"| {row.test_cohort} | {row.n_test} | "
-                f"{auc_str} | {row.accuracy:.4f} | {row.f1_macro:.4f} |"
+                f"{auc_str} | {truep_str} | {row.accuracy:.4f} | {row.f1_macro:.4f} |"
             )
+        if "auc_status" in df.columns and (df["auc_status"] == "undefined_single_class_test").any():
+            lines.extend([
+                "",
+                "AUC is **undefined** for single-class held-out cohorts (all rows in this dataset),",
+                "so `N/A` is expected. Mean true-class probability is reported as the transfer-confidence fallback.",
+            ])
         lines.append("")
         pair_path = self.metrics_dir / "cross_cohort_pairwise.csv"
         if pair_path.exists():

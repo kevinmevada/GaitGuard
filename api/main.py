@@ -213,6 +213,50 @@ def load_pickle(path: Path) -> Any:
         return pickle.load(fh)
 
 
+def _verify_nonlinear_runtime_dependencies(
+    patient_cols: list[str],
+    trial_cols: list[str],
+) -> None:
+    """
+    Fail fast if schema-required feature libs are missing.
+
+    Without antropy/nolds, SampEn/DFA become NaN in feature extraction; without
+    ahrs, Madgwick orientation columns are absent and orientation features
+    silently drop out. Both can degrade API predictions.
+    """
+    all_cols = [str(c).lower() for c in (patient_cols + trial_cols)]
+    needs_antropy = any("sampen" in c or "apen" in c for c in all_cols)
+    needs_nolds = any("dfa" in c or "lyapunov" in c for c in all_cols)
+    needs_ahrs = any(
+        token in c
+        for c in all_cols
+        for token in ("tilt_", "pitch_", "roll_", "postural_sway")
+    )
+
+    missing: list[str] = []
+    if needs_antropy:
+        try:
+            import antropy  # noqa: F401
+        except ImportError:
+            missing.append("antropy")
+    if needs_nolds:
+        try:
+            import nolds  # noqa: F401
+        except ImportError:
+            missing.append("nolds")
+    if needs_ahrs:
+        try:
+            import ahrs  # noqa: F401
+        except ImportError:
+            missing.append("ahrs")
+
+    if missing:
+        raise RuntimeError(
+            "Missing feature dependencies required by active schema: "
+            f"{missing}. Install api requirements and redeploy."
+        )
+
+
 def is_model_fitted(model: Any) -> bool:
     try:
         check_is_fitted(model)
@@ -296,6 +340,7 @@ def load_resources() -> None:
         .columns.tolist()
     )
     trial_feature_columns = list(parquet_trial_columns)
+    _verify_nonlinear_runtime_dependencies(patient_feature_columns, trial_feature_columns)
 
     for model_name in ["ensemble", "lightgbm", "random_forest", "xgboost", "svm"]:
         model_path = MODEL_DIR / f"{model_name}.pkl"

@@ -24,23 +24,24 @@ A machine learning pipeline for pathology-tier gait screening from multi-sensor 
 
 ## Project Overview
 
-GaitGuard is a research-oriented anomalous gait detection system intended for experimentation, internal review, and reproducible ML workflows.
-We attempt to do anomaly detection based on open gait data. For now, that is it.
+GaitGuard is a research-oriented pathology-tier gait screening pipeline built on open wearable IMU data.
+The primary task is supervised 3-class screening (Healthy vs orthopedic vs neurological), with anomaly detection provided as a secondary analysis module.
 
 ### Purpose
 
-- Detect anomalous gaits based on a training cohort of expected gaits
-- Highlight gait irregularities and biomechanical pattern shifts
-- Provide explainability via SHAP-style feature contribution analysis
-- Support model development and anomaly benchmarking on open gait datasets
-- Long-term aim: contribute to fall-prevention research (non-diagnostic)
+- Train and evaluate subject-grouped supervised screening models for 3-class pathology tiers
+- Quantify performance with grouped CV metrics (AUC, macro-F1, accuracy), calibration, and leakage checks
+- Provide explainability via SHAP feature contribution analysis
+- Run anomaly detection (Isolation Forest, LOF, One-Class SVM) as complementary unsupervised analysis
+- Support reproducible fall-risk research workflows (non-diagnostic)
 
 ### Key Statistics
 
 - Status: research prototype with internal evaluation artifacts in this repository
 - Dataset: 1,356 trials from 260 participants (8 open-data cohorts)
 - Features: trial-level temporal, spectral (incl. centroid), trunk, orientation, and asymmetry indicators (no uncalibrated step length / gait speed)
-- Models: 4-model ensemble (XGBoost, LightGBM, Random Forest, SVM)
+- Models: tabular ensemble (XGBoost, LightGBM, Random Forest, SVM) + deep models (InceptionTime, Transformer, TCN, CNN-1D, BiLSTM-Attention)
+- Sensor ablation headline: `head + right_foot` (2 sensors) achieved AUC `0.9336`, outperforming all 4 sensors (AUC `0.9273`)
 - Anomaly Detection: 3 unsupervised methods (Isolation Forest, LOF, One-Class SVM)
 
 ### Open Data Cohorts
@@ -51,6 +52,8 @@ We attempt to do anomaly detection based on open gait data. For now, that is it.
 - Parkinson's Disease, CVA/Stroke
 
 Data Source: SpringerNature Figshare DOI: 10.6084/m9.figshare.28806086
+
+Input schema reference: [`docs/input_data_specification.md`](docs/input_data_specification.md)
 
 ### Ethics
 
@@ -203,7 +206,7 @@ Key functions:
 - `scale_display_shap()` - Z-score normalization for feature contributions
 
 Endpoints:
-- `POST /predict` - Upload trial data to get anomaly-focused model output for informational use
+- `POST /predict` - Upload trial data to get supervised screening output plus anomaly-analysis fields (informational use)
 - `GET /` - API status
 - `GET /health` - Health check
 - `GET /docs` - Interactive Swagger UI
@@ -336,6 +339,25 @@ Discrete metrics (accuracy, F1, sensitivity) use **Youden J thresholds fit on ea
 
 ## Setup & Configuration
 
+### One-Command Reproducibility (Docker + Make)
+
+```bash
+make docker-build
+make docker-run
+```
+
+This runs the full 15-stage pipeline in a pinned containerized environment. Host folders are mounted so artifacts persist locally:
+
+- `fall_risk_pipeline/data`
+- `fall_risk_pipeline/results`
+- `fall_risk_pipeline/logs`
+
+To run a single stage reproducibly:
+
+```bash
+make docker-stage STAGE=evaluate
+```
+
 ### Environment Setup
 
 ```bash
@@ -382,6 +404,18 @@ Classification `.pkl` files and anomaly models under `fall_risk_pipeline/results
 ```bash
 cd fall_risk_pipeline
 python main.py --config configs/pipeline_config.yaml
+```
+
+### Option 1b: Run with Makefile (local or Docker)
+
+```bash
+# Local
+make pipeline
+make stage STAGE=train_deep
+
+# Reproducible containerized run
+make docker-build
+make docker-run
 ```
 
 ### Option 2: Run API Server
@@ -501,7 +535,19 @@ This project is released under the **MIT License** for research and educational 
 
 ## Citation
 
-If you use this system in your research, cite the original dataset:
+If you use this work, please cite this repository:
+
+```bibtex
+@software{gaitguard2026,
+  author       = {Mevada, Kevin},
+  title        = {GaitGuard: Wearable IMU Gait Screening System},
+  year         = {2026},
+  url          = {https://github.com/<org-or-user>/GI},
+  note         = {Version/commit used in your study}
+}
+```
+
+Also cite the source dataset:
 
 > Voisard C, et al. A dataset of clinical gait signals with wearable sensors from healthy, neurological, and orthopedic cohorts. *Scientific Data*. 2025. https://doi.org/10.1038/s41597-025-05959-w  
 > Dataset: https://doi.org/10.6084/m9.figshare.28806086

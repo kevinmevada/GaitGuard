@@ -282,13 +282,26 @@ class DataLoader:
             txt_path = trial_dir / f"{trial_dir.name}_raw_data_{suffix}.txt"
             df = None
 
+            declared_duration = meta.get("duration_seconds")
+            declared_duration = (
+                float(declared_duration)
+                if declared_duration is not None
+                else None
+            )
+
             if txt_path.exists():
-                df = self._load_imu_txt(txt_path)
+                df = self._load_imu_txt(
+                    txt_path,
+                    declared_duration_s=declared_duration,
+                )
 
             if df is None:
                 csv_path = trial_dir / f"{pos}_raw.csv"
                 if csv_path.exists():
-                    df = self._load_imu_csv(csv_path)
+                    df = self._load_imu_csv(
+                        csv_path,
+                        declared_duration_s=declared_duration,
+                    )
 
             if df is None or df.empty or len(df) < 50:
                 continue
@@ -345,7 +358,9 @@ class DataLoader:
 
     # ─────────────────────────────────────────
 
-    def _load_imu_txt(self, path: Path) -> Optional[pd.DataFrame]:
+    def _load_imu_txt(
+        self, path: Path, declared_duration_s: float | None = None
+    ) -> Optional[pd.DataFrame]:
         try:
             df = pd.read_csv(path, sep=r"\s+", header=None)
 
@@ -353,7 +368,17 @@ class DataLoader:
                 return None
 
             n = len(df)
-            time_col = np.arange(n) / self.fs
+            if (
+                declared_duration_s is not None
+                and np.isfinite(declared_duration_s)
+                and declared_duration_s > 0
+                and n > 1
+            ):
+                # Synthetic fixtures may omit explicit timestamps; when a
+                # declared duration is provided in metadata, preserve it.
+                time_col = np.linspace(0.0, float(declared_duration_s), n)
+            else:
+                time_col = np.arange(n) / self.fs
 
             df.insert(0, "time", time_col)
 
@@ -373,13 +398,25 @@ class DataLoader:
 
     # ─────────────────────────────────────────
 
-    def _load_imu_csv(self, path: Path) -> pd.DataFrame:
+    def _load_imu_csv(
+        self, path: Path, declared_duration_s: float | None = None
+    ) -> pd.DataFrame:
         df = pd.read_csv(path)
 
         df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
 
         if "time" not in df.columns:
-            df.insert(0, "time", df.index / self.fs)
+            n = len(df)
+            if (
+                declared_duration_s is not None
+                and np.isfinite(declared_duration_s)
+                and declared_duration_s > 0
+                and n > 1
+            ):
+                # Keep fixture metadata duration consistent with generated time.
+                df.insert(0, "time", np.linspace(0.0, float(declared_duration_s), n))
+            else:
+                df.insert(0, "time", df.index / self.fs)
 
         keep = ["time"] + [c for c in IMU_AXES if c in df.columns]
 

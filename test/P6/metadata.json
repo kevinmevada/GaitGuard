@@ -3,12 +3,12 @@
   "trial_id": "T-P6",
   "cohort": "cva",
   "sampling_rate": 100,
-  "duration_seconds": 2.2,
+  "duration_seconds": 12.0,
   "sensor_positions": [
     "head",
     "lower_back",
     "left_foot",
     "right_foot"
   ],
-  "notes": "Synthetic high-risk neurological case dominated by stride variability."
+  "notes": "Synthetic high-risk neurological case dominated by stride variability (duration aligned to pipeline min_trial_length_s)."
 }

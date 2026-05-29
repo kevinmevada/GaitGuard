@@ -3,12 +3,12 @@
   "trial_id": "T-P3",
   "cohort": "acl",
   "sampling_rate": 100,
-  "duration_seconds": 2.2,
+  "duration_seconds": 12.0,
   "sensor_positions": [
     "head",
     "lower_back",
     "left_foot",
     "right_foot"
   ],
-  "notes": "Synthetic high-risk case dominated by lateral asymmetry."
+  "notes": "Synthetic high-risk case dominated by lateral asymmetry (duration aligned to pipeline min_trial_length_s)."
 }

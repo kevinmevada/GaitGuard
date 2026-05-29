@@ -190,6 +190,8 @@ feature_selection:
   max_features: 20
   min_features: 5
   primary_method: "rfecv"   # rfecv | shap | intersection
+  # Force-keep nonlinear dynamics so final trained models include these families.
+  required_feature_substrings: ["sampen", "dfa"]
   compare_before_after: true
   cv_folds: 5
 

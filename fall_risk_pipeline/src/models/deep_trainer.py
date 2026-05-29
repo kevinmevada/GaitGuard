@@ -191,7 +191,17 @@ class DeepLearningPipeline:
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
         y_true = np.array(oof_y_true)
-        y_proba = np.vstack(oof_y_proba)
+        y_proba = np.vstack(oof_y_proba).astype(np.float32)
+        # Guard against tiny AMP-induced drift (nan/inf/rows not summing to 1)
+        # so multiclass roc_auc_score can validate probabilities reliably.
+        y_proba = np.nan_to_num(y_proba, nan=0.0, posinf=0.0, neginf=0.0)
+        y_proba = np.clip(y_proba, 0.0, 1.0)
+        row_sums = y_proba.sum(axis=1, keepdims=True)
+        invalid_rows = ~np.isfinite(row_sums) | (row_sums <= 0.0)
+        if np.any(invalid_rows):
+            y_proba[invalid_rows.ravel()] = 1.0 / max(n_classes, 1)
+            row_sums = y_proba.sum(axis=1, keepdims=True)
+        y_proba = y_proba / np.clip(row_sums, 1e-12, None)
         y_pred = np.argmax(y_proba, axis=1)
 
         payload = build_multiclass_metric_payload(

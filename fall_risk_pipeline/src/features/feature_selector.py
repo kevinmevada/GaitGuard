@@ -49,6 +49,11 @@ class FeatureSelector:
         self.max_features = int(fscfg.get("max_features", 20))
         self.min_features = int(fscfg.get("min_features", 5))
         self.primary_method = str(fscfg.get("primary_method", "rfecv")).lower()
+        self.required_feature_substrings = [
+            str(s).strip().lower()
+            for s in fscfg.get("required_feature_substrings", [])
+            if str(s).strip()
+        ]
         self.cv_folds = int(fscfg.get("cv_folds", config["models"]["tuning"]["cv_folds"]))
         self.random_state = int(config["models"]["evaluation"]["random_state"])
         self.compare_before_after = bool(fscfg.get("compare_before_after", True))
@@ -89,7 +94,7 @@ class FeatureSelector:
             selected = rfecv_features
             method_used = "rfecv"
 
-        selected = selected[: self.max_features]
+        selected, forced_required = self._enforce_required_features(selected, feat_cols)
         n_features_after = len(selected)
         p_n_after = n_participants / max(n_features_after, 1)
 
@@ -105,6 +110,8 @@ class FeatureSelector:
             "p_n_ratio_after": round(p_n_after, 3),
             "max_features": self.max_features,
             "primary_method": method_used,
+            "required_feature_substrings": self.required_feature_substrings,
+            "forced_required_features": forced_required,
             "features": selected,
             "rfecv_features": rfecv_features,
             "shap_features": shap_features,
@@ -183,6 +190,35 @@ class FeatureSelector:
             "n_features_exported": len(selected),
         }
         return selected, detail
+
+    def _enforce_required_features(
+        self, selected: list[str], all_features: list[str]
+    ) -> tuple[list[str], list[str]]:
+        """Force-keep required feature families (e.g., sampen/dfa) in export."""
+        if not self.required_feature_substrings:
+            return selected[: self.max_features], []
+
+        required = [
+            f for f in all_features
+            if any(tok in f.lower() for tok in self.required_feature_substrings)
+        ]
+        if not required:
+            logger.warning(
+                f"No features matched required_feature_substrings={self.required_feature_substrings}"
+            )
+            return selected[: self.max_features], []
+
+        # Keep required first (in original feature order), then fill with existing picks.
+        merged = required + [f for f in selected if f not in required]
+        max_keep = max(self.max_features, len(required))
+        merged = merged[:max_keep]
+
+        forced = [f for f in required if f not in selected]
+        if forced:
+            logger.info(
+                f"Forced {len(forced)} required features into selected set: {forced[:8]}"
+            )
+        return merged, forced
 
     def _select_shap(
         self, X: np.ndarray, y: np.ndarray, feat_cols: list[str]

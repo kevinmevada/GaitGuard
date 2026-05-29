@@ -6,6 +6,7 @@ A full professional ML pipeline for research reporting and reproducible internal
 **A Dataset of Clinical Gait Signals with Wearable Sensors from Healthy, Neurological, and Orthopedic Cohorts**  
 - 1,356 trials, 260 participants, 4 IMUs (head, lower back, left/right foot)  
 - Cohorts: Healthy | Parkinson's (PD) | CVA | CIPN | RIL | Hip OA | Knee OA | ACL
+- Practical sensor-ablation result: **head + right foot (2 sensors) AUC 0.9336**, higher than all 4 sensors (AUC 0.9273)
 
 ## Project Structure
 ```
@@ -59,6 +60,21 @@ fall_risk_pipeline/
 ## Setup
 ```bash
 pip install -r requirements.txt
+```
+
+## Reproducible one-command run
+
+From repo root:
+
+```bash
+make docker-build
+make docker-run
+```
+
+Single-stage reproducible run:
+
+```bash
+make docker-stage STAGE=evaluate
 ```
 
 ## Model artifacts

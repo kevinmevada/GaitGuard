@@ -91,31 +91,36 @@ def _score_transfer(
     X_test,
     y_test,
     binary: bool,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, float, str]:
     y_test = np.asarray(y_test).astype(int)
     known = np.isin(y_test, le.classes_)
     if int(known.sum()) < 2:
-        return float("nan"), float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan"), float("nan"), "insufficient_known_samples"
 
     y_enc = le.transform(y_test[known])
     proba = model.predict_proba(X_test[known])
     preds = model.predict(X_test[known])
+    mean_true_class_proba = float(np.mean(proba[np.arange(len(y_enc)), y_enc]))
+    auc_status = "ok"
 
     try:
-        if binary and proba.shape[1] == 2:
-            auc = roc_auc_score(y_enc, proba[:, 1])
-        elif len(np.unique(y_enc)) < 2:
+        if len(np.unique(y_enc)) < 2:
+            # AUC is undefined when the held-out cohort contains one class only.
             auc = float("nan")
+            auc_status = "undefined_single_class_test"
+        elif binary and proba.shape[1] == 2:
+            auc = roc_auc_score(y_enc, proba[:, 1])
         else:
             auc = roc_auc_score(
                 y_enc, proba, multi_class="ovr", average="macro"
             )
     except ValueError:
         auc = float("nan")
+        auc_status = "error_auc_computation"
 
     acc = accuracy_score(y_enc, preds)
     f1 = f1_score(y_enc, preds, average="macro", zero_division=0)
-    return auc, acc, f1
+    return auc, acc, f1, mean_true_class_proba, auc_status
 
 
 class CrossCohortTransfer:
@@ -174,7 +179,7 @@ class CrossCohortTransfer:
             model, le = _fit_transfer_model(
                 checkpoint, X[train_mask], y_train, self.config
             )
-            auc, acc, f1 = _score_transfer(
+            auc, acc, f1, mean_true_class_proba, auc_status = _score_transfer(
                 model, le, X[test_mask], y_test, binary
             )
 
@@ -189,12 +194,15 @@ class CrossCohortTransfer:
                 "n_train_classes": len(np.unique(y_train)),
                 "n_test_classes": len(np.unique(y_test)),
                 "auc": auc,
+                "auc_status": auc_status,
+                "mean_true_class_proba": mean_true_class_proba,
                 "accuracy": acc,
                 "f1_macro": f1,
             })
             logger.info(
                 f"  Hold-out {held_out:10s}  n={n_test:3d}  "
-                f"AUC={auc:.4f}  Acc={acc:.4f}  F1={f1:.4f}"
+                f"AUC={auc:.4f} ({auc_status})  "
+                f"TrueP={mean_true_class_proba:.4f}  Acc={acc:.4f}  F1={f1:.4f}"
             )
 
         # Pairwise: train on cohort A, test on cohort B

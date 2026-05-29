@@ -525,7 +525,9 @@ class DeepModelTrainer:
             for Xb, _ in dl:
                 with self._autocast_context():
                     logits = model(Xb.to(self.device))
-                prob = torch.softmax(logits, dim=1).cpu().numpy()
+                # Force FP32 before softmax export to avoid AMP underflow/rounding
+                # that can produce invalid probability rows for sklearn AUC checks.
+                prob = torch.softmax(logits.float(), dim=1).cpu().numpy().astype(np.float32)
                 probs.append(prob)
         return np.vstack(probs)
 
