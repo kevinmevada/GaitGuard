@@ -33,7 +33,7 @@ Set `label_mode: binary` only with an explicit clinical rule:
 | `threshold_ge_1` | 1 | All non-Healthy (legacy; heterogeneous) |
 | `threshold_ge_2` | 2 | PD, CVA, CIPN, RIL only |
 
-`threshold_ge_2` separates orthopedic from neurological tiers and aligns better with pathology-specific fall-risk literature (e.g. Lord et al. 1993; Allen et al. 2013 for PD/CVA).
+`threshold_ge_2` separates orthopedic from neurological tiers and aligns better with pathology-specific fall-risk literature (Lord SR, Ward JA, Williams P, Anstey KJ. *J Am Geriatr Soc.* 1993;41(11):1226-1234; Allen NE, Schwarzel AK, Canning CG. *Mov Disord.* 2013;28(11):1474-1480).
 
 Sensitivity rows are written to `results/metrics/binary_label_sensitivity.csv` at ingest/report time.
 

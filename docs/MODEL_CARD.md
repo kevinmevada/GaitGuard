@@ -88,4 +88,4 @@ See `fall_risk_pipeline/configs/pipeline_config.yaml` (`models.tuning`, `models.
 
 ## Citation
 
-Paraschiv-Ionescu et al. (2025). A Dataset of Clinical Gait Signals with Wearable Sensors. Figshare DOI: [10.6084/m9.figshare.28806086](https://doi.org/10.6084/m9.figshare.28806086).
+Voisard et al. (2025). A Dataset of Clinical Gait Signals with Wearable Sensors. Figshare DOI: [10.6084/m9.figshare.28806086](https://doi.org/10.6084/m9.figshare.28806086).

@@ -40,7 +40,9 @@ from src.dataset.label_policy import multiclass_label_from_cohort
 from src.ingestion.data_loader import METADATA_ONLY_COLS
 from src.features.nonlinear_metrics import (
     approximate_entropy,
+    dfa_alpha,
     largest_lyapunov_exponent,
+    sample_entropy,
 )
 from src.features.patient_temporal_aggregation import (
     aggregate_trial_values,
@@ -75,6 +77,7 @@ class FeatureExtractor:
         feat_cfg = config.get("features", {})
         self._lyap_cfg = feat_cfg.get("lyapunov", {})
         self._apen_cfg = feat_cfg.get("approximate_entropy", {})
+        self._dfa_cfg  = feat_cfg.get("dfa", {})
         self._patient_agg_cfg = parse_patient_aggregation_config(feat_cfg)
 
     # ── Public API ─────────────────────────────────────────────────────────────
@@ -206,6 +209,8 @@ class FeatureExtractor:
             f[f"{prefix}_rms_total"] = float(np.sqrt(np.mean(res ** 2)))
             f[f"{prefix}_lyapunov"] = largest_lyapunov_exponent(res, self._lyap_cfg)
             f[f"{prefix}_apen"] = approximate_entropy(res, self._apen_cfg)
+            f[f"{prefix}_sampen"] = sample_entropy(res, self._apen_cfg)
+            f[f"{prefix}_dfa"] = dfa_alpha(res, self._dfa_cfg)
 
         return f
 
@@ -229,6 +234,11 @@ class FeatureExtractor:
         head_lyap = feats.get("head_lyapunov")
         if lb_lyap is not None and head_lyap is not None:
             out["head_lb_lyapunov_ratio"] = float(head_lyap / (lb_lyap + eps))
+
+        lb_dfa = feats.get("lb_dfa")
+        head_dfa = feats.get("head_dfa")
+        if lb_dfa is not None and head_dfa is not None:
+            out["head_lb_dfa_ratio"] = float(head_dfa / (lb_dfa + eps))
 
         return out
 
@@ -439,11 +449,9 @@ class FeatureExtractor:
                     st_mean_ref = f.get(f"{side}_stride_time_mean", 1.0)
                     if stance_durations:
                         mean_stance = float(np.mean(stance_durations))
-                        f[f"{side}_stance_ratio"] = mean_stance / (st_mean_ref + 1e-10)
                         f[f"{side}_stance_phase_ratio"] = mean_stance / (st_mean_ref + 1e-10)
                     if swing_durations:
                         mean_swing = float(np.mean(swing_durations))
-                        f[f"{side}_swing_ratio"] = mean_swing / (st_mean_ref + 1e-10)
                         f[f"{side}_swing_phase_ratio"] = mean_swing / (st_mean_ref + 1e-10)
 
         cads = [f[k] for k in ("left_cadence", "right_cadence") if k in f]

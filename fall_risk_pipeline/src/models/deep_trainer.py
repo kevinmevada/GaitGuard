@@ -18,18 +18,16 @@ import numpy as np
 import pandas as pd
 import torch
 from loguru import logger
-from sklearn.preprocessing import StandardScaler
-from tqdm import tqdm
 
+from src.evaluation.multiclass_metrics import build_multiclass_metric_payload
 from src.models.deep_models import (
-    CHANNEL_ORDER,
     DEEP_MODEL_REGISTRY,
     DeepModelTrainer,
     build_deep_model,
     create_windows,
     trial_to_tensor,
 )
-from src.evaluation.multiclass_metrics import build_multiclass_metric_payload
+from src.utils.progress import progress_bar, stderr_is_tty
 from src.utils.reproducibility import get_pipeline_seed, set_global_seed
 
 
@@ -58,34 +56,26 @@ class DeepLearningPipeline:
     # Data preparation
     # ─────────────────────────────────────────────────────────────
 
-    def _load_trial_data(self) -> tuple[dict, pd.DataFrame]:
-        """
-        Load all trial signals and return:
-          trial_signals: {trial_id: (C, T) ndarray}
-          meta:          trial-level metadata DataFrame
-        """
+    def _load_trial_data(self, bar=None) -> tuple[dict, pd.DataFrame]:
         meta = pd.read_csv(self.meta_path)
         trial_signals: dict[str, np.ndarray] = {}
         skipped = 0
-        for _, row in tqdm(meta.iterrows(), total=len(meta), desc="Loading signals"):
+        for _, row in meta.iterrows():
             tid = row["trial_id"]
             arr = trial_to_tensor(tid, self.signals_dir, self.sensor_positions)
             if arr is not None and arr.shape[1] >= self.window_len:
                 trial_signals[tid] = arr
             else:
                 skipped += 1
+            if bar is not None:
+                bar.update(1)
         logger.info(f"Loaded {len(trial_signals)} trials ({skipped} skipped, too short or missing)")
         meta = meta[meta["trial_id"].isin(trial_signals)].reset_index(drop=True)
         return trial_signals, meta
 
     def _build_participant_windows(
-        self, trial_signals: dict, meta: pd.DataFrame
+        self, trial_signals: dict, meta: pd.DataFrame, bar=None
     ) -> tuple[dict, int]:
-        """
-        Window each trial and group by participant.
-        Returns {participant_id: {"X": (N,C,W), "y": int, "trial_ids": list}}
-        and n_channels.
-        """
         participants: dict = {}
         n_channels = None
         for _, row in meta.iterrows():
@@ -102,6 +92,8 @@ class DeepLearningPipeline:
                 participants[pid] = {"windows": [], "label": label, "trial_ids": []}
             participants[pid]["windows"].append(wins)
             participants[pid]["trial_ids"].append(tid)
+            if bar is not None:
+                bar.update(1)
         for pid in participants:
             participants[pid]["windows"] = np.concatenate(participants[pid]["windows"], axis=0)
         logger.info(
@@ -120,11 +112,8 @@ class DeepLearningPipeline:
         model_name: str,
         participants: dict,
         n_channels: int,
+        bar,
     ) -> dict:
-        """
-        Run LOSO cross-validation for a single DL architecture.
-        Returns a metric payload compatible with the classical ML evaluator.
-        """
         pids = sorted(participants.keys())
         n_classes = len(set(p["label"] for p in participants.values()))
         trainer = DeepModelTrainer(self.config)
@@ -133,7 +122,7 @@ class DeepLearningPipeline:
         oof_y_proba = []
         oof_pids = []
 
-        for fold_idx, test_pid in enumerate(tqdm(pids, desc=f"LOSO {model_name}")):
+        for fold_idx, test_pid in enumerate(pids):
             set_global_seed(self.seed + fold_idx, deterministic_torch=True)
 
             test_data = participants[test_pid]
@@ -157,8 +146,37 @@ class DeepLearningPipeline:
             X_val, y_val = X_train[val_idx], y_train[val_idx]
             X_train_f, y_train_f = X_train[train_idx], y_train[train_idx]
 
+            fold_label = f"{fold_idx + 1}/{len(pids)}"
+            bar.set_postfix(
+                model=model_name,
+                fold=fold_label,
+                pid=str(test_pid)[:12],
+                epoch="-",
+                loss="-",
+                val_auc="-",
+            )
+            if not stderr_is_tty():
+                logger.info(f"DL {model_name} LOSO fold {fold_label} ({test_pid})")
+
+            def on_epoch(epoch, mean_loss, val_auc, best_auc):
+                bar.set_postfix(
+                    model=model_name,
+                    fold=fold_label,
+                    epoch=epoch,
+                    loss=f"{mean_loss:.3f}",
+                    val_auc=f"{val_auc:.3f}",
+                    best=f"{best_auc:.3f}",
+                )
+
             model = build_deep_model(model_name, n_channels, self.window_len, n_classes)
-            model = trainer.train(model, X_train_f, y_train_f, X_val, y_val)
+            model = trainer.train(
+                model,
+                X_train_f,
+                y_train_f,
+                X_val,
+                y_val,
+                on_epoch=on_epoch,
+            )
 
             proba_windows = trainer.predict_proba(model, X_test)
             participant_proba = proba_windows.mean(axis=0)
@@ -166,6 +184,8 @@ class DeepLearningPipeline:
             oof_y_true.append(y_test_label)
             oof_y_proba.append(participant_proba)
             oof_pids.append(test_pid)
+
+            bar.update(1)
 
             del model, X_train, X_test, X_train_f, X_val
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
@@ -201,23 +221,35 @@ class DeepLearningPipeline:
         logger.info("=== Deep Learning LOSO Pipeline ===")
         t0 = time.time()
 
-        trial_signals, meta = self._load_trial_data()
-        participants, n_channels = self._build_participant_windows(trial_signals, meta)
+        meta = pd.read_csv(self.meta_path)
+        n_trials = len(meta)
+        models = [m for m in self.enabled_models if m in DEEP_MODEL_REGISTRY]
+        n_folds = 260  # expected participants; refined after load
+        prep_steps = n_trials * 2  # load + window
+        total_steps = prep_steps + len(models) * n_folds
+
+        bar = progress_bar(total=total_steps, desc="train_deep", unit="step")
+
+        trial_signals, meta = self._load_trial_data(bar)
+        participants, n_channels = self._build_participant_windows(trial_signals, meta, bar)
 
         if n_channels == 0:
+            bar.close()
             logger.error("No valid trial signals found; aborting DL pipeline.")
             return {}
+
+        n_folds = len(participants)
+        # Adjust total if participant count differs from estimate
+        bar.total = n_trials * 2 + len(models) * n_folds
+        bar.refresh()
 
         all_results: dict[str, dict] = {}
         rows = []
 
-        for model_name in self.enabled_models:
-            if model_name not in DEEP_MODEL_REGISTRY:
-                logger.warning(f"Unknown DL model '{model_name}'; skipping.")
-                continue
+        for model_name in models:
             logger.info(f"Evaluating DL model: {model_name}")
             try:
-                result = self._loso_evaluate(model_name, participants, n_channels)
+                result = self._loso_evaluate(model_name, participants, n_channels, bar)
                 all_results[model_name] = result
                 logger.info(
                     f"  {model_name}: AUC={result['auc']:.4f}  "
@@ -238,6 +270,8 @@ class DeepLearningPipeline:
             except Exception as exc:
                 logger.error(f"DL model {model_name} failed: {exc}")
 
+        bar.close()
+
         if rows:
             dl_df = pd.DataFrame(rows)
             out_path = self.metrics_dir / "deep_learning_metrics.csv"
@@ -255,3 +289,4 @@ class DeepLearningPipeline:
         elapsed = time.time() - t0
         logger.info(f"=== Deep Learning Pipeline complete in {elapsed:.1f}s ===")
         return all_results
+

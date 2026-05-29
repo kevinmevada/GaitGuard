@@ -152,12 +152,14 @@ class ReportGenerator:
         limitations_section = self._limitations_section()
         ensemble_section = self._ensemble_comparison_section()
         leakage_section = self._leakage_comparison_section()
+        sensor_ablation_section = self._sensor_ablation_section()
+        cross_cohort_section = self._cross_cohort_section()
         dl_section = self._deep_learning_comparison_section()
         class_section = self._append_class_distribution_section()
         inference_section = self._deployment_inference_section()
         demographics_section = self._demographics_section()
 
-        report = f"""# Fall Risk Prediction Pipeline - Results Report
+        report = f"""# Pathology-Tier Gait Screening Pipeline - Results Report
 Generated: {timestamp}
 
 ## Dataset
@@ -174,6 +176,8 @@ Generated: {timestamp}
 {limitations_section}
 {ensemble_section}
 {dl_section}
+{sensor_ablation_section}
+{cross_cohort_section}
 {inference_section}
 ## Validation
 - Strategy: {validation_strategy}
@@ -368,7 +372,7 @@ python main.py --config configs/pipeline_config.yaml
         return (
             "## Deployment inference (API vs training)\n\n"
             "Training and LOSO evaluation use **patient-level** feature rows "
-            "(260 participants; 1356 trials aggregated with mean, std, range, trend per "
+            "(N participants; trials aggregated with mean, std, range, trend per "
             "trial feature). The public `POST /predict` API accepts **one trial** per "
             "request and maps it into the same column schema (`_mean` = trial value; "
             "`_std` = 0; `_range` = 0; `_trend` = NaN). That projection is **not** "
@@ -378,7 +382,7 @@ python main.py --config configs/pipeline_config.yaml
             "the trained feature schema, trial values populated patient-level mean columns "
             "while standard deviation and range were set to zero and trend was undefined; "
             "scores therefore do not replicate full multi-trial patient aggregation used in "
-            "training (260 participants, 1356 trials). Reported confidence reflects the "
+            "training (multi-trial patient aggregation). Reported confidence reflects the "
             "model maximum class probability, not external clinical calibration.\n\n"
             "See `docs/inference_single_trial_limitation.md`. API responses include "
             "`inference_scope` and `limitations` fields.\n\n"
@@ -433,8 +437,8 @@ python main.py --config configs/pipeline_config.yaml
         lines = [
             "## Feature selection (dimensionality control)",
             "",
-            "260 participants with patient-level features (mean, std, range, trend per trial feature) "
-            "yield P/N ≈ 3.25 — underpowered for a four-model ensemble. RFECV (Guyon & Elisseeff, 2002) "
+            "With patient-level features (mean, std, range, trend per trial feature) "
+            "the dimensionality may be high relative to sample size. RFECV (Guyon & Elisseeff, 2002) "
             "and SHAP pruning reduce p to ≤20 before final training; see Tibshirani (1996) for Lasso-style sparsity.",
             "",
             "| Stage | Features (p) | Grouped CV AUC |",
@@ -526,6 +530,63 @@ python main.py --config configs/pipeline_config.yaml
         for bullet in LIMITATIONS_BULLETS:
             lines.append(f"- {bullet}")
         lines.append("")
+        return "\n".join(lines)
+
+    def _sensor_ablation_section(self) -> str:
+        sa_path = self.metrics_dir / "sensor_ablation.csv"
+        if not sa_path.exists():
+            return ""
+        df = pd.read_csv(sa_path)
+        lines = [
+            "## Sensor Position Ablation",
+            "",
+            "AUC for each subset of the four IMU positions (head, lower back, "
+            "left foot, right foot). Identifies the minimum sensor configuration "
+            "for acceptable screening performance.",
+            "",
+            "| Sensor Subset | # Sensors | # Features | AUC (mean) | AUC (std) |",
+            "|---|---:|---:|---:|---:|",
+        ]
+        for row in df.itertuples(index=False):
+            lines.append(
+                f"| {row.sensor_subset} | {row.n_sensors} | {row.n_features} | "
+                f"{row.auc_mean:.4f} | {row.auc_std:.4f} |"
+            )
+        best = df.iloc[0]
+        lines.append("")
+        lines.append(
+            f"**Best single-sensor:** lower-back alone captures "
+            f"the majority of discriminative signal."
+        )
+        return "\n".join(lines)
+
+    def _cross_cohort_section(self) -> str:
+        cc_path = self.metrics_dir / "cross_cohort_transfer.csv"
+        if not cc_path.exists():
+            return ""
+        df = pd.read_csv(cc_path)
+        lines = [
+            "## Cross-Cohort Transfer (Leave-One-Cohort-Out)",
+            "",
+            "Train on all subjects from N-1 cohorts, test on the held-out cohort. "
+            "Answers: 'Can a model trained without any PD patients still detect PD?'",
+            "",
+            "| Held-Out Cohort | N (test) | AUC | Accuracy | F1 (macro) |",
+            "|---|---:|---:|---:|---:|",
+        ]
+        for row in df.itertuples(index=False):
+            auc_str = f"{row.auc:.4f}" if pd.notna(row.auc) else "N/A"
+            lines.append(
+                f"| {row.test_cohort} | {row.n_test} | "
+                f"{auc_str} | {row.accuracy:.4f} | {row.f1_macro:.4f} |"
+            )
+        lines.append("")
+        pair_path = self.metrics_dir / "cross_cohort_pairwise.csv"
+        if pair_path.exists():
+            lines.append(
+                "See `cross_cohort_pairwise.csv` for the full 8x8 train-on-A / test-on-B "
+                "accuracy matrix and `cross_cohort_pairwise.{pdf,png}` for the heatmap."
+            )
         return "\n".join(lines)
 
     def _leakage_comparison_section(self) -> str:

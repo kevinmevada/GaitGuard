@@ -322,11 +322,11 @@ class GaitAnomalyDetector:
                 break
             ax = axes[idx // 2, idx % 2]
 
-            for cohort in ["Healthy", "PD", "CVA", "ACL"]:
+            for cohort in sorted(metadata["cohort"].unique()):
                 cohort_mask = (metadata["cohort"] == cohort).values
                 if np.any(cohort_mask):
                     scores = method_result["anomaly_scores"][cohort_mask]
-                    ax.hist(scores, alpha=0.6, label=cohort, bins=30)
+                    ax.hist(scores, alpha=0.5, label=cohort, bins=30)
 
             ax.set_title(f"{method_result['method']} - Anomaly Scores")
             ax.set_xlabel("Anomaly Score")
@@ -374,9 +374,14 @@ class GaitAnomalyDetector:
         )
         plt.close()
 
-        # 3. PCA visualisation
+        # 3. PCA visualisation (fit on healthy reference, transform all)
+        healthy_mask = (metadata["cohort"] == "Healthy").values
         pca = PCA(n_components=2)
-        X_pca = pca.fit_transform(X)
+        if healthy_mask.sum() >= 2:
+            pca.fit(X[healthy_mask])
+        else:
+            pca.fit(X)
+        X_pca = pca.transform(X)
 
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
 

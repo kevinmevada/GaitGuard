@@ -7,11 +7,11 @@
 
 ## Working title
 
-**Multi-Sensor Wearable IMU Gait Features for Subject-Independent Pathology-Tier Screening: A Leave-One-Subject-Out Study in 260 Clinical Participants**
+**End-to-End Deep Learning vs Handcrafted Features for Wearable IMU Fall-Risk Screening Across Eight Clinical Cohorts: A Leave-One-Subject-Out Comparison in 260 Participants**
 
 *Alternates:*  
-- *Pathology-Tier Gait Screening via Wearable IMU Ensemble Learning: 1,356 Trials, Eight Cohorts, LOSO Validation*  
-- *GaitGuard: Ensemble Machine Learning on Open Multi-Cohort Wearable Gait Data with Nested Leave-One-Subject-Out Validation*
+- *Deep Learning and Ensemble Machine Learning for Multi-Sensor IMU Gait Screening: 1,356 Trials, Eight Cohorts, LOSO Validation*  
+- *GaitGuard: Comparing InceptionTime, Transformer, and Handcrafted Ensemble Pipelines on Open Multi-Cohort Wearable Gait Data*
 
 ---
 

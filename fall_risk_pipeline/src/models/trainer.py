@@ -22,7 +22,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
-warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.utils.validation")
+warnings.filterwarnings("ignore", module="lightgbm")
 console = Console()
 
 from src.dataset.label_balance import balanced_scale_pos_weight
@@ -376,7 +378,10 @@ class ModelTrainer:
         if name == "svm":
             return SVC(**params, probability=True, kernel="rbf", class_weight="balanced")
         if name == "mlp":
-            return MLPClassifier(**params, early_stopping=True, validation_fraction=0.1, n_iter_no_change=15, max_iter=500)
+            mlp_params = dict(params)
+            if "units" in mlp_params:
+                mlp_params["hidden_layer_sizes"] = (mlp_params.pop("units"),)
+            return MLPClassifier(**mlp_params, early_stopping=True, validation_fraction=0.1, n_iter_no_change=15, max_iter=500)
         raise ValueError(name)
 
     def _save_model(self, name, pipeline):

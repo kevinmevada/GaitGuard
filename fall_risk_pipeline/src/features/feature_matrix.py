@@ -77,7 +77,13 @@ def load_patient_feature_matrix(
             feat_cols = selected
 
     X = df[feat_cols].values.astype(np.float32)
-    y = df["risk_label"].values.astype(int)
+
+    label_mode = config.get("dataset", {}).get("label_mode", "multiclass")
+    if label_mode == "multiclass" and "multiclass_label" in df.columns:
+        y = df["multiclass_label"].values.astype(int)
+    else:
+        y = df["risk_label"].values.astype(int)
+
     groups = df["participant_id"].values
 
     return X, y, groups, feat_cols, df

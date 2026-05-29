@@ -1,3 +1,3 @@
 """
-Machine learning models for fall risk prediction.
+Machine learning models for pathology-tier gait screening.
 """

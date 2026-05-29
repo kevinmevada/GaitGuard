@@ -1,7 +1,7 @@
 ```md
-# GaitGuard: Anomalous Gait Detection System
+# GaitGuard: Wearable IMU Gait Screening System
 
-A machine learning system for detecting anomalous gait patterns from multi-sensor wearable IMU data.
+A machine learning pipeline for pathology-tier gait screening from multi-sensor wearable IMU data across eight clinical cohorts.
 
 ---
 
@@ -165,20 +165,25 @@ Extract 5 key biomechanics:
 
 ### Pipeline (`fall_risk_pipeline/`)
 
-10-stage ML pipeline:
+15-stage ML pipeline. **Architecture diagram (tabular + deep paths, stage dependencies):** [`docs/pipeline_flow.md`](docs/pipeline_flow.md).
 
 | Stage | Module | Purpose |
 |-------|--------|---------|
-| Ingestion | `src/ingestion/data_loader.py` | Parse raw CSV files, validate metadata, create trial records |
-| Preprocessing | `src/preprocessing/signal_processor.py` | Butterworth filtering, gravity removal, gait event detection, sensor fusion |
-| EDA | Notebooks, visualizations | Exploratory analysis, signal distributions, outlier identification |
-| Features | `src/features/feature_extractor.py` | Extract temporal/spectral/trunk/orientation/asymmetry trial features |
-| Feature selection | `src/features/feature_selector.py` | RFECV / SHAP pruning to ≤20 features; before/after grouped CV report |
-| Training | `src/models/trainer.py` | Optuna hyperparameter tuning, train 4 models on selected features |
-| Evaluation | `src/evaluation/evaluator.py`, `reporter.py` | Internal validation, SHAP analysis, metrics calculation |
-| Prediction | `src/evaluation/predictions.py` | Generate predictions for new data |
-| Anomaly | `src/models/anomaly_detector.py` | Unsupervised outlier detection (3 methods) |
-| Report | `src/evaluation/reporter.py` | Generate tables and figures |
+| Ingest | `src/ingestion/data_loader.py` | Parse raw CSV files, validate metadata, create trial records |
+| Validate Gait Events | `src/preprocessing/gait_events_gt.py` | Compare algorithmic vs ground-truth heel-strike annotations |
+| Preprocess | `src/preprocessing/signal_processor.py` | Butterworth filtering, gravity removal, gait event detection, sensor fusion |
+| EDA | `src/visualization/eda.py` | Signal distributions, cohort comparisons, t-SNE, PSD |
+| Features | `src/features/feature_extractor.py` | Temporal, spectral, trunk-dynamics, wavelet, orientation features |
+| Select Features | `src/features/feature_selector.py` | RFECV / SHAP pruning to <=20 features (grouped CV) |
+| Train | `src/models/trainer.py` | Optuna tuning, XGBoost, LightGBM, RF, SVM, MLP |
+| Evaluate | `src/evaluation/evaluator.py` | LOSO cross-validation, SHAP, calibration, leakage comparison |
+| Train Deep | `src/models/deep_trainer.py` | InceptionTime, Transformer, TCN, CNN-1D, BiLSTM-Attention (LOSO train + eval in one stage) |
+| Ablation | `src/evaluation/feature_ablation.py` | Feature ablation study (LOSO AUC per group) |
+| Sensor Ablation | `src/evaluation/sensor_ablation.py` | Which IMU positions are needed? (1-to-4 sensor subsets) |
+| Cross-Cohort | `src/evaluation/cross_cohort_transfer.py` | Leave-one-cohort-out transfer + pairwise heatmap |
+| Predict | `src/evaluation/predictions.py` | Generate out-of-fold predictions for all models |
+| Anomaly | `src/models/anomaly_detector.py` | Unsupervised outlier detection (IF, LOF, OC-SVM) |
+| Report | `src/evaluation/reporter.py` | Sensors-ready tables, figures, demographics, markdown report |
 
 Config: `configs/pipeline_config.yaml`
 
@@ -307,7 +312,7 @@ After subject-grouped evaluation, paired tests use the **same LOSO out-of-fold p
 | **Bootstrap MWU / Wilcoxon** | AUC (sensitivity) | 1,000 paired bootstrap replicates (`pingouin`) |
 | **McNemar** | Accuracy / discrete class labels | `statsmodels.stats.contingency_tables.mcnemar` on aggregated per-fold discordant pairs; `mcnemar_pairwise_pvalues.csv` |
 
-`metrics.csv` and `ieee_table.tex` (Table 1) include `p_delong_vs_best` and `p_mcnemar_vs_best` vs the reference model (highest AUC by default).
+`metrics.csv` and `ieee_table.tex` (LaTeX Table 1) include `p_delong_vs_best` and `p_mcnemar_vs_best` vs the reference model (highest AUC by default).
 
 ### Classification threshold (Youden J)
 
@@ -490,7 +495,7 @@ Key directories:
 
 ## License
 
-This project is intended for research and educational purposes.
+This project is released under the **MIT License** for research and educational purposes. See [LICENSE](LICENSE) for details.
 
 ---
 

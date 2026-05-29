@@ -1,4 +1,4 @@
-# Fall Risk Prediction System from Wearable IMU Gait Data
+# Pathology-Tier Gait Screening Pipeline from Wearable IMU Data
 
 A full professional ML pipeline for research reporting and reproducible internal evaluation, built on the SpringerNature clinical gait dataset (Figshare 28806086).
 
@@ -33,19 +33,28 @@ fall_risk_pipeline/
 └── tests/                      # Unit tests
 ```
 
-## Pipeline Stages
-1. **Ingestion** — load raw IMU CSVs, attach metadata, flag laterality bias  
-2. **Preprocessing** — Butterworth filter, Madgwick fusion (head/lower back), gait event segmentation; optional `validate_gait_events` vs Figshare HS annotations  
-3. **EDA** — signal distributions, cohort comparisons, correlation matrices  
-4. **Feature Engineering** — temporal gait-cycle + spectral/trunk/orientation/asymmetry features (`docs/spectral_features.md`, `docs/spatial_features.md` for what is **not** extracted); patient aggregation = **mean, std, range, trend**; see `docs/feature_redundancy_audit.md`  
-5. **Feature Selection** — RFECV / SHAP pruning to ≤20 patient-level features (grouped CV; before/after report)  
-6. **Model Training** — XGBoost, Random Forest, SVM, LightGBM, 1D-CNN, LSTM  
-7. **Hyperparameter Tuning** — Optuna-based Bayesian optimization per model  
-8. **Model Comparison** — AUC-ROC, F1, calibration plots, and cross-model comparison  
-9. **Best Model Selection** — compare soft voting vs logistic stacking (nested LOSO; `ensemble_comparison.csv`)  
-10. **Feature ablation** — LOSO AUC for all features, top-10 SHAP, and leave-one-group-out (`docs/feature_ablation.md`)  
-11. **Explainability** — SHAP global + local, feature importance  
-12. **Report Generation** — IEEE-ready tables and figures  
+## Pipeline architecture
+
+**Conceptual flow (dependencies, dual tabular + deep paths):** see [`../docs/pipeline_flow.md`](../docs/pipeline_flow.md) — includes a publication-style Mermaid diagram and a code-alignment table.
+
+**Run order:** `main.py` executes the 15 stages below **sequentially** when you run without `--stage`. Partial runs must still respect upstream artifacts (e.g. `train` before `evaluate`).
+
+## Pipeline Stages (15 stages, fully automated)
+1. **Ingest** — load raw IMU CSVs, attach metadata via pathologyKey, flag laterality bias  
+2. **Validate Gait Events** — compare algorithmic heel-strike detection vs Figshare ground-truth annotations  
+3. **Preprocess** — Butterworth filter, Madgwick orientation fusion (head/lower back), gait event segmentation  
+4. **EDA** — signal distributions, cohort comparisons, t-SNE, PSD plots  
+5. **Features** — temporal, spectral, trunk-dynamics (Lyapunov, ApEn, SampEn, DFA), wavelet, orientation, asymmetry, turning; patient aggregation (mean, std, range, trend)  
+6. **Select Features** — RFECV / SHAP pruning to <=20 patient-level features (grouped CV)  
+7. **Train** — XGBoost, LightGBM, Random Forest, SVM, MLP with Optuna tuning  
+8. **Evaluate** — nested LOSO cross-validation, DeLong/McNemar tests, calibration (Brier + ECE), leakage comparison  
+9. **Train Deep** — InceptionTime, Gait Transformer, TCN, CNN-1D, BiLSTM-Attention; **LOSO train + evaluate in one stage** (GPU recommended)  
+10. **Ablation** — feature ablation study (all features, top-10 SHAP, leave-one-group-out)  
+11. **Sensor Ablation** — which IMU positions are needed? AUC for every sensor subset (1-sensor to 4-sensor)  
+12. **Cross-Cohort Transfer** — leave-one-cohort-out: train without PD, test on PD (8x8 pairwise heatmap)  
+13. **Predict** — generate out-of-fold predictions for all models  
+14. **Anomaly** — unsupervised anomaly detection (Isolation Forest, LOF, One-Class SVM)  
+15. **Report** — Sensors-ready tables, figures, demographics, and markdown report  
 
 ## Setup
 ```bash
@@ -58,7 +67,7 @@ Checkpoints and anomaly `.pkl` files are **not** in git. Train locally (`train`,
 
 ## Usage
 ```bash
-# Full pipeline end-to-end
+# Full pipeline end-to-end (all 15 stages)
 python main.py --config configs/pipeline_config.yaml
 
 # Individual stages
@@ -69,7 +78,12 @@ python main.py --stage features
 python main.py --stage select_features
 python main.py --stage train
 python main.py --stage evaluate
+python main.py --stage train_deep
 python main.py --stage ablation
+python main.py --stage sensor_ablation
+python main.py --stage cross_cohort
+python main.py --stage predict
+python main.py --stage anomaly
 python main.py --stage report
 ```
 

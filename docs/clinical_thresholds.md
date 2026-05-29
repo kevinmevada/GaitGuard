@@ -29,7 +29,7 @@ These tools inform the *clinical problem*; they are **not** used to set the IMU 
 
 ### Morse Fall Scale (MFS)
 
-- Morse JM, Morse RM, Tinzoh J. *Can J Aging.* 1989;8(4):373-385.
+- Morse JM, Morse RM, Tylko SJ. *Can J Aging.* 1989;8(4):373-385.
 - Common inpatient rule: **score ≥ 45 → high fall risk**.
 
 ### STRATIFY
@@ -50,6 +50,8 @@ A calibration study would be required to map MFS/STRATIFY scores to IMU-derived 
 `/predict` returns `clinical_threshold` with validated sensitivity/specificity and Morse/STRATIFY references.
 
 ## Paper wording (Methods / Results)
+
+**Note:** After running the evaluate stage, populate values below from `results/metrics/clinical_threshold.json`.
 
 > Classification used a subject-grouped LOSO protocol. The operating point was chosen by **maximizing Youden’s J** (sensitivity + specificity − 1) on training folds and applying the mean fold threshold to held-out subjects. At this cutoff, the [reference model] achieved sensitivity **X.XX** and specificity **X.XX** on out-of-fold predictions. For clinical context we cite the Morse Fall Scale and STRATIFY inpatient screens; our wearable IMU probability was not calibrated to those instruments.
 

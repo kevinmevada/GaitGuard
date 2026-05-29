@@ -127,6 +127,74 @@ def approximate_entropy(signal: np.ndarray, cfg: dict | None = None) -> float:
         return float("nan")
 
 
+def sample_entropy(signal: np.ndarray, cfg: dict | None = None) -> float:
+    """Sample entropy via antropy (Richman & Moorman, Am J Physiol 2000).
+
+    SampEn is a self-consistent improvement over ApEn: it excludes self-matches
+    and is less sensitive to signal length.  Lower values = more regular gait
+    (healthy); higher values = more complex/irregular (pathological or noisy).
+
+    Reference: Richman & Moorman (2000) Am J Physiol Heart Circ Physiol
+               278(6):H2039-H2049.
+    """
+    cfg = cfg or {}
+    x = _prepare_signal(signal, int(cfg.get("min_length", 200)))
+    if x is None:
+        return float("nan")
+
+    try:
+        import antropy as ant
+    except ImportError:
+        logger.warning("antropy not installed; sample_entropy will be NaN")
+        return float("nan")
+
+    order = int(cfg.get("order", 2))
+    metric = str(cfg.get("metric", "chebyshev"))
+    tolerance = cfg.get("tolerance")
+    if tolerance is None:
+        std = float(np.std(x))
+        tolerance = 0.2 * std if std > 1e-12 else 1e-6
+
+    try:
+        return float(ant.sample_entropy(x, order=order, metric=metric, tolerance=tolerance))
+    except Exception as exc:
+        logger.debug(f"sample_entropy failed: {exc}")
+        return float("nan")
+
+
+def dfa_alpha(signal: np.ndarray, cfg: dict | None = None) -> float:
+    """Detrended Fluctuation Analysis scaling exponent (alpha) via nolds.
+
+    Alpha quantifies long-range stride-to-stride correlations in the
+    acceleration signal.  Healthy gait: alpha ~ 1 (persistent correlations,
+    Hausdorff et al. 1995).  Parkinson's, aging, and neurological disorders
+    reduce alpha toward 0.5 (random walk), indicating loss of long-range
+    motor coordination.
+
+    References:
+        Hausdorff et al. (1995) J Appl Physiol 78(1):349-358.
+        Hausdorff et al. (2001) J Appl Physiol 90(5):1486-1495. (canonical)
+        Peng et al. (1994) Phys Rev E 49(2):1685. (DFA method origin)
+    """
+    cfg = cfg or {}
+    x = _prepare_signal(signal, int(cfg.get("min_length", 200)))
+    if x is None:
+        return float("nan")
+
+    try:
+        import nolds
+    except ImportError:
+        logger.warning("nolds not installed; dfa_alpha will be NaN")
+        return float("nan")
+
+    try:
+        return float(nolds.dfa(x, nvals=None, overlap=True, order=1,
+                               fit_exp="RANSAC" if cfg.get("ransac", False) else "poly"))
+    except Exception as exc:
+        logger.debug(f"dfa failed: {exc}")
+        return float("nan")
+
+
 def _synthetic_signals(n: int = 4000, fs: float = 100.0, seed: int = 42) -> dict[str, np.ndarray]:
     rng = np.random.default_rng(seed)
     t = np.arange(n) / fs
@@ -170,6 +238,8 @@ def validate_nonlinear_metrics(
             "signal": name,
             "lyapunov": largest_lyapunov_exponent(sig, lyap_cfg),
             "approximate_entropy": approximate_entropy(sig, apen_cfg),
+            "sample_entropy": sample_entropy(sig, apen_cfg),
+            "dfa_alpha": dfa_alpha(sig),
             "n_samples": n_samples,
         })
 
@@ -178,6 +248,10 @@ def validate_nonlinear_metrics(
     lam_log = float(by_name["logistic_map"]["lyapunov"])
     apen_sine = float(by_name["sine"]["approximate_entropy"])
     apen_noise = float(by_name["white_noise"]["approximate_entropy"])
+    sampen_sine = float(by_name["sine"]["sample_entropy"])
+    sampen_noise = float(by_name["white_noise"]["sample_entropy"])
+    dfa_sine = float(by_name["sine"]["dfa_alpha"])
+    dfa_noise = float(by_name["white_noise"]["dfa_alpha"])
 
     sine_lyap_ok = lam_sine < float(lyap_cfg.get("validation_sine_lyap_max", 0.02))
     chaotic_lyap_ok = lam_log > float(lyap_cfg.get("validation_chaotic_lyap_min", 0.05))
@@ -186,12 +260,16 @@ def validate_nonlinear_metrics(
         float(lyap_cfg.get("validation_chaotic_lyap_min", 0.05)),
     )
     apen_ok = apen_noise > float(apen_cfg.get("validation_noise_vs_sine_factor", 1.5)) * apen_sine
+    sampen_ok = sampen_noise > sampen_sine
+    dfa_ok = dfa_sine > dfa_noise
 
     checks = {
         "sine_lyapunov_near_zero": sine_lyap_ok,
         "logistic_lyapunov_positive": chaotic_lyap_ok,
         "logistic_lyapunov_gt_sine": chaotic_vs_sine_ok,
         "apen_noise_gt_sine": apen_ok,
+        "sampen_noise_gt_sine": sampen_ok,
+        "dfa_sine_gt_noise": dfa_ok,
     }
     for key, passed in checks.items():
         rows.append({

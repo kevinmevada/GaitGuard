@@ -31,7 +31,7 @@ Example sensor naming:
 Required fields:
 - `participant_id` - Unique participant identifier
 - `trial_id` - Unique trial identifier  
-- `cohort` - One of: "healthy", "elderly", "post_surgical", "neurological"
+- `cohort` - One of: "Healthy", "HipOA", "KneeOA", "ACL", "PD", "CVA", "CIPN", "RIL"
 - `sampling_rate` - Sensor sampling frequency in Hz (typically 100)
 
 Optional fields:
@@ -61,6 +61,6 @@ Optional fields:
 
 The system will automatically:
 1. Validate file formats and required columns
-2. Extract 41 gait features from raw sensor data
-3. Apply ensemble ML models for fall risk prediction
+2. Extract gait features from raw sensor data
+3. Apply ensemble ML models for pathology-tier screening
 4. Generate comprehensive risk report with SHAP explanations

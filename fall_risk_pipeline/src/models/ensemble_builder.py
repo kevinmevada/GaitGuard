@@ -79,7 +79,8 @@ class GroupStackingEnsemble(BaseEstimator, ClassifierMixin):
         y = np.asarray(y, dtype=int)
         n = len(y)
         n_base = len(self.estimator_templates)
-        meta_X = np.zeros((n, n_base), dtype=float)
+        self.classes_ = np.unique(y)
+        self.n_classes_ = len(self.classes_)
 
         if groups is not None and len(np.unique(groups)) >= 2:
             cv = StratifiedGroupKFold(
@@ -87,7 +88,7 @@ class GroupStackingEnsemble(BaseEstimator, ClassifierMixin):
                 shuffle=True,
                 random_state=self.random_state,
             )
-            splits = cv.split(X, y, groups)
+            splits = list(cv.split(X, y, groups))
         else:
             from sklearn.model_selection import StratifiedKFold
 
@@ -96,17 +97,24 @@ class GroupStackingEnsemble(BaseEstimator, ClassifierMixin):
                 shuffle=True,
                 random_state=self.random_state,
             )
-            splits = cv.split(X, y)
+            splits = list(cv.split(X, y))
 
-        for j, template in enumerate(self.estimator_templates):
-            oof = np.zeros(n, dtype=float)
-            for train_idx, val_idx in splits:
-                fold_model = skbase.clone(template)
-                fold_model.fit(X[train_idx], y[train_idx])
-                oof[val_idx] = fold_model.predict_proba(X[val_idx])[:, 1]
-            meta_X[:, j] = oof
+        if self.n_classes_ <= 2:
+            meta_X = np.zeros((n, n_base), dtype=float)
+            for j, template in enumerate(self.estimator_templates):
+                for train_idx, val_idx in splits:
+                    fold_model = skbase.clone(template)
+                    fold_model.fit(X[train_idx], y[train_idx])
+                    meta_X[val_idx, j] = fold_model.predict_proba(X[val_idx])[:, 1]
+        else:
+            meta_X = np.zeros((n, n_base * self.n_classes_), dtype=float)
+            for j, template in enumerate(self.estimator_templates):
+                for train_idx, val_idx in splits:
+                    fold_model = skbase.clone(template)
+                    fold_model.fit(X[train_idx], y[train_idx])
+                    proba = fold_model.predict_proba(X[val_idx])
+                    meta_X[val_idx, j * self.n_classes_:(j + 1) * self.n_classes_] = proba
 
-        self.classes_ = np.unique(y)
         self.meta_learner_ = LogisticRegression(
             class_weight="balanced",
             max_iter=2000,
@@ -125,14 +133,20 @@ class GroupStackingEnsemble(BaseEstimator, ClassifierMixin):
         if self.meta_learner_ is None:
             raise RuntimeError("GroupStackingEnsemble is not fitted")
         X = np.asarray(X, dtype=float)
-        cols = np.column_stack(
-            [est.predict_proba(X)[:, 1] for est in self.fitted_estimators_]
-        )
-        meta_prob = self.meta_learner_.predict_proba(cols)[:, 1]
-        return np.column_stack([1.0 - meta_prob, meta_prob])
+        if self.n_classes_ <= 2:
+            cols = np.column_stack(
+                [est.predict_proba(X)[:, 1] for est in self.fitted_estimators_]
+            )
+        else:
+            blocks = []
+            for est in self.fitted_estimators_:
+                blocks.append(est.predict_proba(X))
+            cols = np.column_stack(blocks)
+        return self.meta_learner_.predict_proba(cols)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
+        proba = self.predict_proba(X)
+        return self.classes_[np.argmax(proba, axis=1)]
 
 
 def build_soft_voting_ensemble(top_models: list[tuple[str, dict]]) -> VotingClassifier:

@@ -1,5 +1,5 @@
 # configs/pipeline_config.yaml
-# Master configuration for the fall risk prediction pipeline
+# Master configuration for the pathology-tier gait screening pipeline
 
 # Reproducibility (applied at pipeline entry via main.py → set_global_seed)
 reproducibility:
@@ -112,8 +112,11 @@ features:
     - jerk_max
     - lyapunov
     - apen
+    - sampen                      # Sample entropy (Richman & Moorman 2000) — more robust than ApEn
+    - dfa                         # DFA alpha: long-range stride correlations (Hausdorff 1995/2001)
     - head_lb_rms_ratio           # head/LB postural transmission coefficient
     - head_lb_lyapunov_ratio      # head/LB dynamic stability ratio
+    - head_lb_dfa_ratio           # head/LB long-range correlation ratio
 
   orientation:
     - tilt_mean_deg
@@ -124,8 +127,9 @@ features:
     - postural_sway_vel
 
   asymmetry:
-    - stride_time_asymmetry
-    - swing_time_asymmetry
+    - stride_time_mean_asymmetry
+    - stride_time_std_asymmetry
+    - asymmetry_rms_acc
 
   turning:
     - turn_duration_mean
@@ -166,6 +170,17 @@ features:
     tolerance: null          # null => 0.2 * std(signal)
     min_length: 200
     validation_noise_vs_sine_factor: 1.5
+
+  # Sample entropy shares the same order/tolerance params as ApEn (same cfg dict passed in)
+  # No extra block needed — uses approximate_entropy settings automatically.
+
+  dfa:
+    # Detrended Fluctuation Analysis (Hausdorff 1995; Peng 1994).
+    # alpha ~1.0  → persistent long-range correlations (healthy gait)
+    # alpha ~0.5  → uncorrelated random walk (Parkinson's, aging)
+    # alpha ~1.5  → Brownian motion (over-smoothed / artifact)
+    min_length: 200
+    ransac: false            # true = RANSAC line fit (robust to outliers, slower)
 
 # Feature selection (dimensionality control before final models)
 # N=260 participants; patient matrix ≈ 4× trial features (mean/std/range/trend) — use RFECV cap ≤20.
@@ -235,6 +250,8 @@ deep_learning:
   sequence_length: 256           # window length in samples (256 / 100 Hz ≈ 2.56 s)
   overlap: 0.5                   # 50 % overlap between windows
   batch_size: 64
+  mixed_precision: true          # AMP on CUDA for faster training/inference
+  amp_dtype: "float16"           # "float16" (fastest) or "bfloat16" (more stable)
   max_epochs: 80
   learning_rate: 0.001
   early_stopping_patience: 12

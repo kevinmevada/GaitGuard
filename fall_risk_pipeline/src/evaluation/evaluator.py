@@ -1072,8 +1072,9 @@ class Evaluator:
                 ax.set_ylim(-0.02, 1.02)
 
                 brier = float(np.mean((p_bin - y_bin) ** 2))
+                ece = self._expected_calibration_error(y_bin, p_bin)
                 brier_scores[class_name] = brier
-                ax.text(0.05, 0.9, f"Brier={brier:.3f}", transform=ax.transAxes, fontsize=9)
+                ax.text(0.05, 0.9, f"Brier={brier:.3f}\nECE={ece:.3f}", transform=ax.transAxes, fontsize=9)
 
             fig.suptitle(f"{name} — per-class calibration (OvR)", fontsize=12)
             fig.tight_layout()
@@ -1095,6 +1096,7 @@ class Evaluator:
                     "model": best_name,
                     "class": class_name,
                     "brier_score": float(np.mean((p_bin - y_bin) ** 2)),
+                    "ece": self._expected_calibration_error(y_bin, p_bin),
                     "mean_predicted_prob": float(np.mean(p_bin)),
                     "prevalence": float(np.mean(y_bin)),
                 })
@@ -1102,7 +1104,7 @@ class Evaluator:
                 pd.DataFrame(brier_rows).to_csv(
                     self.metrics_dir / "calibration_brier_scores.csv", index=False
                 )
-                logger.info("Brier scores saved → calibration_brier_scores.csv")
+                logger.info("Brier + ECE scores saved → calibration_brier_scores.csv")
 
     def _plot_confusion_matrices(self, results):
         for name, res in results.items():
@@ -1111,6 +1113,26 @@ class Evaluator:
             ax.imshow(cm, cmap="Blues")
             ax.set_title(name)
             self._save(fig, f"cm_{name}")
+
+    @staticmethod
+    def _expected_calibration_error(
+        y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10
+    ) -> float:
+        """Expected Calibration Error (Naeini et al., AAAI 2015)."""
+        bin_edges = np.linspace(0, 1, n_bins + 1)
+        ece = 0.0
+        n = len(y_true)
+        if n == 0:
+            return 0.0
+        for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
+            mask = (y_prob > lo) & (y_prob <= hi) if lo > 0 else (y_prob >= lo) & (y_prob <= hi)
+            count = mask.sum()
+            if count == 0:
+                continue
+            avg_conf = float(y_prob[mask].mean())
+            avg_acc = float(y_true[mask].mean())
+            ece += (count / n) * abs(avg_acc - avg_conf)
+        return float(ece)
 
     _OVR_COLORS = ["#2196F3", "#FF9800", "#F44336", "#4CAF50", "#9C27B0"]
 
@@ -1626,21 +1648,37 @@ class Evaluator:
     def _save_oof_predictions(self, results: dict) -> None:
         rows = []
         for model_name, res in results.items():
+            y_true_arr = np.asarray(res["y_true"])
+            y_prob_arr = np.asarray(res["y_prob"])
+            is_multiclass = y_prob_arr.ndim == 2
+
             y_pred = res.get("y_pred")
             if y_pred is None:
-                y_pred = (np.asarray(res["y_prob"]) >= float(res.get("decision_threshold", 0.5))).astype(int)
+                if is_multiclass:
+                    y_pred = np.argmax(y_prob_arr, axis=1)
+                else:
+                    y_pred = (y_prob_arr >= float(res.get("decision_threshold", 0.5))).astype(int)
+
             pids = res.get("participant_ids", [])
             y_pred_fixed = res.get("y_pred_fixed", y_pred)
-            for i, (yt, yp) in enumerate(zip(res["y_true"], res["y_prob"])):
+
+            y_proba_full = np.asarray(res.get("y_proba_full", y_prob_arr))
+
+            for i in range(len(y_true_arr)):
                 row = {
                     "model": model_name,
-                    "y_true": int(yt),
-                    "y_prob": float(yp),
+                    "y_true": int(y_true_arr[i]),
                     "y_pred": int(y_pred[i]),
                     "y_pred_fixed": int(y_pred_fixed[i]),
                     "threshold_train_youden": float(res.get("decision_threshold", 0.5)),
                     "threshold_eval_youden": float(res.get("threshold_eval_youden", 0.5)),
                 }
+                if is_multiclass:
+                    row["y_prob"] = float(y_prob_arr[i, 1]) if y_prob_arr.shape[1] > 1 else float(y_prob_arr[i, 0])
+                    for c in range(y_proba_full.shape[1] if y_proba_full.ndim == 2 else 0):
+                        row[f"y_prob_class_{c}"] = float(y_proba_full[i, c])
+                else:
+                    row["y_prob"] = float(y_prob_arr[i])
                 if len(pids) > i:
                     row["participant_id"] = str(pids[i])
                 rows.append(row)

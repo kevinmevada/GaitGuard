@@ -12,7 +12,7 @@ This study used a publicly available, de-identified dataset hosted on Figshare (
 
 ## Informed Consent Statement
 
-Not applicable to this secondary computational study. Informed consent for the underlying recordings was obtained by the original investigators (Voisard et al., 2025) under the ethics approval above.
+Informed consent was obtained from all participants by the original investigators (Voisard et al., 2025) under the ethics approval above. No additional informed consent was required for this secondary computational study of de-identified data.
 
 ---
 

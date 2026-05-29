@@ -20,14 +20,16 @@ All models accept (batch, channels, time) and output (batch, n_classes).
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
+from collections.abc import Callable
 from typing import Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
 from sklearn.metrics import roc_auc_score
+from torch.utils.data import DataLoader, Dataset
 
 from src.utils.reproducibility import get_pipeline_seed
 
@@ -72,12 +74,17 @@ class _InceptionBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x_bn = self.bottleneck(x) if self.bottleneck else x
-        y = torch.cat([
+        # Even kernel sizes (10, 20, 40) yield length L-1 vs MaxPool L for even seq_len;
+        # align branch lengths before concat (e.g. window_len=256).
+        branches = [
             self.conv10(x_bn),
             self.conv20(x_bn),
             self.conv40(x_bn),
             self.conv_mp(self.mp(x)),
-        ], dim=1)
+        ]
+        t = min(b.size(-1) for b in branches)
+        branches = [b[..., :t] for b in branches]
+        y = torch.cat(branches, dim=1)
         return F.relu(self.bn(y))
 
 
@@ -114,7 +121,9 @@ class InceptionTime(nn.Module):
             x = block(x)
             if i % 3 == 2:
                 sc_idx = i // 3
-                x = x + self.shortcuts[sc_idx](residual)
+                sc = self.shortcuts[sc_idx](residual)
+                t = min(x.size(-1), sc.size(-1))
+                x = x[..., :t] + sc[..., :t]
                 x = F.relu(x)
                 residual = x
         x = self.gap(x).squeeze(-1)
@@ -413,8 +422,30 @@ class DeepModelTrainer:
         else:
             self.device = torch.device(dev)
 
-    def train(self, model: nn.Module, X_train: np.ndarray, y_train: np.ndarray,
-              X_val: np.ndarray, y_val: np.ndarray) -> nn.Module:
+        # Mixed precision: substantial speedup on RTX GPUs while preserving stability.
+        self.mixed_precision = bool(dl_cfg.get("mixed_precision", True)) and self.device.type == "cuda"
+        amp_dtype = str(dl_cfg.get("amp_dtype", "float16")).lower()
+        self.amp_dtype = torch.bfloat16 if amp_dtype in {"bfloat16", "bf16"} else torch.float16
+        self.scaler = torch.amp.GradScaler(
+            "cuda",
+            enabled=self.mixed_precision and self.amp_dtype == torch.float16,
+        )
+
+    def _autocast_context(self):
+        if self.mixed_precision:
+            return torch.amp.autocast(device_type="cuda", dtype=self.amp_dtype)
+        return nullcontext()
+
+    def train(
+        self,
+        model: nn.Module,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+        *,
+        on_epoch: Callable[[int, float, float, float], None] | None = None,
+    ) -> nn.Module:
         if len(X_train) == 0:
             raise ValueError("Empty training data")
 
@@ -426,7 +457,7 @@ class DeepModelTrainer:
                               generator=self._train_generator, drop_last=len(train_ds) > self.batch_size)
         val_dl = DataLoader(val_ds, batch_size=self.batch_size)
 
-        n_classes = int(y_train.max()) + 1
+        n_classes = int(max(y_train.max(), y_val.max())) + 1
         counts = np.bincount(y_train, minlength=n_classes).astype(float)
         weights = 1.0 / (counts + 1e-6)
         weights = weights / weights.sum()
@@ -440,18 +471,35 @@ class DeepModelTrainer:
         patience_ctr = 0
         best_state = None
 
-        for _ in range(self.max_epochs):
+        for epoch in range(self.max_epochs):
             model.train()
+            running_loss = 0.0
+            n_batches = 0
             for Xb, yb in train_dl:
                 Xb, yb = Xb.to(self.device), yb.to(self.device)
-                optimizer.zero_grad()
-                loss = criterion(model(Xb), yb)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                with self._autocast_context():
+                    logits = model(Xb)
+                    loss = criterion(logits, yb)
+                if self.scaler.is_enabled():
+                    self.scaler.scale(loss).backward()
+                    self.scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    self.scaler.step(optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+                running_loss += float(loss.item())
+                n_batches += 1
 
             scheduler.step()
             val_auc = self._evaluate_auc(model, val_dl, n_classes)
+            mean_loss = running_loss / max(n_batches, 1)
+
+            if on_epoch is not None:
+                on_epoch(epoch + 1, mean_loss, val_auc, best_auc)
 
             if val_auc > best_auc:
                 best_auc = val_auc
@@ -475,18 +523,19 @@ class DeepModelTrainer:
         probs = []
         with torch.no_grad():
             for Xb, _ in dl:
-                logits = model(Xb.to(self.device))
+                with self._autocast_context():
+                    logits = model(Xb.to(self.device))
                 prob = torch.softmax(logits, dim=1).cpu().numpy()
                 probs.append(prob)
         return np.vstack(probs)
 
-    @staticmethod
-    def _evaluate_auc(model: nn.Module, dl: DataLoader, n_classes: int) -> float:
+    def _evaluate_auc(self, model: nn.Module, dl: DataLoader, n_classes: int) -> float:
         model.eval()
         all_y, all_prob = [], []
         with torch.no_grad():
             for Xb, yb in dl:
-                logits = model(Xb.to(model.fc2.weight.device if hasattr(model, 'fc2') else next(model.parameters()).device))
+                with self._autocast_context():
+                    logits = model(Xb.to(next(model.parameters()).device))
                 prob = torch.softmax(logits, dim=1).cpu().numpy()
                 all_prob.append(prob)
                 all_y.extend(yb.numpy())
