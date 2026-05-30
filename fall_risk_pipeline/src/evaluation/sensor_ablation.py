@@ -36,24 +36,31 @@ SENSOR_POSITIONS = ["head", "lower_back", "left_foot", "right_foot"]
 SENSOR_PREFIXES = {
     "head": re.compile(r"^head_"),
     "lower_back": re.compile(r"^lb_|^turn_"),
-    "left_foot": re.compile(
-        r"^left_|^cadence_mean|^stance_phase_ratio|^swing_phase_ratio"
-        r"|^double_support_ratio|^stride_time_mean_asymmetry"
-        r"|^stride_time_std_asymmetry|^asymmetry_rms_acc"
-    ),
+    "left_foot": re.compile(r"^left_"),
     "right_foot": re.compile(r"^right_"),
 }
 
 CROSS_SITE = re.compile(r"^head_lb_")
+FOOT_BILATERAL = re.compile(
+    r"^(cadence_mean|stance_phase_ratio|swing_phase_ratio|double_support_ratio|"
+    r"stride_time_mean_asymmetry|stride_time_std_asymmetry|asymmetry_rms_acc)_"
+)
 
 
 def _features_for_sensors(
     feat_names: list[str], sensors: tuple[str, ...]
 ) -> list[int]:
+    has_left = "left_foot" in sensors
+    has_right = "right_foot" in sensors
     indices = []
     for i, name in enumerate(feat_names):
         if CROSS_SITE.match(name):
             if "head" in sensors and "lower_back" in sensors:
+                indices.append(i)
+            continue
+        if FOOT_BILATERAL.match(name):
+            # These features are computed from both feet jointly; require both.
+            if has_left and has_right:
                 indices.append(i)
             continue
         matched = False
@@ -64,9 +71,6 @@ def _features_for_sensors(
                 break
         if matched:
             indices.append(i)
-        elif not any(p.match(name) for p in SENSOR_PREFIXES.values()):
-            if "left_foot" in sensors or "right_foot" in sensors:
-                indices.append(i)
     return indices
 
 

@@ -94,7 +94,9 @@ class FeatureSelector:
             selected = rfecv_features
             method_used = "rfecv"
 
-        selected, forced_required = self._enforce_required_features(selected, feat_cols)
+        selected, forced_required, dropped_required = self._enforce_required_features(
+            selected, feat_cols
+        )
         n_features_after = len(selected)
         p_n_after = n_participants / max(n_features_after, 1)
 
@@ -112,6 +114,7 @@ class FeatureSelector:
             "primary_method": method_used,
             "required_feature_substrings": self.required_feature_substrings,
             "forced_required_features": forced_required,
+            "dropped_required_features": dropped_required,
             "features": selected,
             "rfecv_features": rfecv_features,
             "shap_features": shap_features,
@@ -193,10 +196,10 @@ class FeatureSelector:
 
     def _enforce_required_features(
         self, selected: list[str], all_features: list[str]
-    ) -> tuple[list[str], list[str]]:
-        """Force-keep required feature families (e.g., sampen/dfa) in export."""
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Force-keep required feature families while respecting max_features."""
         if not self.required_feature_substrings:
-            return selected[: self.max_features], []
+            return selected[: self.max_features], [], []
 
         required = [
             f for f in all_features
@@ -206,19 +209,28 @@ class FeatureSelector:
             logger.warning(
                 f"No features matched required_feature_substrings={self.required_feature_substrings}"
             )
-            return selected[: self.max_features], []
+            return selected[: self.max_features], [], []
 
-        # Keep required first (in original feature order), then fill with existing picks.
-        merged = required + [f for f in selected if f not in required]
-        max_keep = max(self.max_features, len(required))
-        merged = merged[:max_keep]
+        # Keep required first (original order), but do not exceed configured cap.
+        required_kept = required[: self.max_features]
+        dropped_required = required[self.max_features :]
+        remaining_slots = max(self.max_features - len(required_kept), 0)
+        merged = required_kept + [
+            f for f in selected if f not in required_kept
+        ][:remaining_slots]
 
-        forced = [f for f in required if f not in selected]
+        forced = [f for f in required_kept if f not in selected]
         if forced:
             logger.info(
                 f"Forced {len(forced)} required features into selected set: {forced[:8]}"
             )
-        return merged, forced
+        if dropped_required:
+            logger.warning(
+                "Required features exceed max_features cap; dropped %d required features. "
+                "Increase feature_selection.max_features to retain all required matches.",
+                len(dropped_required),
+            )
+        return merged, forced, dropped_required
 
     def _select_shap(
         self, X: np.ndarray, y: np.ndarray, feat_cols: list[str]
@@ -230,12 +242,19 @@ class FeatureSelector:
 
         explainer = shap.TreeExplainer(clf)
         shap_vals = explainer.shap_values(X_proc)
+        n_classes = int(len(np.unique(y)))
         if isinstance(shap_vals, list):
             stacked = np.stack([np.asarray(v) for v in shap_vals], axis=0)
             shap_vals = np.abs(stacked).mean(axis=0)
         shap_vals = np.asarray(shap_vals)
         if shap_vals.ndim == 3:
-            shap_vals = shap_vals[:, :, 1]
+            # Multiclass: aggregate absolute contributions across all classes.
+            if shap_vals.shape[-1] == n_classes:
+                shap_vals = np.abs(shap_vals).mean(axis=2)
+            elif shap_vals.shape[0] == n_classes:
+                shap_vals = np.abs(shap_vals).mean(axis=0)
+            else:
+                shap_vals = np.abs(shap_vals).mean(axis=2)
 
         importance = np.ravel(np.abs(shap_vals).mean(axis=0))
         order = np.argsort(importance)[::-1][: self.max_features]

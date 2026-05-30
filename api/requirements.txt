@@ -16,3 +16,4 @@ tqdm
 antropy>=0.1.9
 nolds>=0.6.2
 ahrs>=0.3.1
+PyWavelets>=1.4.0

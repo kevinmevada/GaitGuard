@@ -222,7 +222,8 @@ def _verify_nonlinear_runtime_dependencies(
 
     Without antropy/nolds, SampEn/DFA become NaN in feature extraction; without
     ahrs, Madgwick orientation columns are absent and orientation features
-    silently drop out. Both can degrade API predictions.
+    silently drop out; without PyWavelets, wavelet features become NaN/zeroed.
+    All can degrade API predictions.
     """
     all_cols = [str(c).lower() for c in (patient_cols + trial_cols)]
     needs_antropy = any("sampen" in c or "apen" in c for c in all_cols)
@@ -232,6 +233,7 @@ def _verify_nonlinear_runtime_dependencies(
         for c in all_cols
         for token in ("tilt_", "pitch_", "roll_", "postural_sway")
     )
+    needs_pywt = any("wavelet_" in c for c in all_cols)
 
     missing: list[str] = []
     if needs_antropy:
@@ -249,6 +251,11 @@ def _verify_nonlinear_runtime_dependencies(
             import ahrs  # noqa: F401
         except ImportError:
             missing.append("ahrs")
+    if needs_pywt:
+        try:
+            import pywt  # noqa: F401
+        except ImportError:
+            missing.append("PyWavelets")
 
     if missing:
         raise RuntimeError(

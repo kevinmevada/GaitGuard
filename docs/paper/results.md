@@ -82,6 +82,8 @@ Sensor-subset evaluation (`sensor_ablation.csv`) indicated strong performance wi
 - Lower-back only remained competitive (AUC 0.9133)
 - Foot-only subsets were weaker (left+right foot AUC 0.8552; single foot ~0.843)
 
+Disclosure: these sensor-ablation values come from participant-grouped **5-fold StratifiedGroupKFold** CV (subset-comparison protocol), not full LOSO. They are valid for ranking sensor subsets within the ablation experiment but should not be interpreted as numerically identical to primary LOSO model-performance estimates.
+
 ## 8. Cross-cohort transfer
 
 In leave-one-cohort-out transfer (`cross_cohort_transfer.csv`), AUC was undefined for all held-out cohorts because each test cohort contained a single class (`auc_status=undefined_single_class_test`), and one cohort had insufficient known samples. Accordingly, transfer interpretation relied on fallback metrics:

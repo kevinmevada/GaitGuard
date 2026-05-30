@@ -140,6 +140,8 @@ Robustness:
 - Sensor ablation (single-sensor through multi-sensor subsets)
 - Cross-cohort transfer evaluation (train on N-1 cohorts, test on held-out cohort)
 
+Protocol disclosure: unlike the primary tabular/deep evaluation paths, sensor ablation is run with **StratifiedGroupKFold (5 folds)** participant-grouped CV (not full LOSO) for computational tractability across all sensor-subset combinations. Sensor-ablation AUCs are therefore reported as grouped-CV subset-comparison metrics rather than directly interchangeable with primary LOSO headline metrics.
+
 For held-out cohorts with single-class test composition, AUC was marked undefined and accompanied by fallback confidence-oriented reporting fields.
 
 ## 11. Anomaly analysis

@@ -962,24 +962,44 @@ class Evaluator:
         y_true = result["y_true"]
         y_prob = result["y_prob"]
         y_pred = result["y_pred"]
+        y_proba_full = result.get("y_proba_full")
         thresh = float(result.get("decision_threshold", 0.5))
+        is_multiclass = (
+            result.get("label_mode") == "multiclass"
+            or (isinstance(y_prob, np.ndarray) and y_prob.ndim == 2)
+            or (y_proba_full is not None and np.asarray(y_proba_full).ndim == 2)
+        )
         rows: list[dict] = []
         for cohort in sorted(set(cohorts)):
             mask = cohorts == cohort
             if int(mask.sum()) < 2:
                 continue
             sub_true = y_true[mask]
-            sub_prob = y_prob[mask]
             sub_pred = y_pred[mask]
             try:
-                sub = self._build_metric_payload(
-                    f"{model_name}:{cohort}",
-                    sub_true,
-                    sub_prob,
-                    cohorts[mask],
-                    y_pred=sub_pred,
-                    decision_threshold=thresh,
-                )
+                if is_multiclass:
+                    if y_proba_full is None:
+                        # Fallback for older payloads where only y_prob is present.
+                        sub_proba = np.asarray(y_prob)[mask]
+                    else:
+                        sub_proba = np.asarray(y_proba_full)[mask]
+                    sub = build_multiclass_metric_payload(
+                        f"{model_name}:{cohort}",
+                        np.asarray(sub_true),
+                        np.asarray(sub_proba, dtype=float),
+                        np.asarray(sub_pred, dtype=int),
+                        cohorts=np.asarray(cohorts[mask]),
+                    )
+                else:
+                    sub_prob = y_prob[mask]
+                    sub = self._build_metric_payload(
+                        f"{model_name}:{cohort}",
+                        sub_true,
+                        sub_prob,
+                        cohorts[mask],
+                        y_pred=sub_pred,
+                        decision_threshold=thresh,
+                    )
             except ValueError:
                 continue
             rows.append({
@@ -1232,13 +1252,26 @@ class Evaluator:
             return preprocess.transform(X)
         return X
 
-    def _normalize_shap_values(self, shap_vals: Any) -> np.ndarray:
-        """Binary classifier: return (n_samples, n_features) SHAP matrix."""
+    def _normalize_shap_values(
+        self, shap_vals: Any, n_classes: int | None = None
+    ) -> np.ndarray:
+        """Return class-aggregated SHAP matrix of shape (n_samples, n_features)."""
         if isinstance(shap_vals, list):
-            shap_vals = shap_vals[1]
+            # Legacy SHAP API: list of per-class matrices [n_classes][n_samples, n_features].
+            stacked = np.stack([np.asarray(v, dtype=float) for v in shap_vals], axis=0)
+            return np.abs(stacked).mean(axis=0)
         arr = np.asarray(shap_vals, dtype=float)
         if arr.ndim == 3:
-            arr = arr[:, :, 1]
+            # New SHAP API often returns (n_samples, n_features, n_classes).
+            # Aggregate across classes for global multiclass importance.
+            if n_classes is not None and arr.shape[-1] == n_classes:
+                arr = np.abs(arr).mean(axis=2)
+            elif n_classes is not None and arr.shape[0] == n_classes:
+                arr = np.abs(arr).mean(axis=0)
+            elif arr.shape[-1] <= 10:
+                arr = np.abs(arr).mean(axis=2)
+            else:
+                arr = np.abs(arr).mean(axis=0)
         if arr.ndim == 1:
             arr = arr.reshape(1, -1)
         return arr
@@ -1247,17 +1280,24 @@ class Evaluator:
         self, name: str, model: Any, X_proc: np.ndarray
     ) -> np.ndarray | None:
         clf, _ = self._unwrap_pipeline_model(model)
+        classes = getattr(clf, "classes_", None)
+        n_classes = int(len(classes)) if classes is not None else None
         try:
             if name in ("xgboost", "lightgbm", "random_forest"):
                 explainer = shap.TreeExplainer(clf)
-                return self._normalize_shap_values(explainer.shap_values(X_proc))
+                return self._normalize_shap_values(
+                    explainer.shap_values(X_proc), n_classes=n_classes
+                )
             background = shap.sample(X_proc, min(50, max(len(X_proc), 1)))
-            explainer = shap.KernelExplainer(
-                lambda x: clf.predict_proba(x)[:, 1],
-                background,
-            )
+            if n_classes is not None and n_classes > 2:
+                # Multiclass: explain full class-probability vector.
+                pred_fn = lambda x: clf.predict_proba(x)
+            else:
+                pred_fn = lambda x: clf.predict_proba(x)[:, 1]
+            explainer = shap.KernelExplainer(pred_fn, background)
             return self._normalize_shap_values(
-                explainer.shap_values(X_proc, nsamples=min(50, len(X_proc)))
+                explainer.shap_values(X_proc, nsamples=min(50, len(X_proc))),
+                n_classes=n_classes,
             )
         except Exception as exc:
             logger.warning(f"SHAP failed for {name}: {exc}")
@@ -1371,7 +1411,12 @@ class Evaluator:
 
         try:
             explainer = shap.TreeExplainer(clf, data=x_proc[bg_idx])
-            shap_vals = self._normalize_shap_values(explainer.shap_values(x_proc[ex_idx]))
+            classes = getattr(clf, "classes_", None)
+            n_classes = int(len(classes)) if classes is not None else None
+            shap_vals = self._normalize_shap_values(
+                explainer.shap_values(x_proc[ex_idx]),
+                n_classes=n_classes,
+            )
         except Exception as exc:
             logger.warning(f"SHAP full checkpoint failed for {name}: {exc}")
             return

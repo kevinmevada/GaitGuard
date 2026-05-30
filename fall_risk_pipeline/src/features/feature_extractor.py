@@ -159,6 +159,10 @@ class FeatureExtractor:
         hd = signals.get("head")
         if hd is not None:
             feats.update(self._trunk_dynamics(hd, prefix="head"))
+            # Keep spectral/wavelet feature families symmetric with lower_back so
+            # head-only and mixed-sensor ablations are not under-parameterized.
+            feats.update(self._spectral_features(hd, prefix="head"))
+            feats.update(self._wavelet_features(hd, prefix="head"))
             feats.update(self._orientation_features(hd, prefix="head"))
 
         if lb is not None and hd is not None:

@@ -249,7 +249,7 @@ Gait Event Detection
 
 Gravity Removal
 - Applied to: Lower back accelerometer
-- Method: Remove DC (mean) component per trial
+- Method: Estimate gravity via low-pass Butterworth filtering (0.1 Hz) and subtract to obtain dynamic acceleration
 - Purpose: Isolate dynamic acceleration
 
 Sensor Fusion (Madgwick Algorithm)
