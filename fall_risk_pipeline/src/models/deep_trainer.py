@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import torch
 from loguru import logger
+from sklearn.metrics import roc_auc_score
 
 from src.evaluation.multiclass_metrics import build_multiclass_metric_payload
 from src.models.deep_models import (
@@ -207,6 +208,13 @@ class DeepLearningPipeline:
         payload = build_multiclass_metric_payload(
             f"dl_{model_name}", y_true, y_proba, y_pred
         )
+        if not np.isfinite(float(payload.get("auc", float("nan")))):
+            try:
+                payload["auc"] = float(
+                    roc_auc_score(y_true, y_proba, multi_class="ovr", average="macro")
+                )
+            except ValueError:
+                payload["auc"] = float("nan")
         payload["participant_ids"] = oof_pids
         return payload
 
@@ -255,6 +263,7 @@ class DeepLearningPipeline:
 
         all_results: dict[str, dict] = {}
         rows = []
+        oof_rows: list[dict] = []
 
         for model_name in models:
             logger.info(f"Evaluating DL model: {model_name}")
@@ -277,6 +286,25 @@ class DeepLearningPipeline:
                     "validation_strategy": "LOSO",
                     "participants": len(participants),
                 })
+                y_true = np.asarray(result.get("y_true", []), dtype=int)
+                y_pred = np.asarray(result.get("y_pred", []), dtype=int)
+                y_proba_full = np.asarray(result.get("y_proba_full", []), dtype=float)
+                pids = result.get("participant_ids", [])
+                if (
+                    y_proba_full.ndim == 2
+                    and len(y_true) == len(y_pred) == len(pids) == y_proba_full.shape[0]
+                    and y_proba_full.shape[1] > 0
+                ):
+                    for i in range(y_proba_full.shape[0]):
+                        row = {
+                            "model": f"dl_{model_name}",
+                            "participant_id": pids[i],
+                            "y_true": int(y_true[i]),
+                            "y_pred": int(y_pred[i]),
+                        }
+                        for c in range(y_proba_full.shape[1]):
+                            row[f"y_prob_class_{c}"] = float(y_proba_full[i, c])
+                        oof_rows.append(row)
             except Exception as exc:
                 logger.error(f"DL model {model_name} failed: {exc}")
 
@@ -295,6 +323,12 @@ class DeepLearningPipeline:
                 combined = pd.concat([existing, dl_df], ignore_index=True)
                 combined.to_csv(existing_path, index=False)
                 logger.info(f"DL metrics appended to {existing_path}")
+
+        if oof_rows:
+            oof_df = pd.DataFrame(oof_rows)
+            oof_path = self.metrics_dir / "deep_learning_oof_predictions.parquet"
+            oof_df.to_parquet(oof_path, index=False)
+            logger.info(f"DL OOF predictions saved → {oof_path}")
 
         elapsed = time.time() - t0
         logger.info(f"=== Deep Learning Pipeline complete in {elapsed:.1f}s ===")

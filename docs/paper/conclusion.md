@@ -1,6 +1,6 @@
 # Conclusion
 
-This work presents a reproducible end-to-end wearable IMU gait-screening pipeline for pathology-tier classification across eight clinical cohorts (260 participants; 1,356 trials). Using participant-grouped evaluation, the tabular branch achieved strong multiclass discrimination (best macro one-vs-rest AUC 0.916 for random forest), while deep architectures showed competitive LOSO macro-F1 and accuracy.
+This work presents a reproducible end-to-end wearable IMU gait-screening pipeline for pathology-tier classification across eight clinical cohorts (260 participants; 1,356 trials). The pipeline combines supervised pathology-tier classification with a parallel unsupervised anomaly detection layer, providing both calibrated risk stratification and deviation-from-healthy flagging in a single inference call. Using participant-grouped evaluation, the tabular branch achieved strong multiclass discrimination (best macro one-vs-rest AUC 0.916 for random forest), while deep architectures showed competitive LOSO macro-F1 and accuracy.
 
 A key practical result is that reduced sensor configurations can retain high performance: in sensor-ablation analysis, a two-sensor setup (head + right foot) reached AUC 0.9336, exceeding the full four-sensor configuration (AUC 0.9273). Explainability analyses consistently highlighted trunk-dynamics variability features, supporting a biomechanically plausible interpretation rather than purely opaque model behavior.
 

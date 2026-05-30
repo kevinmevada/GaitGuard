@@ -61,6 +61,10 @@ Trial-level features were extracted from multi-sensor signals across these domai
 
 Patient-level matrices were then formed by within-session aggregation of each trial feature using mean, standard deviation, range, and linear trend across ordered trials.
 
+### 5.1 Current artifact-state disclosure
+
+The committed pipeline configuration includes nonlinear feature families (`lb_sampen`, `lb_dfa`, `head_sampen`, `head_dfa`, `head_lb_dfa_ratio`) and feature-selection retention rules for `sampen`/`dfa`. However, the currently committed performance artifacts (`results/metrics/metrics.csv`, SHAP exports, and ablation summaries) were produced before a full end-to-end rerun that propagates those families through all downstream stages. Therefore, manuscript interpretation should treat nonlinear-feature claims as **configured methodology** pending **full rerun confirmation** in final reported results.
+
 ## 6. Feature selection
 
 To control dimensionality and improve generalization, feature selection was applied before final model fitting:
@@ -69,7 +73,7 @@ To control dimensionality and improve generalization, feature selection was appl
 - Secondary ranking: SHAP-based importance pruning
 - Export cap: <=20 selected features (configurable)
 
-To preserve mechanistically relevant nonlinear dynamics in final training, required feature-family retention rules were enforced for specified substrings (including `sampen` and `dfa`) when configured.
+To preserve mechanistically relevant nonlinear dynamics in final training, required feature-family retention rules were enforced for specified substrings (including `sampen` and `dfa`) when configured. Final manuscript numbers should only claim retained nonlinear families after rerun-generated model metrics and SHAP outputs confirm their propagation into trained checkpoints and evaluation exports.
 
 ## 7. Tabular models and ensemble
 
@@ -140,7 +144,7 @@ Robustness:
 - Sensor ablation (single-sensor through multi-sensor subsets)
 - Cross-cohort transfer evaluation (train on N-1 cohorts, test on held-out cohort)
 
-Protocol disclosure: unlike the primary tabular/deep evaluation paths, sensor ablation is run with **StratifiedGroupKFold (5 folds)** participant-grouped CV (not full LOSO) for computational tractability across all sensor-subset combinations. Sensor-ablation AUCs are therefore reported as grouped-CV subset-comparison metrics rather than directly interchangeable with primary LOSO headline metrics.
+Protocol disclosure: unlike the primary tabular/deep evaluation paths, sensor ablation is run with **StratifiedGroupKFold (5 folds)** participant-grouped CV (not full LOSO) for computational tractability across all sensor-subset combinations. Sensor-ablation AUCs are grouped-CV estimates (5-fold StratifiedGroupKFold) rather than full LOSO, making them appropriate for within-experiment sensor-subset ranking but not directly comparable to primary LOSO AUC estimates. The ranking finding (head+right foot >= full 4-sensor) is robust to this protocol difference.
 
 For held-out cohorts with single-class test composition, AUC was marked undefined and accompanied by fallback confidence-oriented reporting fields.
 

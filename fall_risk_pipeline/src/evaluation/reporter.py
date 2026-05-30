@@ -552,12 +552,23 @@ python main.py --config configs/pipeline_config.yaml
                 f"| {row.sensor_subset} | {row.n_sensors} | {row.n_features} | "
                 f"{row.auc_mean:.4f} | {row.auc_std:.4f} |"
             )
-        best = df.iloc[0]
+        best_overall = df.iloc[0]
+        single_sensor = df[df["n_sensors"] == 1]
+        best_single = (
+            single_sensor.sort_values("auc_mean", ascending=False).iloc[0]
+            if not single_sensor.empty
+            else None
+        )
         lines.append("")
         lines.append(
-            f"**Best single-sensor:** lower-back alone captures "
-            f"the majority of discriminative signal."
+            f"**Best overall subset:** {best_overall.sensor_subset} "
+            f"(AUC {best_overall.auc_mean:.4f})."
         )
+        if best_single is not None:
+            lines.append(
+                f"**Best single-sensor:** {best_single.sensor_subset} "
+                f"(AUC {best_single.auc_mean:.4f})."
+            )
         return "\n".join(lines)
 
     def _cross_cohort_section(self) -> str:
@@ -673,7 +684,17 @@ python main.py --config configs/pipeline_config.yaml
         if not dl_path.exists():
             return ""
 
-        dl = pd.read_csv(dl_path).sort_values("auc", ascending=False)
+        dl = pd.read_csv(dl_path)
+        if dl.empty:
+            return ""
+        dl["auc"] = pd.to_numeric(dl.get("auc"), errors="coerce")
+        dl["macro_f1"] = pd.to_numeric(dl.get("macro_f1"), errors="coerce")
+        dl["accuracy"] = pd.to_numeric(dl.get("accuracy"), errors="coerce")
+        has_auc = dl["auc"].notna().any()
+        if has_auc:
+            dl = dl.sort_values(["auc", "macro_f1", "accuracy"], ascending=False)
+        else:
+            dl = dl.sort_values(["macro_f1", "accuracy"], ascending=False)
         lines = [
             "## Deep learning comparison (LOSO, raw IMU windows)",
             "",
@@ -687,13 +708,14 @@ python main.py --config configs/pipeline_config.yaml
         ]
         for row in dl.itertuples(index=False):
             name = str(row.model).replace("dl_", "").replace("_", " ").title()
+            auc_cell = f"{float(row.auc):.4f}" if pd.notna(row.auc) else "—"
             ci = (
                 f"[{float(row.auc_ci_low):.3f}, {float(row.auc_ci_high):.3f}]"
                 if pd.notna(getattr(row, "auc_ci_low", float("nan")))
                 else "—"
             )
             lines.append(
-                f"| {name} | {float(row.auc):.4f} | {ci} | "
+                f"| {name} | {auc_cell} | {ci} | "
                 f"{float(row.macro_f1):.4f} | {float(row.accuracy):.4f} |"
             )
 
@@ -703,12 +725,25 @@ python main.py --config configs/pipeline_config.yaml
             classical = mdf[~mdf["model"].str.startswith("dl_")]
             if not classical.empty:
                 best_cl = classical.loc[classical["auc"].idxmax()]
-                best_dl = dl.iloc[0]
                 lines.extend([
                     "",
                     f"Best classical ML: **{best_cl['model']}** (AUC {float(best_cl['auc']):.4f})",
-                    f"Best deep learning: **{best_dl['model']}** (AUC {float(best_dl['auc']):.4f})",
                 ])
+                best_dl = dl.iloc[0]
+                if has_auc:
+                    lines.append(
+                        f"Best deep learning: **{best_dl['model']}** "
+                        f"(AUC {float(best_dl['auc']):.4f})"
+                    )
+                else:
+                    lines.append(
+                        f"Best deep learning by macro-F1: **{best_dl['model']}** "
+                        f"(macro-F1 {float(best_dl['macro_f1']):.4f})."
+                    )
+                    lines.append(
+                        "Deep-model AUC is unavailable in this export because per-participant "
+                        "OOF probability vectors were not saved."
+                    )
 
         lines.append("")
         return "\n".join(lines)

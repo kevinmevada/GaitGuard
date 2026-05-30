@@ -2,6 +2,7 @@
 
 **Journal target:** *Sensors* (MDPI)  
 **Status:** Abstract complete with evaluated metrics (AUC 0.91, 95% CI 0.88–0.94).
+**Keywords:** wearable sensors; inertial measurement unit; gait analysis; fall risk; machine learning; deep learning; pathology screening; leave-one-subject-out validation
 
 ---
 

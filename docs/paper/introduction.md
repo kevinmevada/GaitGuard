@@ -10,12 +10,14 @@ In this work, we present a reproducible pathology-tier gait screening pipeline t
 
 Our pipeline performs end-to-end ingestion, preprocessing, feature extraction, dimensionality control, model training, evaluation, and report generation. Feature engineering spans temporal, spectral, trunk dynamics, orientation, and asymmetry domains, followed by grouped RFECV/SHAP-guided selection with an explicit cap on final predictor count. The tabular branch trains and compares XGBoost, LightGBM, Random Forest, SVM, and MLP models with soft-voting ensemble integration; the deep branch benchmarks InceptionTime, Transformer, TCN, CNN-1D, and BiLSTM-attention architectures under the same cohort structure.
 
-This study makes four practical contributions for Sensors-style reproducible research:
+This study makes six practical contributions for Sensors-style reproducible research:
 
 1. A fully documented and executable end-to-end pipeline for multi-cohort wearable IMU gait screening.
 2. Participant-grouped evaluation with LOSO as the primary validation scheme, plus leakage-sensitivity auditing.
 3. Joint interpretability and robustness analyses (SHAP, feature ablation, sensor ablation, and cross-cohort transfer).
 4. Publicly inspectable artifacts and automation-oriented execution entry points intended to support independent replication.
+5. Dual-layer architecture combining supervised pathology-tier classification with unsupervised anomaly detection.
+6. Sensor-efficiency evidence: two-sensor configuration (head + right foot) achieves AUC 0.934, exceeding the four-sensor baseline.
 
 We emphasize that labels in this dataset are cohort-level pathology categories rather than prospectively adjudicated individual fall outcomes. Accordingly, performance metrics should be interpreted as evidence for pathology-tier screening utility, not direct clinical fall prediction. Prospective external validation with participant-level incident falls is required before clinical deployment claims.
 

@@ -4,6 +4,10 @@
 
 The final analysis set contained 260 participants and 1,356 walking trials across eight cohorts (Healthy, HipOA, KneeOA, ACL, PD, CVA, CIPN, RIL) with four synchronized IMUs (head, lower back, left foot, right foot). Demographic details are summarized in `fall_risk_pipeline/results/metrics/table1_demographics.md`.
 
+## 1.1 Artifact-state caveat (nonlinear features pending rerun propagation)
+
+Pipeline configuration and feature-selection outputs include nonlinear families (`lb_sampen`, `lb_dfa`, `head_sampen`, `head_dfa`, `head_lb_dfa_ratio`), but the currently committed model-result artifacts were generated before a full rerun that propagates these features through training, SHAP, and ablation stages. Consequently, the numerical results below should be interpreted as **pre-rerun baseline outputs** and not as finalized evidence for nonlinear-feature contribution.
+
 ## 2. Primary multiclass screening performance (tabular models)
 
 Under nested participant-grouped evaluation (`nested_group_cv`), the best overall macro one-vs-rest AUC was achieved by random forest (AUC 0.9164, 95% CI 0.8874-0.9422). Ensemble soft voting and stacking were tied at AUC 0.9113.
@@ -60,6 +64,10 @@ Cohort-specific patterns from `shap_importance_random_forest_per_cohort.csv` sho
 - CVA: `lb_range_ap_std` (0.2077), `lb_jerk_max_ml_mean` (0.0904), `lb_std_ml_mean` (0.0363)
 - Healthy: `lb_range_ap_std` (0.0911), `lb_std_ml_mean` (0.0827), `lb_jerk_max_ml_mean` (0.0532)
 
+Cohort-level SHAP showed consistent feature families across pathologies: PD `lb_range_ap_std=0.1663`, CVA `lb_range_ap_std=0.2077`. The higher CVA value is consistent with post-stroke anterior-posterior propulsion asymmetry and disrupted trunk-level gait control reported in prior stroke/neurological gait literature (for example, Mirelman et al., 2012; Hausdorff et al., 2001).
+
+Current SHAP exports do not yet show the pending SampEn/DFA feature families among top-ranked contributors in the committed artifact set; this should be re-evaluated after full rerun.
+
 ## 6. Feature-selection and ablation analyses
 
 Feature-selection comparison (`feature_selection_comparison.csv`) reported:
@@ -67,11 +75,15 @@ Feature-selection comparison (`feature_selection_comparison.csv`) reported:
 - Before selection: 392 features, grouped CV AUC 0.9269 +- 0.0125
 - After selection: 20 features, grouped CV AUC 0.7951 +- 0.0398
 
-Feature-ablation study (`feature_ablation.md`) using XGBoost LOSO re-fit showed robust performance across feature-group removals:
+Selected-feature manifests currently include the pending nonlinear families, but the committed training/evaluation outputs were not regenerated end-to-end after that selection state; therefore ablation and SHAP conclusions here should be treated as provisional until rerun.
+
+Feature-ablation study (`feature_ablation.md`) using XGBoost showed robust performance across feature-group removals:
 
 - All-features scenario: AUC 0.939, macro-F1 0.819
 - Top-10 SHAP-only scenario: AUC 0.942, macro-F1 0.808
 - Best observed ablation row: minus trunk dynamics, AUC 0.945, macro-F1 0.819
+
+Note: feature ablation used a 5-fold grouped CV protocol for computational tractability and is not directly comparable to primary nested LOSO estimates. The higher ablation AUC range therefore reflects protocol differences rather than a contradiction of the primary model-quality ranking.
 
 ## 7. Sensor ablation
 
