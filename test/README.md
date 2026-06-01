@@ -23,6 +23,13 @@ Two low-risk normal patients and four high-risk patients with different dominant
 - Features: stride_variability=0.231, lateral_asymmetry=0.215, cadence_instability=1.476, head_accel_rms=2.325, step_time_symmetry=0.785
 - ZIP: `P3.zip`
 
+### P3 - API smoke test only
+P3 CSV files contain 221 rows (2.21s at 100Hz). The `metadata.json`
+`duration_seconds=12.0` reflects the intended duration but the CSV
+data was not regenerated. P3 will be rejected by the full pipeline
+(`min_trial_length_s=10.0`) and is intended for API-layer unit testing
+only. Do not use P3 as a pipeline validation case.
+
 ## P4
 - Risk score: 88
 - Risk level: high

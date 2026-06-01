@@ -33,6 +33,11 @@ from loguru import logger
 from scipy.signal import welch
 from scipy.stats import entropy as sp_entropy
 from tqdm import tqdm
+try:
+    import pywt
+    _PYWT_AVAILABLE = True
+except ImportError:
+    _PYWT_AVAILABLE = False
 
 # Import the authoritative set of label-derived columns from data_loader so
 # there is a single source of truth across the whole pipeline.
@@ -345,7 +350,8 @@ class FeatureExtractor:
         D4 3.125–6.25 Hz, A4 0–3.125 Hz.  Energy ratios across bands capture
         gait regularity and pathological frequency shifts.
         """
-        import pywt
+        if not _PYWT_AVAILABLE:
+            return {}
 
         sig_col = (
             "acc_z_grav_free" if "acc_z_grav_free" in df.columns

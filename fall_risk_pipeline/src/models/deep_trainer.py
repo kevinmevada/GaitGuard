@@ -138,14 +138,16 @@ class DeepLearningPipeline:
             X_train = np.concatenate(X_train_list, axis=0)
             y_train = np.array(y_train_list, dtype=int)
 
-            X_train, X_test = self._normalize(X_train, X_test)
-
             val_size = max(1, int(0.1 * len(X_train)))
             rng = np.random.default_rng(self.seed + fold_idx)
             val_idx = rng.choice(len(X_train), val_size, replace=False)
-            train_idx = np.setdiff1d(np.arange(len(X_train)), val_idx)
-            X_val, y_val = X_train[val_idx], y_train[val_idx]
-            X_train_f, y_train_f = X_train[train_idx], y_train[train_idx]
+            train_idx_inner = np.setdiff1d(np.arange(len(X_train)), val_idx)
+            X_val_raw, y_val = X_train[val_idx], y_train[val_idx]
+            X_train_f_raw, y_train_f = X_train[train_idx_inner], y_train[train_idx_inner]
+
+            # Fit normalization on inner-train only, then apply to val/test.
+            X_train_f, X_test = self._normalize(X_train_f_raw, X_test)
+            _, X_val = self._normalize(X_train_f_raw, X_val_raw)
 
             fold_label = f"{fold_idx + 1}/{len(pids)}"
             bar.set_postfix(
