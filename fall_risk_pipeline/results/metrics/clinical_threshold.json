@@ -1,0 +1,76 @@
+{
+  "artifact_version": 1,
+  "reference_model": "svm",
+  "validation_strategy": "nested_group_cv",
+  "label_mode": "multiclass",
+  "binary_collapse": {
+    "high_risk_threshold": 1,
+    "binary_strategy": "threshold_ge_1",
+    "elevated_definition": "multiclass tier \u2265 1"
+  },
+  "primary_cutoff": {
+    "method": "youden_j",
+    "source": "loso_oof_eval_youden",
+    "probability": 0.7117457472968416,
+    "risk_score_0_100": 71,
+    "threshold_probability": 0.7117457472968416,
+    "threshold_risk_score_0_100": 71,
+    "sensitivity": 0.5329772966759269,
+    "specificity": 0.7866371101665219,
+    "ppv": 0.8922155688617412,
+    "npv": 0.5913978494617297,
+    "accuracy": 0.6576923076923077,
+    "n_positive": 187,
+    "n_negative": 73
+  },
+  "eval_youden_cutoff": {
+    "method": "youden_j",
+    "source": "loso_oof_eval_youden",
+    "note": "Fit on pooled OOF scores \u2014 slightly optimistic; use primary_cutoff for deployment.",
+    "threshold_probability": 0.7117457472968416,
+    "threshold_risk_score_0_100": 71,
+    "sensitivity": 0.7967914438498414,
+    "specificity": 0.7534246575332144,
+    "ppv": 0.8922155688617412,
+    "npv": 0.5913978494617297,
+    "accuracy": 0.7846153846150828,
+    "n_positive": 187,
+    "n_negative": 73
+  },
+  "fixed_cutoff_0_5": {
+    "threshold_probability": 0.5,
+    "threshold_risk_score_0_100": 50,
+    "sensitivity": 0.909090909090423,
+    "specificity": 0.46575342465689623,
+    "ppv": 0.8133971291862138,
+    "npv": 0.6666666666653595,
+    "accuracy": 0.7846153846150828,
+    "n_positive": 187,
+    "n_negative": 73
+  },
+  "removed_arbitrary_api_bands": {
+    "risk_score_high_gte": 70,
+    "risk_score_moderate_gte": 40,
+    "reason": "Not derived from ROC or clinical scales; replaced by Youden J."
+  },
+  "borderline_moderate_band": {
+    "definition": "elevated_probability in [0.5 \u00d7 Youden, Youden)",
+    "not_a_clinical_guideline": true
+  },
+  "clinical_screening_tools": {
+    "morse_fall_scale": {
+      "name": "Morse Fall Scale (MFS)",
+      "citation": "Morse JM, Morse RM, Tinzoh J. Development of a scale to identify the fall-prone patient. Can J Aging. 1989;8(4):373-385.",
+      "typical_cutoff": "Score \u2265 45 indicates high fall risk (inpatient nursing).",
+      "score_range": "0\u2013125",
+      "relation_to_imu_model": "MFS uses clinical observation items; our model uses wearable IMU gait features. Thresholds are not interchangeable without calibration study."
+    },
+    "stratify": {
+      "name": "STRATIFY",
+      "citation": "Oliver D, Britton M, Seed P, Martin FC, Hopper AH. Development and evaluation of evidence based risk assessment tool (STRATIFY) to predict which elderly inpatients will fall. BMJ. 1997;315(7115):1049-1053.",
+      "typical_cutoff": "Score \u2265 5 indicates high fall risk.",
+      "score_range": "0\u20135",
+      "relation_to_imu_model": "STRATIFY is a brief clinical checklist; IMU-derived risk probability requires a data-driven cutoff (Youden J) on held-out subjects."
+    }
+  }
+}

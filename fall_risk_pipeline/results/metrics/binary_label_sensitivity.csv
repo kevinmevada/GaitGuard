@@ -1,0 +1,3 @@
+high_risk_threshold,rule,strategy_key,clinical_note,cohorts_high_risk
+1,binary=1 if multiclass≥1,threshold_ge_1,Legacy rule: binary high-risk if multiclass label ≥ 1. Groups orthopedic (e.g. HipOA ~28.5% fall prob.) with neurological (PD ~67.3%) pathology — clinically heterogeneous.,"['HipOA', 'KneeOA', 'ACL', 'PD', 'CVA', 'CIPN', 'RIL']"
+2,binary=1 if multiclass≥2,threshold_ge_2,Neurological-only high risk (multiclass ≥ 2). Separates orthopedic from neurological tiers; closer to pathology-stratified fall-risk literature (Lord et al. 1993; Allen et al. 2013 for PD/CVA-specific risk).,"['PD', 'CVA', 'CIPN', 'RIL']"

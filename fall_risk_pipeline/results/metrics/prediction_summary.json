@@ -1,0 +1,63 @@
+{
+  "summary_type": "inference_export",
+  "publication_note": "Predictions are generated from the selected checkpoint and are not validation metrics. Research prototype \u2014 not for clinical use without validation.",
+  "n_samples": 260,
+  "n_participants": 260,
+  "cohort_counts": {
+    "Healthy": 73,
+    "RIL": 51,
+    "CVA": 49,
+    "PD": 24,
+    "CIPN": 19,
+    "KneeOA": 18,
+    "HipOA": 15,
+    "ACL": 11
+  },
+  "risk_distribution": {
+    "low": 35,
+    "moderate_borderline": 71,
+    "high_at_or_above_youden": 154
+  },
+  "clinical_cutoff_youden": {
+    "method": "youden_j",
+    "source": "loso_oof_eval_youden",
+    "probability": 0.7117457472968416,
+    "risk_score_0_100": 71,
+    "threshold_probability": 0.7117457472968416,
+    "threshold_risk_score_0_100": 71,
+    "sensitivity": 0.5329772966759269,
+    "specificity": 0.7866371101665219,
+    "ppv": 0.8922155688617412,
+    "npv": 0.5913978494617297,
+    "accuracy": 0.6576923076923077,
+    "n_positive": 187,
+    "n_negative": 73
+  },
+  "limitations": {
+    "disclaimer": "Research prototype \u2014 not for clinical use without validation.",
+    "study_design": {
+      "retrospective": "Retrospective secondary analysis of existing recordings \u2014 no forward-in-time data collection for this project.",
+      "single_dataset": "Single open dataset (Voisard et al., Figshare 10.6084/m9.figshare.28806086); no external multi-site replication reported.",
+      "no_prospective_follow_up": "No prospective participant follow-up or incident-outcome ascertainment for this analysis.",
+      "no_ground_truth_fall_outcomes": "No participant-level ground-truth fall outcomes; labels are cohort-level pathology tiers and literature-based fall-risk references only."
+    },
+    "prospective_validation_path": [
+      "Enroll a new prospective cohort with pre-specified follow-up (e.g. 6\u201312 months).",
+      "Collect adjudicated incident falls (and injurious falls) as primary endpoints.",
+      "Validate frozen models at independent site(s) with outcome ascertainment blinded where feasible.",
+      "Calibrate scores vs. Morse Fall Scale, STRATIFY, and observed fall rates."
+    ],
+    "points": [
+      "Research prototype \u2014 not for clinical use without validation.",
+      "Retrospective secondary analysis of existing recordings \u2014 no forward-in-time data collection for this project.",
+      "Single open dataset (Voisard et al., Figshare 10.6084/m9.figshare.28806086); no external multi-site replication reported.",
+      "No prospective participant follow-up or incident-outcome ascertainment for this analysis.",
+      "No participant-level ground-truth fall outcomes; labels are cohort-level pathology tiers and literature-based fall-risk references only.",
+      "Internal LOSO metrics on the same dataset \u2014 not independent prospective performance.",
+      "Outputs are exploratory screening scores from open IMU gait data, not medical advice or a diagnosis.",
+      "Single-trial API inference does not replicate multi-trial patient aggregation used in training.",
+      "Risk thresholds (Youden J) are derived from internal cross-validation, not regulatory clearance.",
+      "Do not use these results for treatment or fall-prevention decisions without prospective validation."
+    ]
+  }
+}

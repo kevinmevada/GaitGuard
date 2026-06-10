@@ -1,0 +1,3 @@
+stage,n_features,cv_auc_mean,cv_auc_std,cv_folds,validation
+before_all_features,464,0.935522415797263,0.012107227603497236,5,stratified_group_kfold
+after_selected_features,20,0.7950799927182055,0.03978274549804566,5,stratified_group_kfold

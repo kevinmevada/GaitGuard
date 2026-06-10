@@ -1,0 +1,8 @@
+model,cv_auc,cv_std,validation
+ensemble_soft_voting,0.8203987383462907,0.04935810792211716,nested_stratified_group_kfold
+ensemble_stacking,0.8089678324630999,0.062185642988928404,nested_stratified_group_kfold
+random_forest,0.7975110934136933,0.04954527382586825,nested_stratified_group_kfold
+svm,0.7948287965567216,0.05291040742255082,nested_stratified_group_kfold
+xgboost,0.7805836372345537,0.07434657872436205,nested_stratified_group_kfold
+lightgbm,0.770576215475516,0.04798589676265955,nested_stratified_group_kfold
+mlp,0.7612471764003862,0.0703465649508769,nested_stratified_group_kfold

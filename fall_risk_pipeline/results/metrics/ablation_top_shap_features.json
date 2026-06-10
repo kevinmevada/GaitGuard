@@ -1,0 +1,12 @@
+[
+  "head_jerk_max_v_mean",
+  "lb_jerk_mean_ap_mean",
+  "head_jerk_mean_ap_mean",
+  "lb_range_ap_mean",
+  "lb_wavelet_entropy_mean",
+  "lb_range_ap_range",
+  "right_step_count_std",
+  "lb_spectral_entropy_std",
+  "lb_jerk_mean_ml_mean",
+  "head_jerk_mean_ml_mean"
+]
