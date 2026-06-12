@@ -23,6 +23,12 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from src.evaluation.roc_auc_scoring import roc_auc_scoring_name
+from src.evaluation.shap_multiclass import (
+    global_mean_abs_importance,
+    multiclass_display_name,
+    per_class_mean_abs_importance,
+    split_shap_by_class,
+)
 from src.features.feature_matrix import (
     SELECTED_FEATURES_FILE,
     get_numeric_feature_columns,
@@ -80,7 +86,7 @@ class FeatureSelector:
         )
 
         rfecv_features, rfecv_detail = self._select_rfecv(X, y, groups, feat_cols)
-        shap_features, shap_detail = self._select_shap(X, y, feat_cols)
+        shap_features, shap_detail = self._select_shap(X, y, feat_cols, groups=groups)
 
         if self.primary_method == "shap":
             selected = shap_features
@@ -89,10 +95,15 @@ class FeatureSelector:
             selected = [f for f in rfecv_features if f in set(shap_features)]
             if len(selected) < self.min_features:
                 selected = rfecv_features[: self.max_features]
-            method_used = "intersection(rfecv,shap)"
+            rfecv_tag = "rfecv_capped" if rfecv_detail.get("capped_to_max_features") else "rfecv"
+            method_used = f"intersection({rfecv_tag},shap)"
         else:
             selected = rfecv_features
-            method_used = "rfecv"
+            method_used = (
+                "rfecv_capped"
+                if rfecv_detail.get("capped_to_max_features")
+                else "rfecv"
+            )
 
         selected, forced_required, dropped_required = self._enforce_required_features(
             selected, feat_cols
@@ -112,6 +123,10 @@ class FeatureSelector:
             "p_n_ratio_after": round(p_n_after, 3),
             "max_features": self.max_features,
             "primary_method": method_used,
+            "rfecv_capped_to_max_features": bool(
+                rfecv_detail.get("capped_to_max_features", False)
+            ),
+            "n_features_rfecv_cv_optimal": rfecv_detail.get("n_features_cv_optimal"),
             "required_feature_substrings": self.required_feature_substrings,
             "forced_required_features": forced_required,
             "dropped_required_features": dropped_required,
@@ -172,7 +187,7 @@ class FeatureSelector:
         )
         selector = RFECV(
             estimator=estimator,
-            step=1,
+            step=0.05,
             cv=cv,
             scoring=roc_auc_scoring_name(y, self.config),
             min_features_to_select=self.min_features,
@@ -180,17 +195,28 @@ class FeatureSelector:
         )
         selector.fit(X, y, groups=groups)
 
+        n_cv_optimal = int(selector.n_features_)
         support_idx = np.where(selector.support_)[0]
-        if len(support_idx) > self.max_features:
+        capped = len(support_idx) > self.max_features
+        if capped:
             ranking = selector.ranking_
             order = np.argsort(ranking)[: self.max_features]
             support_idx = order
+            logger.warning(
+                "RFECV optimal={} but capped to max_features={} by config "
+                "(exporting top {} by RFE ranking, not the CV-optimal set).",
+                n_cv_optimal,
+                self.max_features,
+                self.max_features,
+            )
 
         selected = [feat_cols[i] for i in support_idx]
         detail = {
             "cv_best_score": float(selector.cv_results_["mean_test_score"].max()),
-            "n_features_cv_optimal": int(selector.n_features_),
+            "n_features_cv_optimal": n_cv_optimal,
             "n_features_exported": len(selected),
+            "capped_to_max_features": capped,
+            "max_features_cap": self.max_features,
         }
         return selected, detail
 
@@ -211,59 +237,95 @@ class FeatureSelector:
             )
             return selected[: self.max_features], [], []
 
-        # Keep required first (original order), but do not exceed configured cap.
-        required_kept = required[: self.max_features]
-        dropped_required = required[self.max_features :]
+        fscfg = self.config.get("feature_selection", {})
+        max_required = int(fscfg.get("max_required_features", max(1, self.max_features // 2)))
+        required_kept = required[:max_required]
+        dropped_required = required[max_required:]
         remaining_slots = max(self.max_features - len(required_kept), 0)
-        merged = required_kept + [
+        rfecv_slots = [
             f for f in selected if f not in required_kept
         ][:remaining_slots]
+        merged = required_kept + rfecv_slots
+        n_rfecv_in_merged = len(rfecv_slots)
 
         forced = [f for f in required_kept if f not in selected]
+        assert len(merged) <= self.max_features, (
+            f"Feature count exceeds cap: merged={len(merged)}, "
+            f"max_features={self.max_features}, forced={len(forced)}"
+        )
+
+        preview = merged[:20]
+        suffix = "..." if len(merged) > 20 else ""
+        logger.info(
+            "Merged feature set after required enforcement (n=%d, required=%d, rfecv=%d): %s%s",
+            len(merged),
+            len(required_kept),
+            n_rfecv_in_merged,
+            preview,
+            suffix,
+        )
+        if n_rfecv_in_merged == 0 and selected:
+            logger.warning(
+                "Required features filled all %d slots; no RFECV-ranked features in final set. "
+                "Lower max_required_features, narrow required_feature_substrings, or raise "
+                "feature_selection.max_features (currently %d).",
+                len(merged),
+                self.max_features,
+            )
         if forced:
             logger.info(
                 f"Forced {len(forced)} required features into selected set: {forced[:8]}"
             )
         if dropped_required:
             logger.warning(
-                "Required features exceed max_features cap; dropped %d required features. "
-                "Increase feature_selection.max_features to retain all required matches.",
+                "Required features exceed max_required_features=%d; dropped %d matches. "
+                "Increase feature_selection.max_features or max_required_features.",
+                max_required,
                 len(dropped_required),
             )
         return merged, forced, dropped_required
 
     def _select_shap(
-        self, X: np.ndarray, y: np.ndarray, feat_cols: list[str]
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        feat_cols: list[str],
+        groups: np.ndarray | None = None,
     ) -> tuple[list[str], dict]:
         pipe = self._selection_pipeline()
-        pipe.fit(X, y)
+        if groups is not None:
+            cv = StratifiedGroupKFold(
+                n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
+            )
+            train_idx, _ = next(cv.split(X, y, groups))
+            pipe.fit(X[train_idx], y[train_idx])
+            X_proc = pipe[:-1].transform(X[train_idx])
+        else:
+            pipe.fit(X, y)
+            X_proc = pipe[:-1].transform(X)
         clf = pipe.named_steps["clf"]
-        X_proc = pipe[:-1].transform(X)
 
         explainer = shap.TreeExplainer(clf)
         shap_vals = explainer.shap_values(X_proc)
-        n_classes = int(len(np.unique(y)))
-        if isinstance(shap_vals, list):
-            stacked = np.stack([np.asarray(v) for v in shap_vals], axis=0)
-            shap_vals = np.abs(stacked).mean(axis=0)
-        shap_vals = np.asarray(shap_vals)
-        if shap_vals.ndim == 3:
-            # Multiclass: aggregate absolute contributions across all classes.
-            if shap_vals.shape[-1] == n_classes:
-                shap_vals = np.abs(shap_vals).mean(axis=2)
-            elif shap_vals.shape[0] == n_classes:
-                shap_vals = np.abs(shap_vals).mean(axis=0)
-            else:
-                shap_vals = np.abs(shap_vals).mean(axis=2)
-
-        importance = np.ravel(np.abs(shap_vals).mean(axis=0))
+        per_class = split_shap_by_class(shap_vals, n_classes=int(len(np.unique(y))))
+        importance = global_mean_abs_importance(per_class)
         order = np.argsort(importance)[::-1][: self.max_features]
         selected = [feat_cols[int(i)] for i in order]
+
+        per_class_tops: dict[str, dict[str, float]] = {}
+        for class_idx, class_imp in per_class_mean_abs_importance(per_class).items():
+            class_order = np.argsort(class_imp)[::-1][: self.max_features]
+            class_name = multiclass_display_name(class_idx)
+            per_class_tops[class_name] = {
+                feat_cols[int(i)]: float(class_imp[int(i)]) for i in class_order
+            }
 
         detail = {
             "top_mean_abs_shap": {
                 selected[i]: float(importance[int(order[i])]) for i in range(len(selected))
-            }
+            },
+            "aggregation": "global_class_average",
+            "per_class_top_mean_abs_shap": per_class_tops,
         }
         return selected, detail
 
@@ -322,7 +384,8 @@ class FeatureSelector:
             "",
             f"- Participants (N): **{payload['n_participants']}**",
             f"- Features before selection (p): **{payload['n_features_before']}**",
-            f"- Features after selection: **{payload['n_features_after']}** (cap ≤ {payload['max_features']})",
+            f"- Features exported for training: **{payload['n_features_after']}**",
+            f"- Configured `max_features` cap: **{payload['max_features']}**",
             f"- P/N ratio before: **{payload['p_n_ratio_before']:.2f}**",
             f"- P/N ratio after: **{payload['p_n_ratio_after']:.2f}**",
             "",
@@ -332,25 +395,43 @@ class FeatureSelector:
             "",
             "## Methods",
             "",
-            "### RFECV (primary export)",
+            "### RFECV ranking (with optional dimensionality cap)",
             "",
             "Recursive Feature Elimination with subject-grouped cross-validation (RFECV), "
             "following the RFE framework of Guyon & Elisseeff (2002). The selector uses "
             "StratifiedGroupKFold so no participant appears in both train and validation.",
             "",
-            f"- RFECV CV-optimal feature count: {payload['rfecv_detail'].get('n_features_cv_optimal', 'n/a')}",
-            f"- Exported RFECV features: {len(payload['rfecv_features'])}",
+            f"- RFECV grouped-CV optimal feature count: "
+            f"**{payload['rfecv_detail'].get('n_features_cv_optimal', 'n/a')}**",
+            f"- Features exported after cap: **{len(payload['rfecv_features'])}**",
+        ]
+
+        if payload.get("rfecv_capped_to_max_features"):
+            lines.extend([
+                "",
+                "> **Cap applied:** RFECV cross-validation favoured "
+                f"{payload['rfecv_detail'].get('n_features_cv_optimal', 'n/a')} features, "
+                f"but `max_features={payload['max_features']}` deliberately limits the export "
+                "to the top-ranked features (regularization for P/N). "
+                "Do **not** report this as 'RFECV selected "
+                f"{payload['n_features_after']} features' — report primary method as "
+                f"**{payload['primary_method']}**.",
+            ])
+
+        lines.extend([
             "",
             "### SHAP-based pruning (secondary ranking)",
             "",
             f"Mean absolute SHAP values from a grouped-CV-safe surrogate Random Forest "
-            f"provide an alternate top-{payload['max_features']} ranking for comparison.",
+            f"provide an alternate top-{payload['max_features']} ranking for comparison. "
+            f"Global rankings average |SHAP| across classes; see `shap_detail.per_class_top_mean_abs_shap` "
+            f"in selected_features.json for tier-specific rankings.",
             "",
             f"- Primary method used for training: **{payload['primary_method']}**",
             "",
             "## Before / after (grouped CV, Random Forest surrogate)",
             "",
-        ]
+        ])
 
         for row in payload.get("comparison", []):
             lines.append(

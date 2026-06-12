@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import pickle
+import json
 import warnings
 from pathlib import Path
+from typing import Any
 from typing import Any
 
 import lightgbm as lgb
@@ -37,6 +38,7 @@ from src.models.ensemble_builder import (
     primary_ensemble_checkpoint_name,
     resolve_ensemble_methods,
 )
+from src.utils.checkpoint_io import refresh_manifest, save_checkpoint
 
 
 class ModelTrainer:
@@ -55,11 +57,24 @@ class ModelTrainer:
         self.n_trials = tcfg["n_trials"]
         self.timeout = tcfg["timeout_per_model"]
         self.cv_folds = tcfg["cv_folds"]
-        self.cv_jobs = -1
+        self.cv_jobs = 1  # avoid fork-bomb inside nested Optuna parallel
         self.random_state = config["models"]["evaluation"]["random_state"]
         self._fit_y: np.ndarray | None = None
 
     def run(self):
+        """Train base models and ensembles.
+
+        Two-pass tuning per base model (intentional):
+          1. ``_nested_cv`` — outer StratifiedGroupKFold estimates generalisation
+             (``cv_auc`` / ``cv_std`` in model_comparison_cv.csv). Each outer fold
+             runs its own Optuna search on the outer-train split only.
+          2. ``_run_optuna`` on full data — selects hyperparameters for the saved
+             checkpoint (``deployed_params``). Its inner-CV score is ``tuning_cv_auc``.
+
+        ``cv_auc`` therefore describes nested-CV performance, not the exact params
+        in the pickle; use ``tuning_cv_auc`` as a proxy for the deployed model's
+        in-sample tune score, or hold-out evaluation for deployment performance.
+        """
         X, y, groups, _, patient_df = self._load_data()
         counts = dict(zip(*np.unique(y, return_counts=True)))
         logger.info(
@@ -94,9 +109,9 @@ class ModelTrainer:
                 logger.info(f"Tuning {model_name}...")
 
                 cv_mean, cv_std = self._nested_cv(model_name, X, y, groups)
-                # Fit the deployable model with a dedicated full-data tune pass
-                # instead of reusing "last outer fold" params.
-                best_params, _ = self._run_optuna(
+                # Second pass: tune on all data so the checkpoint uses full-sample
+                # hyperparameters (may differ from any single nested-CV outer fold).
+                best_params, tuning_cv_auc = self._run_optuna(
                     model_name, X, y, groups, n_trials=self.n_trials, timeout=self.timeout
                 )
                 best_pipeline = self._build_pipeline_from_params(model_name, best_params, y)
@@ -106,10 +121,14 @@ class ModelTrainer:
                     "pipeline": best_pipeline,
                     "cv_auc": cv_mean,
                     "cv_std": cv_std,
+                    "tuning_cv_auc": tuning_cv_auc,
                     "params": best_params,
                 }
 
-                logger.info(f"{model_name} AUC = {cv_mean:.4f} ± {cv_std:.4f}")
+                logger.info(
+                    f"{model_name} nested CV AUC = {cv_mean:.4f} ± {cv_std:.4f} | "
+                    f"deployed tune AUC = {tuning_cv_auc:.4f}"
+                )
                 self._save_model(model_name, best_pipeline)
                 progress.advance(task_id)
 
@@ -138,6 +157,7 @@ class ModelTrainer:
                     fit_params = (
                         {"groups": groups} if method == "stacking" else None
                     )
+                    _cv_fit_params = fit_params or {}
                     scores = cross_val_score(
                         ensemble,
                         X,
@@ -145,7 +165,7 @@ class ModelTrainer:
                         cv=cv,
                         scoring=roc_auc_scoring_name(y, self.config),
                         groups=groups,
-                        params=fit_params,
+                        fit_params=_cv_fit_params,
                     )
                     auc_mean = float(np.mean(scores))
                     auc_std = float(np.std(scores))
@@ -175,6 +195,7 @@ class ModelTrainer:
             progress.update(task_id, description="Training complete")
 
         self._save_comparison(results)
+        refresh_manifest(self.ckpt_dir)
         return results
 
     def _load_data(self):
@@ -184,7 +205,10 @@ class ModelTrainer:
 
     def _nested_cv(self, name: str, X, y, groups) -> tuple[float, float]:
         """Nested CV: outer loop estimates generalisation, inner loop tunes.
-        Returns (outer_mean_auc, outer_std_auc).
+
+        Hyperparameters from each outer fold are discarded; ``run()`` performs a
+        separate full-data Optuna pass for the deployable checkpoint.  Returns
+        (outer_mean_auc, outer_std_auc) for unbiased model comparison only.
         """
         outer_cv = StratifiedGroupKFold(
             n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
@@ -307,7 +331,7 @@ class ModelTrainer:
                 colsample_bytree=trial.suggest_float("colsample_bytree", 0.5, 0.9),
                 reg_alpha=trial.suggest_float("reg_alpha", 0.01, 10.0, log=True),
                 reg_lambda=trial.suggest_float("reg_lambda", 0.01, 10.0, log=True),
-                min_child_weight=trial.suggest_int("min_child_weight", 1, 10),
+                min_child_samples=trial.suggest_int("min_child_samples", 5, 50),
                 class_weight="balanced",
                 random_state=self.random_state,
                 n_jobs=1,
@@ -333,6 +357,7 @@ class ModelTrainer:
                 probability=True,
                 class_weight="balanced",
                 kernel="rbf",
+                random_state=self.random_state,
             )
 
         if name == "mlp":
@@ -344,6 +369,7 @@ class ModelTrainer:
                 validation_fraction=0.1,
                 n_iter_no_change=15,
                 max_iter=500,
+                random_state=self.random_state,
             )
 
         raise ValueError(f"Unknown model {name}")
@@ -386,8 +412,7 @@ class ModelTrainer:
 
     def _save_model(self, name, pipeline):
         path = self.ckpt_dir / f"{name}.pkl"
-        with open(path, "wb") as f:
-            pickle.dump(pipeline, f)
+        save_checkpoint(path, pipeline, manifest_dir=self.ckpt_dir)
 
     def _save_comparison(self, results):
         rows = [
@@ -395,7 +420,15 @@ class ModelTrainer:
                 "model": key,
                 "cv_auc": value["cv_auc"],
                 "cv_std": value.get("cv_std", float("nan")),
+                "tuning_cv_auc": value.get("tuning_cv_auc", float("nan")),
+                "deployed_params": json.dumps(value.get("params", {}), sort_keys=True),
                 "validation": "nested_stratified_group_kfold",
+                "cv_auc_source": (
+                    "ensemble_cv"
+                    if isinstance(value.get("params"), dict)
+                    and "ensemble_method" in value["params"]
+                    else "nested_cv"
+                ),
             }
             for key, value in results.items()
         ]
@@ -403,4 +436,13 @@ class ModelTrainer:
         df = pd.DataFrame(rows).sort_values("cv_auc", ascending=False)
         path = self.metrics_dir / "model_comparison_cv.csv"
         df.to_csv(path, index=False)
+        params_path = self.metrics_dir / "model_deployed_params.json"
+        params_path.write_text(
+            json.dumps(
+                {key: value.get("params", {}) for key, value in results.items()},
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
         logger.info("\n" + df.to_string(index=False))

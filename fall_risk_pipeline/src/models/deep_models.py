@@ -413,8 +413,6 @@ class DeepModelTrainer:
         self.lr = dl_cfg["learning_rate"]
         self.patience = dl_cfg["early_stopping_patience"]
         self.seed = get_pipeline_seed(config)
-        self._train_generator = torch.Generator()
-        self._train_generator.manual_seed(self.seed)
 
         dev = dl_cfg["device"]
         if dev == "auto":
@@ -444,6 +442,7 @@ class DeepModelTrainer:
         X_val: np.ndarray,
         y_val: np.ndarray,
         *,
+        shuffle_seed: int | None = None,
         on_epoch: Callable[[int, float, float, float], None] | None = None,
     ) -> nn.Module:
         if len(X_train) == 0:
@@ -453,8 +452,15 @@ class DeepModelTrainer:
         train_ds = GaitSequenceDataset(X_train, y_train)
         val_ds = GaitSequenceDataset(X_val, y_val)
 
-        train_dl = DataLoader(train_ds, batch_size=self.batch_size, shuffle=True,
-                              generator=self._train_generator, drop_last=len(train_ds) > self.batch_size)
+        train_generator = torch.Generator()
+        train_generator.manual_seed(self.seed if shuffle_seed is None else int(shuffle_seed))
+        train_dl = DataLoader(
+            train_ds,
+            batch_size=self.batch_size,
+            shuffle=True,
+            generator=train_generator,
+            drop_last=len(train_ds) > self.batch_size,
+        )
         val_dl = DataLoader(val_ds, batch_size=self.batch_size)
 
         n_classes = int(max(y_train.max(), y_val.max())) + 1

@@ -8,9 +8,13 @@ generalises to unseen pathologies.
 Output
 ------
 results/metrics/cross_cohort_transfer.csv
-    Columns: train_cohorts, test_cohort, n_train, n_test, auc, accuracy, f1
+    Columns: test_cohort, n_train, n_test, auc, accuracy, f1_macro, ...
+results/metrics/cross_cohort_pairwise.csv
+    Columns: train_cohort, test_cohort, auc, f1_macro, accuracy, ...
 results/figures/models/cross_cohort_transfer.{pdf,png}
-    Heatmap of AUC scores (test cohort x metric).
+    LOCO bar chart (macro OvR AUC).
+results/figures/models/cross_cohort_pairwise.{pdf,png}
+    Pairwise heatmap (macro-F1 by default; accuracy is misleading under imbalance).
 """
 
 from __future__ import annotations
@@ -216,33 +220,42 @@ class CrossCohortTransfer:
 
                 y_tr = y[train_mask]
                 y_te = y[test_mask]
+                n_train = int(train_mask.sum())
+                n_test = int(test_mask.sum())
 
-                if len(np.unique(y_tr)) < 2 or len(y_te) < 2:
-                    pairwise_rows.append({
-                        "train_cohort": train_cohort,
-                        "test_cohort": test_cohort,
-                        "accuracy": float("nan"),
-                    })
+                empty_row = {
+                    "train_cohort": train_cohort,
+                    "test_cohort": test_cohort,
+                    "n_train": n_train,
+                    "n_test": n_test,
+                    "auc": float("nan"),
+                    "auc_status": "skipped",
+                    "mean_true_class_proba": float("nan"),
+                    "accuracy": float("nan"),
+                    "f1_macro": float("nan"),
+                }
+
+                if len(np.unique(y_tr)) < 2 or n_test < 2:
+                    pairwise_rows.append(empty_row)
                     continue
 
                 model, le = _fit_transfer_model(
                     checkpoint, X[train_mask], y_tr, self.config
                 )
-                known = np.isin(y_te, le.classes_)
-                if int(known.sum()) < 1:
-                    pairwise_rows.append({
-                        "train_cohort": train_cohort,
-                        "test_cohort": test_cohort,
-                        "accuracy": float("nan"),
-                    })
-                    continue
-                preds = model.predict(X[test_mask][known])
-                acc = accuracy_score(le.transform(y_te[known]), preds)
+                auc, acc, f1, mean_true_class_proba, auc_status = _score_transfer(
+                    model, le, X[test_mask], y_te, binary
+                )
 
                 pairwise_rows.append({
                     "train_cohort": train_cohort,
                     "test_cohort": test_cohort,
+                    "n_train": n_train,
+                    "n_test": n_test,
+                    "auc": auc,
+                    "auc_status": auc_status,
+                    "mean_true_class_proba": mean_true_class_proba,
                     "accuracy": acc,
+                    "f1_macro": f1,
                 })
 
         loco_df = pd.DataFrame(rows)
@@ -256,7 +269,13 @@ class CrossCohortTransfer:
         logger.info(f"Pairwise transfer matrix saved -> {pair_path}")
 
         self._plot_loco(loco_df)
-        self._plot_pairwise_heatmap(pairwise_df, unique_cohorts)
+        self._plot_pairwise_heatmap(pairwise_df, unique_cohorts, metric="f1_macro")
+        self._plot_pairwise_heatmap(
+            pairwise_df,
+            unique_cohorts,
+            metric="auc",
+            outfile_stem="cross_cohort_pairwise_auc",
+        )
         return loco_df
 
     def _plot_loco(self, df: pd.DataFrame) -> None:
@@ -303,10 +322,34 @@ class CrossCohortTransfer:
         plt.close(fig)
 
     def _plot_pairwise_heatmap(
-        self, df: pd.DataFrame, cohorts: list[str]
+        self,
+        df: pd.DataFrame,
+        cohorts: list[str],
+        *,
+        metric: str = "f1_macro",
+        outfile_stem: str | None = None,
     ) -> None:
-        if df.empty:
+        if df.empty or metric not in df.columns:
+            if not df.empty:
+                logger.warning(
+                    "Pairwise heatmap skipped — metric %r not in dataframe columns",
+                    metric,
+                )
             return
+
+        metric_labels = {
+            "f1_macro": ("Macro-F1", "Pairwise Cross-Cohort Transfer (Macro-F1)"),
+            "accuracy": ("Accuracy", "Pairwise Cross-Cohort Transfer (Accuracy)"),
+            "auc": ("Macro OvR AUC", "Pairwise Cross-Cohort Transfer (Macro OvR AUC)"),
+        }
+        colorbar_label, title = metric_labels.get(
+            metric, (metric, f"Pairwise Cross-Cohort Transfer ({metric})")
+        )
+        stem = outfile_stem or (
+            "cross_cohort_pairwise"
+            if metric == "f1_macro"
+            else f"cross_cohort_pairwise_{metric}"
+        )
 
         matrix = np.full((len(cohorts), len(cohorts)), np.nan)
         cohort_idx = {c: i for i, c in enumerate(cohorts)}
@@ -315,7 +358,7 @@ class CrossCohortTransfer:
             i = cohort_idx.get(row["train_cohort"])
             j = cohort_idx.get(row["test_cohort"])
             if i is not None and j is not None:
-                matrix[i, j] = row["accuracy"]
+                matrix[i, j] = row[metric]
 
         np.fill_diagonal(matrix, np.nan)
 
@@ -328,7 +371,7 @@ class CrossCohortTransfer:
         ax.set_yticklabels(cohorts, fontsize=9)
         ax.set_xlabel("Test Cohort")
         ax.set_ylabel("Train Cohort")
-        ax.set_title("Pairwise Cross-Cohort Transfer (Accuracy)")
+        ax.set_title(title)
 
         for i in range(len(cohorts)):
             for j in range(len(cohorts)):
@@ -338,11 +381,11 @@ class CrossCohortTransfer:
                     ax.text(j, i, f"{val:.2f}", ha="center", va="center",
                             fontsize=8, color=color)
 
-        plt.colorbar(im, ax=ax, label="Accuracy", shrink=0.8)
+        plt.colorbar(im, ax=ax, label=colorbar_label, shrink=0.8)
         plt.tight_layout()
         for ext in [self.fmt, "png"]:
             fig.savefig(
-                self.fig_dir / f"cross_cohort_pairwise.{ext}",
+                self.fig_dir / f"{stem}.{ext}",
                 dpi=self.dpi, bbox_inches="tight",
             )
         plt.close(fig)

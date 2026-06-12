@@ -15,7 +15,17 @@ from sklearn.metrics import (
     roc_curve,
 )
 
+from loguru import logger
+
 from src.dataset.label_policy import MULTICLASS_NAMES
+
+
+def is_multiclass_metric_result(result: dict) -> bool:
+    """True when result carries multiclass probabilities (not a binary y_prob vector)."""
+    if result.get("label_mode") == "multiclass":
+        return True
+    y_proba_full = result.get("y_proba_full")
+    return y_proba_full is not None and np.asarray(y_proba_full).ndim == 2
 
 
 def predict_multiclass(model: Any, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -29,8 +39,9 @@ def _bootstrap_multiclass_auc_ci(
     y_true: np.ndarray,
     y_proba: np.ndarray,
     labels: list[int],
+    *,
+    seed: int,
     n_bootstrap: int = 2000,
-    seed: int = 42,
 ) -> tuple[float, float]:
     """Bootstrap 95 % CI for macro-OVR AUC (multiclass)."""
     rng = np.random.default_rng(seed)
@@ -58,7 +69,9 @@ def build_multiclass_metric_payload(
     y_proba: np.ndarray,
     y_pred: np.ndarray | None = None,
     *,
+    seed: int,
     cohorts: np.ndarray | None = None,
+    n_bootstrap: int = 2000,
 ) -> dict:
     y_true = np.asarray(y_true).astype(int)
     y_proba = np.asarray(y_proba, dtype=float)
@@ -149,7 +162,9 @@ def build_multiclass_metric_payload(
         }
         per_class[class_name] = entry
 
-    ci_low, ci_high = _bootstrap_multiclass_auc_ci(y_true, y_proba, labels)
+    ci_low, ci_high = _bootstrap_multiclass_auc_ci(
+        y_true, y_proba, labels, seed=seed, n_bootstrap=n_bootstrap
+    )
 
     avg_sens = float(np.nanmean(macro_sens)) if macro_sens else float("nan")
     avg_spec = float(np.nanmean(macro_spec)) if macro_spec else float("nan")
@@ -162,7 +177,7 @@ def build_multiclass_metric_payload(
     except (ValueError, IndexError):
         macro_ap = float("nan")
 
-    return {
+    payload: dict[str, Any] = {
         "model": name,
         "label_mode": "multiclass",
         "auc": auc_macro,
@@ -179,7 +194,6 @@ def build_multiclass_metric_payload(
         "decision_threshold": float("nan"),
         "threshold_strategy": "argmax",
         "y_true": y_true,
-        "y_prob": y_proba[:, 1] if y_proba.shape[1] > 1 else y_proba.ravel(),
         "y_proba_full": y_proba,
         "y_pred": y_pred,
         "confusion_matrix": cm,
@@ -188,4 +202,11 @@ def build_multiclass_metric_payload(
         "per_class_roc": per_class_roc,
         "cohorts": cohorts,
     }
+    if y_proba.shape[1] > 1:
+        logger.warning(
+            "Multiclass metric payload stores y_prob_class_1 for CSV export only; "
+            "use y_proba_full for ROC/PR/calibration and cohort metrics."
+        )
+        payload["y_prob_class_1"] = y_proba[:, 1]
+    return payload
 

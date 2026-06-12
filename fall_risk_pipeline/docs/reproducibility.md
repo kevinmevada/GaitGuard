@@ -11,9 +11,30 @@ The canonical seed is **`reproducibility.seed`** in `configs/pipeline_config.yam
 | `random` | Python stdlib RNG |
 | `numpy` | Legacy `np.random` (used by many sklearn paths) |
 | `torch` | CPU/CUDA weights and ops when PyTorch is installed |
-| `PYTHONHASHSEED` | Set via `os.environ.setdefault` (best effort in-process) |
+| `PYTHONHASHSEED` | Overwritten to match `reproducibility.seed` (warns if the process started with a different value) |
 
 Keep **`models.evaluation.random_state`** aligned with **`reproducibility.seed`** (both 42 by default). Training, feature selection, nested CV, Optuna TPE, bootstrap tests, and ensemble builders read `evaluation.random_state`. If the two values differ, `main.py` logs a warning.
+
+### `PYTHONHASHSEED` (launch from the shell)
+
+Python fixes hash-based dict/set ordering at **interpreter startup**. Docker and CI often pre-set `PYTHONHASHSEED=random`, which makes RFECV and other hash-iteration paths non-deterministic across environments even when NumPy/sklearn seeds match.
+
+**Always launch the pipeline with an explicit hash seed:**
+
+```bash
+export PYTHONHASHSEED=42   # must match reproducibility.seed
+cd fall_risk_pipeline
+python main.py --stage all
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:PYTHONHASHSEED = "42"
+python main.py --stage all
+```
+
+`set_global_seed()` in `main.py` assigns `os.environ["PYTHONHASHSEED"] = str(seed)` (overriding `random` or other values) and emits a warning when it replaces a pre-existing value. That helps child processes but **does not retroactively fix** hash order in the already-running interpreter — export the variable before starting Python for bit-identical runs.
 
 ## Per-stage behavior
 
@@ -31,13 +52,13 @@ Keep **`models.evaluation.random_state`** aligned with **`reproducibility.seed`*
 For the closest match across machines and reruns:
 
 ```bash
-export PYTHONHASHSEED=42
+export PYTHONHASHSEED=42   # same value as reproducibility.seed — set before python starts
 export OMP_NUM_THREADS=1
 cd fall_risk_pipeline
 python main.py --stage all
 ```
 
-- **`PYTHONHASHSEED`**: must be set **before** the Python process starts for stable hash-based iteration order.
+- **`PYTHONHASHSEED`**: must be exported **before** the Python process starts for stable hash-based iteration order. Do not rely on in-process overrides alone.
 - **`OMP_NUM_THREADS=1`**: reduces numerical drift from parallel BLAS in some environments (optional but helpful).
 
 With CUDA and `reproducibility.deterministic_torch: true`, cuDNN runs in deterministic mode (`benchmark=False`). Some GPU kernels may still differ slightly by driver/hardware.

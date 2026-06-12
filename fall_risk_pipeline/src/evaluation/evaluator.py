@@ -35,7 +35,11 @@ from sklearn.metrics import (
 )
 from tqdm import tqdm
 
-from src.dataset.label_policy import is_binary_task, label_mode_description
+from src.dataset.label_policy import (
+    get_dataset_label_config,
+    is_binary_task,
+    label_mode_description,
+)
 from src.evaluation.auc_significance import pairwise_auc_significance
 from src.evaluation.clinical_threshold import (
     build_clinical_threshold_artifact,
@@ -43,7 +47,18 @@ from src.evaluation.clinical_threshold import (
     youden_threshold,
 )
 from src.evaluation.classification_significance import pairwise_classification_significance
-from src.evaluation.multiclass_metrics import build_multiclass_metric_payload
+from src.evaluation.multiclass_metrics import (
+    build_multiclass_metric_payload,
+    is_multiclass_metric_result,
+)
+from src.evaluation.shap_multiclass import (
+    global_mean_abs_importance,
+    global_shap_matrix,
+    is_multiclass_shap,
+    multiclass_display_name,
+    per_class_mean_abs_importance,
+    split_shap_by_class,
+)
 from src.features.feature_matrix import load_patient_feature_matrix
 from src.models.ensemble_builder import (
     build_ensemble_estimator,
@@ -52,6 +67,7 @@ from src.models.ensemble_builder import (
     resolve_ensemble_methods,
 )
 from src.models.trainer import ModelTrainer
+from src.utils.reproducibility import get_pipeline_seed
 
 
 class Evaluator:
@@ -85,6 +101,7 @@ class Evaluator:
         self.fig_shap.mkdir(parents=True, exist_ok=True)
 
         self.trainer = ModelTrainer(config)
+        self.seed = get_pipeline_seed(config)
         eval_cfg = config.get("models", {}).get("evaluation", {})
         self.validation_strategy = eval_cfg.get("strategy", "nested_group_cv")
 
@@ -726,7 +743,7 @@ class Evaluator:
                 else np.argmax(y_proba, axis=1).astype(int)
             )
             payload = build_multiclass_metric_payload(
-                name, y_true, y_proba, y_pred, cohorts=cohorts_arr
+                name, y_true, y_proba, y_pred, seed=self.seed, cohorts=cohorts_arr
             )
             payload["participant_ids"] = np.array(all_pids)
             payload["fold_thresholds"] = np.array(fold_thresholds or [])
@@ -804,13 +821,20 @@ class Evaluator:
 
         y_true = np.asarray(res["y_true"])
         y_proba_full = res.get("y_proba_full")
-        y_prob = np.asarray(res["y_prob"], dtype=float)
         if y_proba_full is not None:
             y_proba = np.asarray(y_proba_full, dtype=float)
-        elif y_prob.ndim == 1:
-            y_proba = np.column_stack([1.0 - y_prob, y_prob])
+        elif "y_prob" in res:
+            y_prob = np.asarray(res["y_prob"], dtype=float)
+            y_proba = (
+                np.column_stack([1.0 - y_prob, y_prob])
+                if y_prob.ndim == 1
+                else y_prob
+            )
         else:
-            y_proba = y_prob
+            logger.warning(
+                "Clinical threshold export skipped — no y_proba_full or y_prob on best model."
+            )
+            return
 
         train_youden = res.get("threshold_train_youden_mean")
         if train_youden is None:
@@ -875,6 +899,8 @@ class Evaluator:
             "threshold_train_youden_mean": thresh_train_mean,
             "threshold_eval_youden": thresh_eval_youden,
             "threshold_fixed": 0.5,
+            "primary_threshold_source": "unbiased_train_fold",
+            "eval_threshold_source": "optimistic_eval_set",
             "accuracy_at_0.5": m_fixed["accuracy"],
             "f1_at_0.5": m_fixed["f1"],
             "sensitivity_at_0.5": m_fixed["sensitivity"],
@@ -887,20 +913,53 @@ class Evaluator:
             "delta_f1_eval_minus_train": m_eval["f1"] - m_train["f1"],
         }
 
-    def _bootstrap_auc_ci(self, y_true: np.ndarray, y_prob: np.ndarray, n_bootstrap: int = 1000) -> tuple[float, float]:
-        rng = np.random.default_rng(self.trainer.random_state)
-        idx_all = np.arange(len(y_true))
-        samples: list[float] = []
-        for _ in range(n_bootstrap):
-            idx = rng.choice(idx_all, size=len(idx_all), replace=True)
-            yt = y_true[idx]
-            yp = y_prob[idx]
+    def _loso_auc_ci(
+        self,
+        y_true: np.ndarray,
+        y_prob: np.ndarray,
+        *,
+        z: float = 1.96,
+    ) -> tuple[float, float, str]:
+        """AUC 95% CI appropriate for LOSO out-of-fold predictions.
+
+        Pooled bootstrap on concatenated OOF scores treats all predictions as
+        i.i.d. from one model; LOSO uses a different fitted model per held-out
+        subject.  We instead jackknife the pooled AUC: for each subject, recompute
+        AUC on the remaining n-1 OOF pairs, then use
+
+            AUC ± z × std(jackknife_auc) / sqrt(n_jackknife)
+
+        which matches the audit's per-fold normal approximation when each LOSO
+        fold contributes one held-out subject.
+        """
+        y_true = np.asarray(y_true).astype(int)
+        y_prob = np.asarray(y_prob, dtype=float)
+        n = len(y_true)
+        if n < 3 or len(np.unique(y_true)) < 2:
+            return float("nan"), float("nan"), "insufficient_data"
+
+        try:
+            auc_full = float(roc_auc_score(y_true, y_prob))
+        except ValueError:
+            return float("nan"), float("nan"), "undefined_auc"
+
+        jack_aucs: list[float] = []
+        for i in range(n):
+            mask = np.ones(n, dtype=bool)
+            mask[i] = False
+            yt, yp = y_true[mask], y_prob[mask]
             if len(np.unique(yt)) < 2:
                 continue
-            samples.append(float(roc_auc_score(yt, yp)))
-        if not samples:
-            return float("nan"), float("nan")
-        return float(np.percentile(samples, 2.5)), float(np.percentile(samples, 97.5))
+            try:
+                jack_aucs.append(float(roc_auc_score(yt, yp)))
+            except ValueError:
+                continue
+
+        if len(jack_aucs) < 2:
+            return float("nan"), float("nan"), "insufficient_jackknife_folds"
+
+        se = float(np.std(jack_aucs, ddof=1) / np.sqrt(len(jack_aucs)))
+        return auc_full - z * se, auc_full + z * se, "jackknife_loso"
 
     def _build_metric_payload(
         self,
@@ -923,12 +982,13 @@ class Evaluator:
             auc_roc = float("nan")
             auc_pr  = float("nan")
             auc_ci_low, auc_ci_high = float("nan"), float("nan")
+            auc_ci_method = "insufficient_data"
             fpr, tpr = np.array([0.0, 1.0]), np.array([0.0, 1.0])
         else:
             auc_roc     = roc_auc_score(y_true, y_prob)
             auc_pr      = average_precision_score(y_true, y_prob)
             fpr, tpr, _ = roc_curve(y_true, y_prob)
-            auc_ci_low, auc_ci_high = self._bootstrap_auc_ci(y_true, y_prob)
+            auc_ci_low, auc_ci_high, auc_ci_method = self._loso_auc_ci(y_true, y_prob)
 
         cls = self._classification_metrics(y_true, y_pred)
 
@@ -938,6 +998,7 @@ class Evaluator:
             "auc_pr":           float(auc_pr),
             "auc_ci_low":       auc_ci_low,
             "auc_ci_high":      auc_ci_high,
+            "auc_ci_method":    auc_ci_method,
             "decision_threshold": decision_threshold,
             "threshold_strategy": threshold_strategy,
             "f1":               cls["f1"],
@@ -960,14 +1021,11 @@ class Evaluator:
             return []
 
         y_true = result["y_true"]
-        y_prob = result["y_prob"]
         y_pred = result["y_pred"]
         y_proba_full = result.get("y_proba_full")
         thresh = float(result.get("decision_threshold", 0.5))
         is_multiclass = (
-            result.get("label_mode") == "multiclass"
-            or (isinstance(y_prob, np.ndarray) and y_prob.ndim == 2)
-            or (y_proba_full is not None and np.asarray(y_proba_full).ndim == 2)
+            get_dataset_label_config(self.config)["label_mode"] == "multiclass"
         )
         rows: list[dict] = []
         for cohort in sorted(set(cohorts)):
@@ -979,19 +1037,25 @@ class Evaluator:
             try:
                 if is_multiclass:
                     if y_proba_full is None:
-                        # Fallback for older payloads where only y_prob is present.
-                        sub_proba = np.asarray(y_prob)[mask]
-                    else:
-                        sub_proba = np.asarray(y_proba_full)[mask]
+                        logger.warning(
+                            f"Cohort metrics skipped for {model_name}:{cohort} "
+                            "(multiclass result missing y_proba_full)."
+                        )
+                        continue
+                    sub_proba = np.asarray(y_proba_full, dtype=float)[mask]
                     sub = build_multiclass_metric_payload(
                         f"{model_name}:{cohort}",
                         np.asarray(sub_true),
-                        np.asarray(sub_proba, dtype=float),
+                        sub_proba,
                         np.asarray(sub_pred, dtype=int),
+                        seed=self.seed,
                         cohorts=np.asarray(cohorts[mask]),
                     )
                 else:
-                    sub_prob = y_prob[mask]
+                    y_prob = result.get("y_prob")
+                    if y_prob is None:
+                        continue
+                    sub_prob = np.asarray(y_prob)[mask]
                     sub = self._build_metric_payload(
                         f"{model_name}:{cohort}",
                         sub_true,
@@ -1035,6 +1099,8 @@ class Evaluator:
     def _plot_pr_curves(self, results):
         fig, ax = plt.subplots()
         for name, res in results.items():
+            if is_multiclass_metric_result(res) or "y_prob" not in res:
+                continue
             prec, rec, _ = precision_recall_curve(res["y_true"], res["y_prob"])
             ax.plot(rec, prec, label=name)
         ax.legend()
@@ -1044,6 +1110,8 @@ class Evaluator:
     def _plot_calibration(self, results):
         fig, ax = plt.subplots()
         for name, res in results.items():
+            if is_multiclass_metric_result(res) or "y_prob" not in res:
+                continue
             try:
                 frac_pos, mean_pred = calibration_curve(
                     res["y_true"], res["y_prob"], n_bins=10
@@ -1255,53 +1323,44 @@ class Evaluator:
     def _normalize_shap_values(
         self, shap_vals: Any, n_classes: int | None = None
     ) -> np.ndarray:
-        """Return class-aggregated SHAP matrix of shape (n_samples, n_features)."""
-        if isinstance(shap_vals, list):
-            # Legacy SHAP API: list of per-class matrices [n_classes][n_samples, n_features].
-            stacked = np.stack([np.asarray(v, dtype=float) for v in shap_vals], axis=0)
-            return np.abs(stacked).mean(axis=0)
-        arr = np.asarray(shap_vals, dtype=float)
-        if arr.ndim == 3:
-            # New SHAP API often returns (n_samples, n_features, n_classes).
-            # Aggregate across classes for global multiclass importance.
-            if n_classes is not None and arr.shape[-1] == n_classes:
-                arr = np.abs(arr).mean(axis=2)
-            elif n_classes is not None and arr.shape[0] == n_classes:
-                arr = np.abs(arr).mean(axis=0)
-            elif arr.shape[-1] <= 10:
-                arr = np.abs(arr).mean(axis=2)
-            else:
-                arr = np.abs(arr).mean(axis=0)
-        if arr.ndim == 1:
-            arr = arr.reshape(1, -1)
-        return arr
+        """Return class-averaged SHAP matrix of shape (n_samples, n_features)."""
+        per_class = split_shap_by_class(shap_vals, n_classes=n_classes)
+        return global_shap_matrix(per_class)
 
-    def _compute_shap_matrix(
+    def _compute_shap_raw(
         self, name: str, model: Any, X_proc: np.ndarray
     ) -> np.ndarray | None:
+        """Raw SHAP: (n_samples, n_features) or (n_samples, n_features, n_classes)."""
         clf, _ = self._unwrap_pipeline_model(model)
         classes = getattr(clf, "classes_", None)
         n_classes = int(len(classes)) if classes is not None else None
         try:
             if name in ("xgboost", "lightgbm", "random_forest"):
                 explainer = shap.TreeExplainer(clf)
-                return self._normalize_shap_values(
+                return split_shap_by_class(
                     explainer.shap_values(X_proc), n_classes=n_classes
                 )
             background = shap.sample(X_proc, min(50, max(len(X_proc), 1)))
             if n_classes is not None and n_classes > 2:
-                # Multiclass: explain full class-probability vector.
                 pred_fn = lambda x: clf.predict_proba(x)
             else:
                 pred_fn = lambda x: clf.predict_proba(x)[:, 1]
             explainer = shap.KernelExplainer(pred_fn, background)
-            return self._normalize_shap_values(
+            return split_shap_by_class(
                 explainer.shap_values(X_proc, nsamples=min(50, len(X_proc))),
                 n_classes=n_classes,
             )
         except Exception as exc:
             logger.warning(f"SHAP failed for {name}: {exc}")
             return None
+
+    def _compute_shap_matrix(
+        self, name: str, model: Any, X_proc: np.ndarray
+    ) -> np.ndarray | None:
+        raw = self._compute_shap_raw(name, model, X_proc)
+        if raw is None:
+            return None
+        return global_shap_matrix(raw)
 
     def _shap_loso_aggregate(
         self, name: str, X: np.ndarray, y: np.ndarray, groups: np.ndarray,
@@ -1324,6 +1383,7 @@ class Evaluator:
         max_oof = int(exp_cfg.get("n_shap_samples", 200))
 
         fold_shap_blocks: list[np.ndarray] = []
+        fold_shap_raw_blocks: list[np.ndarray] = []
         fold_x_blocks: list[np.ndarray] = []
         fold_cohort_blocks: list[np.ndarray] = []
         n_explained = 0
@@ -1350,11 +1410,12 @@ class Evaluator:
             X_test = X[idx]
             X_proc = self._transform_for_shap(fold_model, X_test)
 
-            shap_block = self._compute_shap_matrix(name, fold_model, X_proc)
-            if shap_block is None or shap_block.size == 0:
+            shap_raw = self._compute_shap_raw(name, fold_model, X_proc)
+            if shap_raw is None or shap_raw.size == 0:
                 continue
 
-            fold_shap_blocks.append(shap_block)
+            fold_shap_raw_blocks.append(shap_raw)
+            fold_shap_blocks.append(global_shap_matrix(shap_raw))
             fold_x_blocks.append(X_proc)
             if cohorts is not None:
                 fold_cohort_blocks.append(cohorts[idx])
@@ -1366,11 +1427,20 @@ class Evaluator:
 
         shap_all = np.vstack(fold_shap_blocks)
         x_all = np.vstack(fold_x_blocks)
-        mean_abs = np.abs(shap_all).mean(axis=0)
+        mean_abs = global_mean_abs_importance(np.concatenate(fold_shap_raw_blocks, axis=0))
 
         self._save_shap_importance_table(name, feat_names, mean_abs, shap_all)
         self._plot_shap_summary(name, shap_all, x_all, feat_names)
         self._plot_shap_mean_bar(name, feat_names, mean_abs)
+
+        shap_per_class_all = np.concatenate(fold_shap_raw_blocks, axis=0)
+        if is_multiclass_shap(shap_per_class_all):
+            self._save_shap_per_class_importance(name, feat_names, shap_per_class_all)
+            self._plot_shap_per_class_bars(name, feat_names, shap_per_class_all, x_all)
+            logger.info(
+                f"SHAP {name}: per-class supplemental tables/plots for "
+                f"{shap_per_class_all.shape[2]} classes"
+            )
 
         logger.info(
             f"SHAP {name}: LOSO aggregate over {shap_all.shape[0]} OOF rows "
@@ -1400,31 +1470,28 @@ class Evaluator:
             return
 
         checkpoint.fit(X, y)
-        clf, _ = self._unwrap_pipeline_model(checkpoint)
         x_proc = self._transform_for_shap(checkpoint, X)
 
-        n_bg = int(self.config["explainability"].get("shap_background_samples", 100))
         n_explain = min(int(self.config["explainability"]["n_shap_samples"]), len(x_proc))
         rng = np.random.default_rng(self.trainer.random_state)
-        bg_idx = rng.choice(len(x_proc), size=min(n_bg, len(x_proc)), replace=False)
         ex_idx = rng.choice(len(x_proc), size=n_explain, replace=False)
 
         try:
-            explainer = shap.TreeExplainer(clf, data=x_proc[bg_idx])
-            classes = getattr(clf, "classes_", None)
-            n_classes = int(len(classes)) if classes is not None else None
-            shap_vals = self._normalize_shap_values(
-                explainer.shap_values(x_proc[ex_idx]),
-                n_classes=n_classes,
-            )
+            shap_raw = self._compute_shap_raw(name, checkpoint, x_proc[ex_idx])
+            if shap_raw is None:
+                return
+            shap_vals = global_shap_matrix(shap_raw)
         except Exception as exc:
             logger.warning(f"SHAP full checkpoint failed for {name}: {exc}")
             return
 
-        mean_abs = np.abs(shap_vals).mean(axis=0)
+        mean_abs = global_mean_abs_importance(shap_raw)
         self._save_shap_importance_table(name, feat_names, mean_abs, shap_vals)
         self._plot_shap_summary(name, shap_vals, x_proc[ex_idx], feat_names)
         self._plot_shap_mean_bar(name, feat_names, mean_abs)
+        if is_multiclass_shap(shap_raw):
+            self._save_shap_per_class_importance(name, feat_names, shap_raw)
+            self._plot_shap_per_class_bars(name, feat_names, shap_raw, x_proc[ex_idx])
         logger.info(f"SHAP {name}: full checkpoint + background (n={n_explain})")
 
     def _save_shap_importance_table(
@@ -1438,8 +1505,88 @@ class Evaluator:
             "feature": feat_names,
             "mean_abs_shap": mean_abs,
             "std_abs_shap": np.abs(shap_all).std(axis=0),
+            "aggregation": "global_class_average",
         }).sort_values("mean_abs_shap", ascending=False)
         df.to_csv(self.metrics_dir / f"shap_importance_{name}.csv", index=False)
+
+    def _save_shap_per_class_importance(
+        self,
+        name: str,
+        feat_names: list[str],
+        per_class_shap: np.ndarray,
+    ) -> None:
+        rows: list[dict] = []
+        for class_idx, mean_abs in per_class_mean_abs_importance(per_class_shap).items():
+            class_name = multiclass_display_name(class_idx)
+            class_vals = per_class_shap[:, :, class_idx]
+            for i, fname in enumerate(feat_names):
+                rows.append({
+                    "class_index": class_idx,
+                    "class_name": class_name,
+                    "feature": fname,
+                    "mean_abs_shap": float(mean_abs[i]),
+                    "std_abs_shap": float(np.abs(class_vals[:, i]).std()),
+                })
+
+        df = pd.DataFrame(rows)
+        combined_path = self.metrics_dir / f"shap_importance_{name}_per_class.csv"
+        df.to_csv(combined_path, index=False)
+
+        for class_idx in sorted(df["class_index"].unique()):
+            sub = (
+                df[df["class_index"] == class_idx]
+                .sort_values("mean_abs_shap", ascending=False)
+            )
+            sub.to_csv(
+                self.metrics_dir / f"shap_importance_{name}_class_{class_idx}.csv",
+                index=False,
+            )
+
+        logger.info(
+            f"Per-class SHAP importance saved → {combined_path} "
+            f"and shap_importance_{name}_class_*.csv"
+        )
+
+    def _plot_shap_per_class_bars(
+        self,
+        name: str,
+        feat_names: list[str],
+        per_class_shap: np.ndarray,
+        x_proc: np.ndarray,
+    ) -> None:
+        top_k = int(self.config["explainability"].get("top_features_plot", 20))
+        for class_idx, mean_abs in per_class_mean_abs_importance(per_class_shap).items():
+            class_name = multiclass_display_name(class_idx)
+            plotted = False
+            try:
+                expl = shap.Explanation(
+                    values=per_class_shap[:, :, class_idx],
+                    data=x_proc,
+                    feature_names=feat_names,
+                )
+                shap.plots.bar(expl, max_display=top_k, show=False)
+                fig = plt.gcf()
+                fig.suptitle(f"{name} — SHAP bar ({class_name})")
+                self._save_shap(fig, f"shap_bar_{name}_class_{class_idx}")
+                plotted = True
+            except Exception as exc:
+                logger.warning(
+                    f"shap.plots.bar failed for {name} class {class_idx}: {exc}; "
+                    "using matplotlib fallback"
+                )
+
+            if plotted:
+                continue
+
+            order = np.argsort(mean_abs)[::-1][:top_k]
+            labels = [feat_names[i] for i in order][::-1]
+            values = mean_abs[order][::-1]
+            fig, ax = plt.subplots(figsize=(8, max(4, top_k * 0.25)))
+            ax.barh(labels, values, color="steelblue")
+            ax.set_xlabel(f"Mean |SHAP| — {class_name}")
+            ax.set_title(f"{name} — per-class feature importance")
+            fig.tight_layout()
+            self._save_shap(fig, f"shap_bar_{name}_class_{class_idx}")
 
     def _plot_shap_summary(
         self,
@@ -1473,8 +1620,8 @@ class Evaluator:
 
         fig, ax = plt.subplots(figsize=(8, max(4, top_k * 0.25)))
         ax.barh(labels, values, color="steelblue")
-        ax.set_xlabel("Mean |SHAP| (LOSO OOF aggregate)")
-        ax.set_title(f"{name} — global feature importance")
+        ax.set_xlabel("Mean |SHAP| (LOSO OOF, class-averaged)")
+        ax.set_title(f"{name} — global feature importance (supplemental: per-class bars)")
         fig.tight_layout()
         self._save_shap(fig, f"shap_bar_{name}")
 
@@ -1694,20 +1841,27 @@ class Evaluator:
         rows = []
         for model_name, res in results.items():
             y_true_arr = np.asarray(res["y_true"])
-            y_prob_arr = np.asarray(res["y_prob"])
-            is_multiclass = y_prob_arr.ndim == 2
+            is_multiclass = is_multiclass_metric_result(res)
+            y_proba_full = (
+                np.asarray(res["y_proba_full"], dtype=float)
+                if res.get("y_proba_full") is not None
+                else None
+            )
+            y_prob_arr = (
+                np.asarray(res["y_prob"], dtype=float) if "y_prob" in res else None
+            )
 
             y_pred = res.get("y_pred")
             if y_pred is None:
-                if is_multiclass:
-                    y_pred = np.argmax(y_prob_arr, axis=1)
-                else:
+                if is_multiclass and y_proba_full is not None:
+                    y_pred = np.argmax(y_proba_full, axis=1)
+                elif y_prob_arr is not None:
                     y_pred = (y_prob_arr >= float(res.get("decision_threshold", 0.5))).astype(int)
+                else:
+                    continue
 
             pids = res.get("participant_ids", [])
             y_pred_fixed = res.get("y_pred_fixed", y_pred)
-
-            y_proba_full = np.asarray(res.get("y_proba_full", y_prob_arr))
 
             for i in range(len(y_true_arr)):
                 row = {
@@ -1719,10 +1873,13 @@ class Evaluator:
                     "threshold_eval_youden": float(res.get("threshold_eval_youden", 0.5)),
                 }
                 if is_multiclass:
-                    row["y_prob"] = float(y_prob_arr[i, 1]) if y_prob_arr.shape[1] > 1 else float(y_prob_arr[i, 0])
-                    for c in range(y_proba_full.shape[1] if y_proba_full.ndim == 2 else 0):
+                    if y_proba_full is None:
+                        continue
+                    for c in range(y_proba_full.shape[1]):
                         row[f"y_prob_class_{c}"] = float(y_proba_full[i, c])
-                else:
+                    if y_proba_full.shape[1] > 1:
+                        row["y_prob_class_1"] = float(y_proba_full[i, 1])
+                elif y_prob_arr is not None:
                     row["y_prob"] = float(y_prob_arr[i])
                 if len(pids) > i:
                     row["participant_id"] = str(pids[i])
@@ -1770,6 +1927,9 @@ class Evaluator:
                 "specificity":         res.get("specificity", 0.0),
                 "decision_threshold":  res.get("decision_threshold", 0.5),
                 "threshold_strategy": res.get("threshold_strategy", "train_fold_youden"),
+                "primary_threshold_source": res.get(
+                    "primary_threshold_source", "unbiased_train_fold"
+                ),
                 "threshold_eval_youden": res.get("threshold_eval_youden", float("nan")),
                 "accuracy_at_0.5":     res.get("accuracy_at_0.5", float("nan")),
                 "f1_at_0.5":           res.get("f1_at_0.5", float("nan")),
@@ -1802,27 +1962,43 @@ class Evaluator:
     def _save_threshold_comparison(self, results: dict) -> None:
         rows = []
         for name, res in results.items():
+            if is_multiclass_metric_result(res):
+                continue
+            train_thresh = res.get("threshold_train_youden_mean", float("nan"))
             rows.append({
                 "model": name,
-                "threshold_train_youden_mean": res.get("threshold_train_youden_mean", float("nan")),
-                "threshold_eval_youden": res.get("threshold_eval_youden", float("nan")),
-                "threshold_fixed": 0.5,
-                "accuracy_train_youden": res.get("accuracy", float("nan")),
-                "f1_train_youden": res.get("f1", float("nan")),
-                "sensitivity_train_youden": res.get("sensitivity", float("nan")),
-                "specificity_train_youden": res.get("specificity", float("nan")),
-                "accuracy_at_0.5": res.get("accuracy_at_0.5", float("nan")),
-                "f1_at_0.5": res.get("f1_at_0.5", float("nan")),
-                "sensitivity_at_0.5": res.get("sensitivity_at_0.5", float("nan")),
-                "specificity_at_0.5": res.get("specificity_at_0.5", float("nan")),
-                "accuracy_eval_youden": res.get("accuracy_eval_youden", float("nan")),
-                "f1_eval_youden": res.get("f1_eval_youden", float("nan")),
-                "sensitivity_eval_youden": res.get("sensitivity_eval_youden", float("nan")),
-                "specificity_eval_youden": res.get("specificity_eval_youden", float("nan")),
-                "delta_accuracy_eval_minus_train": res.get(
+                "threshold_source": "unbiased_train_fold",
+                "threshold": train_thresh,
+                "accuracy": res.get("accuracy", float("nan")),
+                "f1": res.get("f1", float("nan")),
+                "sensitivity": res.get("sensitivity", float("nan")),
+                "specificity": res.get("specificity", float("nan")),
+                "delta_accuracy_vs_train_fold": float("nan"),
+                "delta_f1_vs_train_fold": float("nan"),
+            })
+            rows.append({
+                "model": name,
+                "threshold_source": "fixed_0.5",
+                "threshold": 0.5,
+                "accuracy": res.get("accuracy_at_0.5", float("nan")),
+                "f1": res.get("f1_at_0.5", float("nan")),
+                "sensitivity": res.get("sensitivity_at_0.5", float("nan")),
+                "specificity": res.get("specificity_at_0.5", float("nan")),
+                "delta_accuracy_vs_train_fold": float("nan"),
+                "delta_f1_vs_train_fold": float("nan"),
+            })
+            rows.append({
+                "model": name,
+                "threshold_source": "optimistic_eval_set",
+                "threshold": res.get("threshold_eval_youden", float("nan")),
+                "accuracy": res.get("accuracy_eval_youden", float("nan")),
+                "f1": res.get("f1_eval_youden", float("nan")),
+                "sensitivity": res.get("sensitivity_eval_youden", float("nan")),
+                "specificity": res.get("specificity_eval_youden", float("nan")),
+                "delta_accuracy_vs_train_fold": res.get(
                     "delta_accuracy_eval_minus_train", float("nan")
                 ),
-                "delta_f1_eval_minus_train": res.get("delta_f1_eval_minus_train", float("nan")),
+                "delta_f1_vs_train_fold": res.get("delta_f1_eval_minus_train", float("nan")),
             })
         if rows:
             pd.DataFrame(rows).to_csv(

@@ -61,9 +61,16 @@ preprocessing:
   madgwick_use_magnetometer: false
   min_trial_length_s: 10.0
   gait_event_source: "algorithm"   # algorithm | dataset (use Figshare HS when validated)
+  heel_strike_threshold_mode: prominence  # prominence (trial-adaptive) | percentile (legacy height)
+  heel_strike_peak_percentile: 85  # prominence percentile in prominence mode; height percentile in percentile mode
+  heel_strike_peak_percentile_by_cohort: {}  # optional per-cohort overrides, e.g. PD: 75
+  heel_strike_prominence_floor: null  # optional absolute prominence floor (m/s²) after percentile filter
+  heel_strike_min_interval_s: 0.5  # min spacing between strikes (was 0.3 s @ 100 Hz)
 
   gait_event_validation:
     tolerance_ms: 50               # ± window for TP matching vs ground-truth heel strikes
+    tune_cohort_percentiles: false # grid-search percentile per cohort; writes gait_event_cohort_thresholds.json
+    tune_percentile_grid: [70, 75, 80, 85, 90, 95]
 
   # Run: python main.py --stage validate_gait_events  (requires raw_data with annotations)
 
@@ -91,6 +98,8 @@ features:
     - power_1_3hz
     - power_3_10hz
     - harmonic_ratio
+
+  wavelet:
     - wavelet_energy_a4             # DWT approximation band energy (0–3.125 Hz)
     - wavelet_energy_d1             # DWT detail band energy (25–50 Hz)
     - wavelet_energy_d2             # DWT detail band energy (12.5–25 Hz)
@@ -189,9 +198,10 @@ feature_selection:
   enabled: true
   max_features: 20
   min_features: 5
-  primary_method: "rfecv"   # rfecv | shap | intersection
+  primary_method: "rfecv"   # rfecv | shap | intersection (exported as rfecv_capped when max_features < RFECV CV optimum)
   # Force-keep nonlinear dynamics so final trained models include these families.
   required_feature_substrings: ["sampen", "dfa"]
+  max_required_features: 10   # cap forced-required columns (default: half of max_features)
   compare_before_after: true
   cv_folds: 5
 

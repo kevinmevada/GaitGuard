@@ -16,7 +16,6 @@ FIXES APPLIED:
 from __future__ import annotations
 
 import json
-import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -35,6 +34,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import OneClassSVM
 
 from src.models.anomaly_feature_schema import save_trial_feature_schema
+from src.utils.checkpoint_io import save_checkpoint
 from src.utils.reproducibility import get_pipeline_seed
 
 console = Console()
@@ -434,12 +434,18 @@ class GaitAnomalyDetector:
             json.dump(cohort_analysis, f, indent=2)
 
         for method_name, model in self.models.items():
-            with open(self.results_dir / f"{method_name}_model.pkl", "wb") as f:
-                pickle.dump(model, f)
+            save_checkpoint(
+                self.results_dir / f"{method_name}_model.pkl",
+                model,
+                manifest_dir=self.results_dir,
+            )
 
         for method_name, scaler in self.scalers.items():
-            with open(self.results_dir / f"{method_name}_scaler.pkl", "wb") as f:
-                pickle.dump(scaler, f)
+            save_checkpoint(
+                self.results_dir / f"{method_name}_scaler.pkl",
+                scaler,
+                manifest_dir=self.results_dir,
+            )
 
         if self.trial_feature_columns:
             schema_path = save_trial_feature_schema(

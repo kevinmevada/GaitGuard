@@ -13,13 +13,14 @@ from typing import Any
 import pandas as pd
 
 _AGG_SUFFIXES = ("_mean", "_std", "_range", "_trend")
+_CROSS_SITE_PREFIX = "head_lb_"
 
 
 def trial_feature_groups(config: dict[str, Any]) -> dict[str, list[str]]:
     """Config feature groups with their trial-level base names (non-empty only)."""
     feat_cfg = config.get("features", {})
     groups: dict[str, list[str]] = {}
-    for group_name in ("temporal", "spectral", "trunk_dynamics",
+    for group_name in ("temporal", "spectral", "wavelet", "trunk_dynamics",
                        "orientation", "asymmetry", "turning", "spatial"):
         bases = feat_cfg.get(group_name, [])
         if bases:
@@ -36,10 +37,16 @@ def patient_columns_for_trial_base(column: str, base: str) -> bool:
 
     Handles sensor-prefixed naming like ``lb_lyapunov_mean`` matching base ``lyapunov``,
     and un-prefixed names like ``cadence_mean`` matching base ``cadence``.
+
+    Cross-site ``head_lb_*`` features (e.g. ``head_lb_rms_ratio_mean``) require an
+    exact stem match so shorter trunk bases like ``lyapunov`` do not subsume
+    ``head_lb_lyapunov_ratio`` during ablation.
     """
     for suffix in _AGG_SUFFIXES:
         if column.endswith(suffix):
             stem = column[: -len(suffix)]
+            if stem.startswith(_CROSS_SITE_PREFIX) or base.startswith(_CROSS_SITE_PREFIX):
+                return stem == base
             if stem == base or stem.endswith(f"_{base}"):
                 return True
     return False

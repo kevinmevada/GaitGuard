@@ -71,6 +71,41 @@ def spectral_centroid_hz(freqs: np.ndarray, pxx: np.ndarray) -> float:
     return float(np.sum(np.asarray(freqs, dtype=float) * pxx) / total)
 
 
+def harmonic_ratio_even_odd(
+    freqs: np.ndarray,
+    pxx: np.ndarray,
+    dominant_freq: float,
+    lp_cut_hz: float,
+    *,
+    max_harmonic_order: int = 6,
+) -> float | None:
+    """Even/odd harmonic power ratio using only in-band harmonics.
+
+    Preprocessed signals are low-pass filtered (``lp_cut_hz``). Harmonics at or
+    above ~80% of that cutoff are attenuated and must be excluded or the ratio
+    confounds gait cadence with filter roll-off.
+    """
+    if dominant_freq <= 0:
+        return None
+
+    max_harmonic_hz = lp_cut_hz * 0.8
+    even_sum = 0.0
+    odd_sum = 0.0
+    for k in range(1, max_harmonic_order + 1):
+        harmonic_hz = dominant_freq * k
+        if harmonic_hz >= max_harmonic_hz:
+            continue
+        power = float(pxx[np.argmin(np.abs(freqs - harmonic_hz))])
+        if k % 2 == 1:
+            odd_sum += power
+        else:
+            even_sum += power
+
+    if even_sum <= 0.0 and odd_sum <= 0.0:
+        return None
+    return float(even_sum / (odd_sum + 1e-10))
+
+
 class FeatureExtractor:
 
     def __init__(self, config: dict):
@@ -79,6 +114,8 @@ class FeatureExtractor:
         self.out_dir  = Path(config["paths"]["features"])
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.fs = config["dataset"]["sampling_rate"]
+        pp = config.get("preprocessing", {})
+        self.lp_cut = float(pp.get("lowpass_cutoff_hz", 15.0))
         feat_cfg = config.get("features", {})
         self._lyap_cfg = feat_cfg.get("lyapunov", {})
         self._apen_cfg = feat_cfg.get("approximate_entropy", {})
@@ -327,17 +364,13 @@ class FeatureExtractor:
         f[f"{prefix}_power_1_3hz"]  = band_power(1.0, 3.0)
         f[f"{prefix}_power_3_10hz"] = band_power(3.0, 10.0)
 
-        # Harmonic ratio.
-        # FIX: use the already-computed dominant_freq directly instead of
-        # re-fetching from the dict with a misleading .get() + default.
-        if dominant_freq > 0:
-            harmonics = [
-                float(pxx[np.argmin(np.abs(freqs - dominant_freq * k))])
-                for k in range(1, 7)
-            ]
-            even_sum = sum(harmonics[1::2])  # 2nd, 4th, 6th harmonics
-            odd_sum  = sum(harmonics[0::2])  # 1st, 3rd, 5th harmonics
-            f[f"{prefix}_harmonic_ratio"] = float(even_sum / (odd_sum + 1e-10))
+        # Harmonic ratio: even / odd harmonic power around the dominant peak.
+        # Only sum harmonics below ~80% of the preprocessing low-pass cutoff;
+        # upper harmonics are attenuated by the 15 Hz filter and would otherwise
+        # bias the ratio for fast-cadence gait (pathology vs speed confound).
+        ratio = harmonic_ratio_even_odd(freqs, pxx, dominant_freq, self.lp_cut)
+        if ratio is not None:
+            f[f"{prefix}_harmonic_ratio"] = ratio
 
         return f
 

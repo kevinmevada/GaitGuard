@@ -17,6 +17,31 @@ import numpy as np
 import pandas as pd
 
 
+def resolve_trial_cohort(
+    trial_dir: Path,
+    meta: dict[str, Any],
+    *,
+    raw_dir: Path | None = None,
+) -> str:
+    """Resolve pathology cohort from metadata JSON or raw-data directory layout."""
+    from src.ingestion.data_loader import PATHOLOGY_KEY_MAP
+
+    if meta.get("cohort"):
+        return str(meta["cohort"])
+    pkey = meta.get("pathologyKey", "")
+    if pkey in PATHOLOGY_KEY_MAP:
+        return PATHOLOGY_KEY_MAP[pkey]
+    if raw_dir is not None:
+        try:
+            rel = trial_dir.relative_to(raw_dir)
+            if rel.parts:
+                token = str(rel.parts[0])
+                return PATHOLOGY_KEY_MAP.get(token, token)
+        except ValueError:
+            pass
+    return "Unknown"
+
+
 def load_trial_metadata_json(trial_dir: Path) -> dict[str, Any]:
     for path in sorted(trial_dir.glob("*_meta.json")):
         try:

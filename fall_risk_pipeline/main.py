@@ -159,6 +159,7 @@ def main():
 
     rep_cfg = config.get("reproducibility") or {}
     seed = get_pipeline_seed(config)
+    hash_seed_before_start = os.environ.get("PYTHONHASHSEED")
     set_global_seed(seed, deterministic_torch=bool(rep_cfg.get("deterministic_torch", True)))
     logger.info(
         "Global RNG seed={} (reproducibility.seed / models.evaluation.random_state); "
@@ -173,10 +174,11 @@ def main():
             seed,
             eval_rs,
         )
-    if os.environ.get("PYTHONHASHSEED") is None:
+    if hash_seed_before_start in (None, "random"):
         logger.warning(
-            "PYTHONHASHSEED was not set before process start; export PYTHONHASHSEED={} "
-            "for fully stable hash-based ordering across runs.",
+            "PYTHONHASHSEED was {!r} at process start; hash iteration order may differ from "
+            "a shell launched with PYTHONHASHSEED={}. See docs/reproducibility.md.",
+            hash_seed_before_start,
             seed,
         )
 

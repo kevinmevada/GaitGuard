@@ -19,6 +19,7 @@ import pandas as pd
 import torch
 from loguru import logger
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedShuffleSplit
 
 from src.evaluation.multiclass_metrics import build_multiclass_metric_payload
 from src.models.deep_models import (
@@ -127,7 +128,7 @@ class DeepLearningPipeline:
             set_global_seed(self.seed + fold_idx, deterministic_torch=True)
 
             test_data = participants[test_pid]
-            X_test = test_data["windows"]
+            X_test_raw = test_data["windows"]
             y_test_label = test_data["label"]
 
             train_pids = [p for p in pids if p != test_pid]
@@ -139,15 +140,29 @@ class DeepLearningPipeline:
             y_train = np.array(y_train_list, dtype=int)
 
             val_size = max(1, int(0.1 * len(X_train)))
-            rng = np.random.default_rng(self.seed + fold_idx)
-            val_idx = rng.choice(len(X_train), val_size, replace=False)
-            train_idx_inner = np.setdiff1d(np.arange(len(X_train)), val_idx)
+            sss = StratifiedShuffleSplit(
+                n_splits=1,
+                test_size=0.1,
+                random_state=self.seed + fold_idx,
+            )
+            try:
+                train_idx_inner, val_idx = next(
+                    sss.split(np.arange(len(X_train)), y_train)
+                )
+            except ValueError:
+                logger.warning(
+                    f"Stratified val split failed for fold {fold_idx + 1} "
+                    f"(n={len(X_train)}); falling back to random split"
+                )
+                rng = np.random.default_rng(self.seed + fold_idx)
+                val_idx = rng.choice(len(X_train), val_size, replace=False)
+                train_idx_inner = np.setdiff1d(np.arange(len(X_train)), val_idx)
             X_val_raw, y_val = X_train[val_idx], y_train[val_idx]
             X_train_f_raw, y_train_f = X_train[train_idx_inner], y_train[train_idx_inner]
 
             # Fit normalization on inner-train only, then apply to val/test.
-            X_train_f, X_test = self._normalize(X_train_f_raw, X_test)
-            _, X_val = self._normalize(X_train_f_raw, X_val_raw)
+            X_train_norm, X_test_norm = self._normalize(X_train_f_raw, X_test_raw)
+            _, X_val_norm = self._normalize(X_train_f_raw, X_val_raw)
 
             fold_label = f"{fold_idx + 1}/{len(pids)}"
             bar.set_postfix(
@@ -174,14 +189,15 @@ class DeepLearningPipeline:
             model = build_deep_model(model_name, n_channels, self.window_len, n_classes)
             model = trainer.train(
                 model,
-                X_train_f,
+                X_train_norm,
                 y_train_f,
-                X_val,
+                X_val_norm,
                 y_val,
+                shuffle_seed=self.seed + fold_idx,
                 on_epoch=on_epoch,
             )
 
-            proba_windows = trainer.predict_proba(model, X_test)
+            proba_windows = trainer.predict_proba(model, X_test_norm)
             participant_proba = proba_windows.mean(axis=0)
 
             oof_y_true.append(y_test_label)
@@ -190,7 +206,7 @@ class DeepLearningPipeline:
 
             bar.update(1)
 
-            del model, X_train, X_test, X_train_f, X_val
+            del model, X_train, X_test_raw, X_train_norm, X_test_norm, X_val_norm
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
         y_true = np.array(oof_y_true)
@@ -208,7 +224,7 @@ class DeepLearningPipeline:
         y_pred = np.argmax(y_proba, axis=1)
 
         payload = build_multiclass_metric_payload(
-            f"dl_{model_name}", y_true, y_proba, y_pred
+            f"dl_{model_name}", y_true, y_proba, y_pred, seed=self.seed
         )
         if not np.isfinite(float(payload.get("auc", float("nan")))):
             try:
@@ -221,16 +237,35 @@ class DeepLearningPipeline:
         return payload
 
     @staticmethod
-    def _normalize(X_train: np.ndarray, X_test: np.ndarray):
-        """Per-channel z-normalization fitted on training windows."""
+    def _normalize(
+        X_train: np.ndarray, X_apply: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Per-channel z-normalization fitted on training windows, applied to X_apply."""
         B, C, T = X_train.shape
         flat_train = X_train.transpose(1, 0, 2).reshape(C, -1)
         mean = flat_train.mean(axis=1, keepdims=True)
         std = flat_train.std(axis=1, keepdims=True) + 1e-8
-        X_train = ((X_train.transpose(1, 0, 2).reshape(C, -1) - mean) / std).reshape(C, B, T).transpose(1, 0, 2)
-        Bt = X_test.shape[0]
-        X_test = ((X_test.transpose(1, 0, 2).reshape(C, -1) - mean) / std).reshape(C, Bt, T).transpose(1, 0, 2)
-        return X_train.astype(np.float32), X_test.astype(np.float32)
+
+        def _apply(x: np.ndarray) -> np.ndarray:
+            n = x.shape[0]
+            flat = x.transpose(1, 0, 2).reshape(C, -1)
+            normed = ((flat - mean) / std).reshape(C, n, T).transpose(1, 0, 2)
+            return normed.astype(np.float32)
+
+        X_train_norm = _apply(X_train)
+        X_apply_norm = _apply(X_apply)
+
+        train_flat = X_train_norm.transpose(1, 0, 2).reshape(C, -1)
+        assert np.allclose(train_flat.mean(axis=1), 0.0, atol=1e-4), (
+            "normalized train windows should have ~zero per-channel mean"
+        )
+        assert np.allclose(train_flat.std(axis=1), 1.0, atol=1e-4), (
+            "normalized train windows should have ~unit per-channel std"
+        )
+        assert X_apply_norm.shape == X_apply.shape, "normalization must preserve window shape"
+        assert np.isfinite(X_apply_norm).all(), "normalized apply array contains non-finite values"
+
+        return X_train_norm, X_apply_norm
 
     # ─────────────────────────────────────────────────────────────
     # Main entry

@@ -10,6 +10,7 @@ Cohort resolution priority:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -227,8 +228,8 @@ class DataLoader:
         for part in trial_dir.parts:
             part_lower = part.lower()
             tokens.add(part_lower)
-            # Also split on underscores so "pd_001" yields {"pd", "001"}.
-            tokens.update(part_lower.split("_"))
+            # Split on underscores, hyphens, and periods so "pd-001" → {"pd", "001"}.
+            tokens.update(t for t in re.split(r"[_\-.]", part_lower) if t)
 
         # Ordered from most specific to most general to avoid mis-classification.
         if "healthy" in tokens or "hs" in tokens:

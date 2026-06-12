@@ -45,6 +45,18 @@ class SignalProcessor:
         self.madgwick_use_mag = pp.get("madgwick_use_magnetometer", False)
 
         self.use_ds_events = pp["gait_event_source"] == "dataset"
+        self.hs_threshold_mode = str(
+            pp.get("heel_strike_threshold_mode", "prominence")
+        ).lower()
+        self.hs_peak_percentile = float(pp.get("heel_strike_peak_percentile", 85))
+        self.hs_peak_percentile_by_cohort = {
+            str(k): float(v)
+            for k, v in pp.get("heel_strike_peak_percentile_by_cohort", {}).items()
+        }
+        floor = pp.get("heel_strike_prominence_floor")
+        self.hs_prominence_floor = float(floor) if floor is not None else None
+        self.hs_min_interval_s = float(pp.get("heel_strike_min_interval_s", 0.5))
+        self._trial_cohort: dict[str, str] = {}
 
         if self.madgwick_enabled:
             try:
@@ -65,6 +77,11 @@ class SignalProcessor:
             raise FileNotFoundError("trial_metadata.csv not found")
 
         meta = pd.read_csv(meta_path)
+        if "trial_id" in meta.columns and "cohort" in meta.columns:
+            self._trial_cohort = dict(
+                zip(meta["trial_id"].astype(str), meta["cohort"].astype(str))
+            )
+
         signals_dir = self.proc_dir / "signals"
 
         for row in tqdm(
@@ -77,7 +94,8 @@ class SignalProcessor:
             trial_id = row.trial_id
 
             try:
-                self._process_trial(trial_id, signals_dir)
+                cohort = self._trial_cohort.get(str(trial_id))
+                self._process_trial(trial_id, signals_dir, cohort=cohort)
             except Exception as e:
                 logger.warning(f"{trial_id} failed: {e}")
 
@@ -85,7 +103,9 @@ class SignalProcessor:
 
     # ─────────────────────────────────────────
 
-    def _process_trial(self, trial_id: str, signals_dir: Path):
+    def _process_trial(
+        self, trial_id: str, signals_dir: Path, *, cohort: str | None = None
+    ):
         positions = ["head", "lower_back", "left_foot", "right_foot"]
         clean: dict[str, pd.DataFrame] = {}
 
@@ -100,7 +120,7 @@ class SignalProcessor:
             if df.empty:
                 continue
 
-            df = self.process_sensor_dataframe(df, pos)
+            df = self.process_sensor_dataframe(df, pos, cohort=cohort)
             clean[pos] = df
 
         if not clean:
@@ -112,7 +132,13 @@ class SignalProcessor:
 
     # ─────────────────────────────────────────
 
-    def process_sensor_dataframe(self, df: pd.DataFrame, sensor_position: str) -> pd.DataFrame:
+    def process_sensor_dataframe(
+        self,
+        df: pd.DataFrame,
+        sensor_position: str,
+        *,
+        cohort: str | None = None,
+    ) -> pd.DataFrame:
         """
         Single-sensor preprocessing used by batch trials and live API inference.
 
@@ -137,9 +163,9 @@ class SignalProcessor:
                     self._ahrs_warned = True
 
         if not self.use_ds_events and sensor_position == "left_foot":
-            df = self._detect_gait_events(df, "left")
+            df = self._detect_gait_events(df, "left", cohort=cohort)
         elif not self.use_ds_events and sensor_position == "right_foot":
-            df = self._detect_gait_events(df, "right")
+            df = self._detect_gait_events(df, "right", cohort=cohort)
 
         if sensor_position == "lower_back":
             df = self._remove_gravity(df)
@@ -202,8 +228,10 @@ class SignalProcessor:
         """
         df = df.copy()
 
-        # Minimum signal length required for filtfilt with this order/cutoff.
-        min_len = int(self.fs * 10)  # ~10 seconds needed for stable 0.1 Hz filter
+        # filtfilt needs len(sig) > padlen; 5 s at fs is enough for 0.1 Hz with
+        # reduced padding (default padlen assumes very long signals).
+        grav_order = 2
+        min_len = int(self.fs * 5)
         grav_cutoff = 0.1            # Hz — passes only DC / very slow tilt changes
 
         nyq = self.fs / 2.0
@@ -216,8 +244,9 @@ class SignalProcessor:
 
             if len(sig) >= min_len and grav_cutoff < nyq:
                 try:
-                    b, a = butter(2, grav_cutoff / nyq, btype="low")
-                    gravity = filtfilt(b, a, sig)
+                    b, a = butter(grav_order, grav_cutoff / nyq, btype="low")
+                    padlen = min(3 * (grav_order + 1), len(sig) - 1)
+                    gravity = filtfilt(b, a, sig, padlen=padlen)
                 except Exception:
                     # Fallback to the global median if filtering fails.
                     gravity = np.full_like(sig, np.median(sig))
@@ -231,31 +260,107 @@ class SignalProcessor:
 
     # ─────────────────────────────────────────
 
-    def detect_heel_strike_indices(self, df: pd.DataFrame, side: str) -> np.ndarray:
+    def detect_heel_strike_indices(
+        self,
+        df: pd.DataFrame,
+        side: str,
+        *,
+        cohort: str | None = None,
+        peak_percentile: float | None = None,
+        threshold_mode: str | None = None,
+    ) -> np.ndarray:
         """Return sample indices of detected heel strikes (before mutating caller's frame)."""
-        marked = self._detect_gait_events(df.copy(), side)
+        marked = self._detect_gait_events(
+            df.copy(),
+            side,
+            cohort=cohort,
+            peak_percentile=peak_percentile,
+            threshold_mode=threshold_mode,
+        )
         col = f"heel_strike_{side}"
         if col not in marked.columns:
             return np.array([], dtype=int)
         return np.where(marked[col].values == 1)[0]
 
-    def _detect_gait_events(self, df: pd.DataFrame, side: str) -> pd.DataFrame:
-        """
-        Heel-strike peaks on inverted vertical acceleration (75th-percentile height).
+    def _peak_percentile_for_cohort(self, cohort: str | None) -> float:
+        if cohort and cohort in self.hs_peak_percentile_by_cohort:
+            return self.hs_peak_percentile_by_cohort[cohort]
+        return self.hs_peak_percentile
 
-        Validated against Figshare annotations via ``validate_gait_events`` stage.
+    def _find_heel_strike_indices(
+        self,
+        acc_v: np.ndarray,
+        *,
+        cohort: str | None = None,
+        peak_percentile: float | None = None,
+        threshold_mode: str | None = None,
+    ) -> np.ndarray:
+        """Detect heel-strike peaks on inverted vertical acceleration.
+
+        ``prominence`` mode (default) ranks peaks by local prominence within the
+        trial, reducing sensitivity to global signal amplitude differences across
+        pathologies.  ``percentile`` mode keeps the legacy absolute-height rule.
+        """
+        min_dist = int(self.fs * self.hs_min_interval_s)
+        percentile = (
+            float(peak_percentile)
+            if peak_percentile is not None
+            else self._peak_percentile_for_cohort(cohort)
+        )
+        mode = (threshold_mode or self.hs_threshold_mode).lower()
+
+        if mode == "percentile":
+            height = np.percentile(acc_v, percentile)
+            hs_idx, _ = find_peaks(acc_v, height=height, distance=min_dist)
+            return hs_idx.astype(int)
+
+        if mode != "prominence":
+            raise ValueError(
+                f"Unknown heel_strike_threshold_mode '{mode}' "
+                "(expected 'prominence' or 'percentile')"
+            )
+
+        candidates, props = find_peaks(acc_v, distance=min_dist, prominence=0)
+        if len(candidates) == 0:
+            return np.array([], dtype=int)
+
+        prom = props["prominences"]
+        min_prom = float(np.percentile(prom, percentile))
+        if self.hs_prominence_floor is not None:
+            min_prom = max(min_prom, self.hs_prominence_floor)
+        return candidates[prom >= min_prom].astype(int)
+
+    def _detect_gait_events(
+        self,
+        df: pd.DataFrame,
+        side: str,
+        *,
+        cohort: str | None = None,
+        peak_percentile: float | None = None,
+        threshold_mode: str | None = None,
+    ) -> pd.DataFrame:
+        """
+        Heel-strike peaks on inverted vertical acceleration.
+
+        Threshold mode and percentile are configurable; cohort-specific
+        percentiles can be set in ``heel_strike_peak_percentile_by_cohort``.
+        Tune per-cohort values with ``validate_gait_events`` when ground truth
+        is available (see ``gait_event_validation.tune_cohort_percentiles``).
         """
         if "acc_z" not in df.columns:
             return df
 
         acc_v = -df["acc_z"].values
+        hs_idx = self._find_heel_strike_indices(
+            acc_v,
+            cohort=cohort,
+            peak_percentile=peak_percentile,
+            threshold_mode=threshold_mode,
+        )
 
-        height = np.percentile(acc_v, 75)
-
-        hs_idx, _ = find_peaks(acc_v, height=height, distance=int(self.fs * 0.3))
-
+        min_dist = int(self.fs * self.hs_min_interval_s)
         to_signal = df["acc_resultant"].values if "acc_resultant" in df.columns else acc_v
-        to_idx, _ = find_peaks(-to_signal, distance=int(self.fs * 0.3))
+        to_idx, _ = find_peaks(-to_signal, distance=min_dist)
 
         df[f"heel_strike_{side}"] = 0
         df[f"toe_off_{side}"]     = 0

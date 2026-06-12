@@ -4,6 +4,7 @@ Validate algorithmic heel-strike detection against Figshare dataset annotations.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +18,7 @@ from src.preprocessing.gait_events_gt import (
     load_ground_truth_gait_events,
     load_trial_metadata_json,
     match_heel_strikes,
+    resolve_trial_cohort,
 )
 from src.preprocessing.signal_processor import SignalProcessor
 
@@ -31,6 +33,10 @@ class GaitEventValidator:
         pp = config.get("preprocessing", {})
         val_cfg = pp.get("gait_event_validation", {})
         self.tolerance_ms = float(val_cfg.get("tolerance_ms", 50.0))
+        self.tune_cohort_percentiles = bool(val_cfg.get("tune_cohort_percentiles", False))
+        self.tune_percentile_grid = [
+            float(x) for x in val_cfg.get("tune_percentile_grid", [70, 75, 80, 85, 90, 95])
+        ]
         self.fs = float(config["dataset"]["sampling_rate"])
         self.tolerance_samples = int(round(self.tolerance_ms * self.fs / 1000.0))
 
@@ -39,6 +45,7 @@ class GaitEventValidator:
     def run(self) -> pd.DataFrame:
         trial_dirs = self._discover_trial_dirs()
         rows: list[dict] = []
+        tune_cases: list[dict] = []
 
         for trial_dir in tqdm(
             trial_dirs,
@@ -53,6 +60,7 @@ class GaitEventValidator:
             meta = load_trial_metadata_json(trial_dir)
             trial_id = trial_dir.name
             participant_id = str(meta.get("participant_id", meta.get("subject", "unknown")))
+            cohort = resolve_trial_cohort(trial_dir, meta, raw_dir=self.raw_dir)
 
             for side, foot_key in (("left", "left_foot"), ("right", "right_foot")):
                 foot_df = self._load_foot_signal(trial_dir, foot_key)
@@ -64,7 +72,9 @@ class GaitEventValidator:
                 if len(gt_hs) == 0:
                     continue
 
-                detected_hs = self.processor.detect_heel_strike_indices(foot_df, side)
+                detected_hs = self.processor.detect_heel_strike_indices(
+                    foot_df, side, cohort=cohort
+                )
                 metrics = match_heel_strikes(
                     detected_hs, gt_hs, self.tolerance_samples
                 )
@@ -72,13 +82,22 @@ class GaitEventValidator:
                 rows.append({
                     "trial_id": trial_id,
                     "participant_id": participant_id,
+                    "cohort": cohort,
                     "side": side,
+                    "threshold_mode": self.processor.hs_threshold_mode,
+                    "peak_percentile": self.processor._peak_percentile_for_cohort(cohort),
                     "tolerance_ms": self.tolerance_ms,
                     "tolerance_samples": self.tolerance_samples,
                     "gt_source": "gait_events.csv"
                     if (trial_dir / "gait_events.csv").exists()
                     else "meta_json",
                     **metrics,
+                })
+                tune_cases.append({
+                    "cohort": cohort,
+                    "side": side,
+                    "foot_df": foot_df,
+                    "gt_hs": gt_hs,
                 })
 
         if not rows:
@@ -96,7 +115,24 @@ class GaitEventValidator:
         summary_path = self.metrics_dir / "gait_event_validation_summary.csv"
         summary_df.to_csv(summary_path, index=False)
 
-        self._write_report(summary_df, detail_df, summary_path, detail_path)
+        cohort_summary_df = self._summarize_by_cohort(detail_df)
+        cohort_summary_path = self.metrics_dir / "gait_event_validation_by_cohort.csv"
+        cohort_summary_df.to_csv(cohort_summary_path, index=False)
+
+        if self.tune_cohort_percentiles and tune_cases:
+            tuned = self._tune_cohort_percentiles(tune_cases)
+            tuned_path = self.metrics_dir / "gait_event_cohort_thresholds.json"
+            tuned_path.write_text(json.dumps(tuned, indent=2, sort_keys=True), encoding="utf-8")
+            logger.info(f"Cohort threshold recommendations → {tuned_path}")
+
+        self._write_report(
+            summary_df,
+            detail_df,
+            summary_path,
+            detail_path,
+            cohort_summary_df=cohort_summary_df,
+            cohort_summary_path=cohort_summary_path,
+        )
         logger.info(f"Gait event validation → {summary_path}")
         return summary_df
 
@@ -143,6 +179,95 @@ class GaitEventValidator:
             return df.apply(pd.to_numeric, errors="coerce").dropna().reset_index(drop=True)
         except Exception:
             return None
+
+    def _summarize_by_cohort(self, detail_df: pd.DataFrame) -> pd.DataFrame:
+        if detail_df.empty or "cohort" not in detail_df.columns:
+            return pd.DataFrame()
+
+        rows: list[dict] = []
+        for (cohort, side), grp in detail_df.groupby(["cohort", "side"], sort=True):
+            rows.append(self._metric_row(grp, cohort=cohort, side=side))
+        cohort_df = pd.DataFrame(rows)
+
+        both_rows = []
+        for cohort, grp in detail_df.groupby("cohort", sort=True):
+            both_rows.append(self._metric_row(grp, cohort=cohort, side="both"))
+        return pd.concat([cohort_df, pd.DataFrame(both_rows)], ignore_index=True)
+
+    def _metric_row(
+        self,
+        grp: pd.DataFrame,
+        *,
+        cohort: str,
+        side: str,
+    ) -> dict:
+        tp = int(grp["tp"].sum())
+        fp = int(grp["fp"].sum())
+        fn = int(grp["fn"].sum())
+        precision = float(tp / (tp + fp)) if (tp + fp) > 0 else float("nan")
+        recall = float(tp / (tp + fn)) if (tp + fn) > 0 else float("nan")
+        f1 = (
+            float(2 * precision * recall / (precision + recall))
+            if np.isfinite(precision) and np.isfinite(recall) and (precision + recall) > 0
+            else float("nan")
+        )
+        gt_total = int(grp["n_ground_truth"].sum())
+        det_total = int(grp["n_detected"].sum())
+        return {
+            "cohort": cohort,
+            "side": side,
+            "n_trials": int(grp["trial_id"].nunique()),
+            "n_ground_truth_hs": gt_total,
+            "n_detected_hs": det_total,
+            "detection_rate": float(det_total / gt_total) if gt_total > 0 else float("nan"),
+            "tp": tp,
+            "fp": fp,
+            "fn": fn,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "mean_abs_error_ms": float(
+                grp["mean_abs_error_samples"].mean() * 1000.0 / self.fs
+            ),
+            "tolerance_ms": self.tolerance_ms,
+        }
+
+    def _tune_cohort_percentiles(self, tune_cases: list[dict]) -> dict[str, dict]:
+        """Grid-search percentile per cohort against ground-truth heel strikes."""
+        by_cohort: dict[str, list[dict]] = {}
+        for case in tune_cases:
+            by_cohort.setdefault(case["cohort"], []).append(case)
+
+        recommendations: dict[str, dict] = {}
+        for cohort, cases in sorted(by_cohort.items()):
+            best_pct = self.processor.hs_peak_percentile
+            best_f1 = -1.0
+            for pct in self.tune_percentile_grid:
+                scores = []
+                for case in cases:
+                    detected = self.processor.detect_heel_strike_indices(
+                        case["foot_df"],
+                        case["side"],
+                        cohort=cohort,
+                        peak_percentile=pct,
+                    )
+                    metrics = match_heel_strikes(
+                        detected, case["gt_hs"], self.tolerance_samples
+                    )
+                    f1 = metrics["f1"]
+                    if np.isfinite(f1):
+                        scores.append(float(f1))
+                if scores and float(np.mean(scores)) > best_f1:
+                    best_f1 = float(np.mean(scores))
+                    best_pct = float(pct)
+
+            recommendations[cohort] = {
+                "heel_strike_peak_percentile": best_pct,
+                "mean_f1": best_f1 if best_f1 >= 0 else float("nan"),
+                "threshold_mode": self.processor.hs_threshold_mode,
+                "n_validation_cases": len(cases),
+            }
+        return recommendations
 
     def _summarize(self, detail_df: pd.DataFrame) -> pd.DataFrame:
         rows = []
@@ -212,11 +337,24 @@ class GaitEventValidator:
         detail_df: pd.DataFrame,
         summary_path: Path,
         detail_path: Path,
+        *,
+        cohort_summary_df: pd.DataFrame | None = None,
+        cohort_summary_path: Path | None = None,
     ) -> None:
         lines = [
             "# Gait event detection validation",
             "",
-            "Algorithm: peak detection on `-acc_z` (75th-percentile height, 0.3 s minimum spacing).",
+            (
+                "Algorithm: peak detection on `-acc_z` "
+                f"({self.processor.hs_threshold_mode} mode, "
+                f"{self.processor.hs_peak_percentile:.0f}th-percentile, "
+                f"{self.processor.hs_min_interval_s:.1f} s minimum spacing)."
+            ),
+            (
+                "Prominence mode ranks peaks by local prominence within each trial "
+                "to reduce amplitude bias across pathologies; optional per-cohort "
+                "percentiles via `heel_strike_peak_percentile_by_cohort`."
+            ),
             f"Ground truth: Figshare `gait_events.csv` or `leftGaitEvents` / `rightGaitEvents` in trial metadata.",
             f"Match tolerance: ±{self.tolerance_ms:.0f} ms (±{self.tolerance_samples} samples at {self.fs:.0f} Hz).",
             "",
@@ -233,11 +371,34 @@ class GaitEventValidator:
                 f"{row.precision:.3f} | {row.recall:.3f} | {row.f1:.3f} | "
                 f"{row.mean_abs_error_ms:.1f} |"
             )
+        if cohort_summary_df is not None and not cohort_summary_df.empty:
+            lines.extend([
+                "",
+                "## Per-cohort detection rates",
+                "",
+                "| Cohort | Side | Trials | Detected/GT | Rate | F1 |",
+                "|---|---|---:|---:|---:|---:|",
+            ])
+            for row in cohort_summary_df.itertuples(index=False):
+                if row.side != "both":
+                    continue
+                lines.append(
+                    f"| {row.cohort} | {row.side} | {int(row.n_trials)} | "
+                    f"{int(row.n_detected_hs)}/{int(row.n_ground_truth_hs)} | "
+                    f"{row.detection_rate:.3f} | {row.f1:.3f} |"
+                )
         lines.extend([
             "",
             f"Per-trial metrics: `{detail_path.name}`",
             f"Aggregate metrics: `{summary_path.name}`",
-            "",
         ])
+        if cohort_summary_path is not None:
+            lines.append(f"Per-cohort metrics: `{cohort_summary_path.name}`")
+        if self.tune_cohort_percentiles:
+            lines.append(
+                "Cohort percentile recommendations: `gait_event_cohort_thresholds.json` "
+                "(copy into `heel_strike_peak_percentile_by_cohort` if systematic bias remains)."
+            )
+        lines.append("")
         report_path = self.metrics_dir / "gait_event_validation_report.md"
         report_path.write_text("\n".join(lines), encoding="utf-8")

@@ -281,6 +281,7 @@ class FeatureAblationStudy:
                 y_true,
                 y_proba,
                 y_pred,
+                seed=self.random_state,
                 cohorts=np.asarray(all_cohorts),
             )
             ci_low, ci_high = self._bootstrap_macro_auc_ci(y_true, y_proba)

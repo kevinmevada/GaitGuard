@@ -116,6 +116,7 @@ class GroupStackingEnsemble(BaseEstimator, ClassifierMixin):
                     meta_X[val_idx, j * self.n_classes_:(j + 1) * self.n_classes_] = proba
 
         self.meta_learner_ = LogisticRegression(
+            solver="lbfgs",
             class_weight="balanced",
             max_iter=2000,
             random_state=self.random_state,
@@ -140,7 +141,12 @@ class GroupStackingEnsemble(BaseEstimator, ClassifierMixin):
         else:
             blocks = []
             for est in self.fitted_estimators_:
-                blocks.append(est.predict_proba(X))
+                proba = est.predict_proba(X)
+                if proba.shape[1] != self.n_classes_:
+                    full = np.zeros((len(X), self.n_classes_), dtype=float)
+                    full[:, :proba.shape[1]] = proba
+                    proba = full
+                blocks.append(proba)
             cols = np.column_stack(blocks)
         return self.meta_learner_.predict_proba(cols)
 

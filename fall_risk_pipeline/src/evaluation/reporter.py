@@ -148,6 +148,7 @@ class ReportGenerator:
         feature_section = self._feature_selection_section()
         ablation_section = self._ablation_section()
         clinical_threshold_section = self._clinical_threshold_section()
+        threshold_comparison_section = self._threshold_comparison_section()
         ethics_section = self._ethics_section()
         limitations_section = self._limitations_section()
         ensemble_section = self._ensemble_comparison_section()
@@ -172,6 +173,7 @@ Generated: {timestamp}
 {feature_section}
 {ablation_section}
 {clinical_threshold_section}
+{threshold_comparison_section}
 {ethics_section}
 {limitations_section}
 {ensemble_section}
@@ -181,7 +183,9 @@ Generated: {timestamp}
 {inference_section}
 ## Validation
 - Strategy: {validation_strategy}
-- Classification threshold: argmax (multiclass) or Youden J per LOSO train fold (binary); see `metrics_threshold_comparison.csv` for binary baselines.
+- Classification threshold: argmax (multiclass) or Youden J per LOSO train fold (binary; `threshold_source=unbiased_train_fold`).
+- **Primary Table 2 metrics use unbiased train-fold Youden only.** Do **not** cite `optimistic_eval_set` rows or `accuracy_eval_youden` as generalization performance (eval-set Youden is optimistic threshold tuning on pooled OOF labels).
+- Supplemental baselines: `metrics_threshold_comparison.csv` (`fixed_0.5`, `optimistic_eval_set`).
 - Note: Reported metrics are intended for subject-grouped evaluation output, not in-sample prediction export.
 
 ## Model Performance (Table 2)
@@ -497,6 +501,26 @@ python main.py --config configs/pipeline_config.yaml
         ]
         return "\n".join(lines)
 
+    def _threshold_comparison_section(self) -> str:
+        path = self.metrics_dir / "metrics_threshold_comparison.csv"
+        if not path.exists():
+            return ""
+        return (
+            "## Binary threshold comparison (supplemental)\n"
+            "\n"
+            "**Warning:** `metrics.csv` and Table 2 report accuracy, F1, sensitivity, and "
+            "specificity at **`threshold_source=unbiased_train_fold`** (Youden J fit on each "
+            "LOSO train fold, applied to held-out subjects). Rows labeled "
+            "**`optimistic_eval_set`** in `metrics_threshold_comparison.csv` re-tune Youden J on "
+            "the **full pooled OOF set** — metrics such as `accuracy_eval_youden` are "
+            "**optimistic** and must **not** be reported as unbiased generalization. "
+            "`delta_accuracy_vs_train_fold` quantifies that optimism gap only.\n"
+            "\n"
+            "Artifact: `metrics_threshold_comparison.csv` (`unbiased_train_fold`, "
+            "`fixed_0.5`, `optimistic_eval_set`).\n"
+            "\n"
+        )
+
     def _ethics_section(self) -> str:
         ethics_path = Path(__file__).resolve().parents[3] / "docs" / "ethics.md"
         paper_path = Path(__file__).resolve().parents[3] / "docs" / "paper" / "ethics_statement.md"
@@ -540,9 +564,10 @@ python main.py --config configs/pipeline_config.yaml
         lines = [
             "## Sensor Position Ablation",
             "",
-            "AUC for each subset of the four IMU positions (head, lower back, "
-            "left foot, right foot). Identifies the minimum sensor configuration "
-            "for acceptable screening performance.",
+            "Leave-one-subject-out macro-OVR AUC for each subset of the four IMU "
+            "positions (head, lower back, left foot, right foot). Same validation "
+            "protocol as the primary evaluator and feature ablation. Identifies the "
+            "minimum sensor configuration for acceptable screening performance.",
             "",
             "| Sensor Subset | # Sensors | # Features | AUC (mean) | AUC (std) |",
             "|---|---:|---:|---:|---:|",
@@ -607,7 +632,10 @@ python main.py --config configs/pipeline_config.yaml
         if pair_path.exists():
             lines.append(
                 "See `cross_cohort_pairwise.csv` for the full 8x8 train-on-A / test-on-B "
-                "accuracy matrix and `cross_cohort_pairwise.{pdf,png}` for the heatmap."
+                "matrix (macro-F1, macro OvR AUC, and accuracy). "
+                "The primary heatmap `cross_cohort_pairwise.{pdf,png}` uses **macro-F1** "
+                "(preferred under class imbalance); "
+                "`cross_cohort_pairwise_auc.{pdf,png}` is supplemental."
             )
         return "\n".join(lines)
 

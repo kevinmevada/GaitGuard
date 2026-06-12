@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import pickle
 import secrets
 import sys
 import time
@@ -123,6 +122,7 @@ from src.evaluation.research_disclaimers import (  # type: ignore
     screening_note,
 )
 from src.preprocessing.signal_processor import SignalProcessor  # type: ignore
+from src.utils.checkpoint_io import CheckpointIntegrityError, load_checkpoint  # type: ignore
 
 
 def parse_cors_origins(value: str | None) -> list[str]:
@@ -131,17 +131,40 @@ def parse_cors_origins(value: str | None) -> list[str]:
     return [origin.strip() for origin in value.split(",") if origin.strip()]
 
 
-cors_origins = parse_cors_origins(os.getenv("CORS_ORIGINS"))
-allow_all_origins = cors_origins == ["*"]
+_DEFAULT_LOCAL_CORS_ORIGINS = (
+    "http://localhost:8001",
+    "http://127.0.0.1:8001",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+)
 
-if not cors_origins:
-    cors_origins = ["*"]
-    allow_all_origins = True
-elif not allow_all_origins:
-    # Always allow local frontend dev hosts even when env var is restrictive.
+
+def resolve_cors_origins(value: str | None) -> tuple[list[str], bool]:
+    """Resolve allowed CORS origins and whether credentials may use a wildcard.
+
+    Unset ``CORS_ORIGINS`` → localhost dev hosts only (denies arbitrary cross-origin sites).
+    Explicit ``*`` is rejected and replaced with localhost defaults.
+    """
+    origins = parse_cors_origins(value)
+    if origins == ["*"]:
+        logger.warning(
+            "CORS_ORIGINS='*' is not permitted; using localhost-only defaults. "
+            "Set explicit frontend origin(s) in CORS_ORIGINS for production."
+        )
+        return list(_DEFAULT_LOCAL_CORS_ORIGINS), False
+    if not origins:
+        logger.info(
+            "CORS_ORIGINS unset; cross-origin access limited to localhost dev hosts. "
+            "Set CORS_ORIGINS to your deployed frontend URL(s) before going live."
+        )
+        return list(_DEFAULT_LOCAL_CORS_ORIGINS), False
     for local_origin in ("http://localhost:5500", "http://127.0.0.1:5500"):
-        if local_origin not in cors_origins:
-            cors_origins.append(local_origin)
+        if local_origin not in origins:
+            origins.append(local_origin)
+    return origins, False
+
+
+cors_origins, allow_all_origins = resolve_cors_origins(os.getenv("CORS_ORIGINS"))
 
 CONFIG_PATH = Path(os.getenv("CONFIG_PATH", PIPELINE_ROOT / "configs" / "pipeline_config.yaml"))
 MODEL_DIR = Path(os.getenv("MODEL_DIR", PIPELINE_ROOT / "results" / "checkpoints"))
@@ -194,6 +217,18 @@ patient_schema_mismatch: bool = False
 trial_schema_mismatch: bool = False
 anomaly_schema_message: str = ""
 clinical_threshold: dict[str, Any] = {}
+runtime_dependencies: dict[str, dict[str, Any]] = {}
+
+# Modules probed for /health; PyWavelets is mandatory at startup (api/requirements.txt).
+_DEPENDENCY_MODULES: dict[str, str] = {
+    "PyWavelets": "pywt",
+    "antropy": "antropy",
+    "nolds": "nolds",
+    "ahrs": "ahrs",
+    "slowapi": "slowapi",
+    "python-dotenv": "dotenv",
+}
+_STARTUP_REQUIRED_DEPENDENCIES = ("PyWavelets",)
 
 
 # ---------------------------------------------------------------------------
@@ -209,13 +244,56 @@ def load_config() -> dict[str, Any]:
 
 
 def load_pickle(path: Path) -> Any:
-    with open(path, "rb") as fh:
-        return pickle.load(fh)
+    """Load a signed checkpoint; rejects files missing from the manifest."""
+    try:
+        return load_checkpoint(path, manifest_dir=path.parent, require_manifest=True)
+    except CheckpointIntegrityError as exc:
+        raise RuntimeError(
+            f"Checkpoint integrity check failed for {path.name}: {exc}. "
+            "Retrain models or refresh checkpoint_manifest.json from a trusted source."
+        ) from exc
+
+
+def _probe_runtime_dependencies() -> dict[str, dict[str, Any]]:
+    """Import-check optional/required runtime libraries for health reporting."""
+    status: dict[str, dict[str, Any]] = {}
+    for label, module_name in _DEPENDENCY_MODULES.items():
+        try:
+            __import__(module_name)
+            status[label] = {
+                "available": True,
+                "module": module_name,
+                "required_at_startup": label in _STARTUP_REQUIRED_DEPENDENCIES,
+            }
+        except ImportError as exc:
+            status[label] = {
+                "available": False,
+                "module": module_name,
+                "required_at_startup": label in _STARTUP_REQUIRED_DEPENDENCIES,
+                "error": str(exc),
+            }
+    return status
+
+
+def _assert_startup_dependencies(dep_status: dict[str, dict[str, Any]]) -> None:
+    """Fail fast before serving requests if mandatory libs are missing."""
+    for label in _STARTUP_REQUIRED_DEPENDENCIES:
+        entry = dep_status.get(label, {})
+        if not entry.get("available"):
+            if label == "PyWavelets":
+                raise RuntimeError(
+                    "PyWavelets required for wavelet feature computation. "
+                    "Install api/requirements.txt (PyWavelets>=1.4.0) and redeploy."
+                )
+            raise RuntimeError(
+                f"{label} required. Install api/requirements.txt and redeploy."
+            )
 
 
 def _verify_nonlinear_runtime_dependencies(
     patient_cols: list[str],
     trial_cols: list[str],
+    dep_status: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """
     Fail fast if schema-required feature libs are missing.
@@ -236,26 +314,22 @@ def _verify_nonlinear_runtime_dependencies(
     needs_pywt = any("wavelet_" in c for c in all_cols)
 
     missing: list[str] = []
-    if needs_antropy:
+    dep_status = dep_status or runtime_dependencies
+
+    def _require(label: str, module_name: str, needed: bool) -> None:
+        if not needed:
+            return
+        if dep_status.get(label, {}).get("available"):
+            return
         try:
-            import antropy  # noqa: F401
+            __import__(module_name)
         except ImportError:
-            missing.append("antropy")
-    if needs_nolds:
-        try:
-            import nolds  # noqa: F401
-        except ImportError:
-            missing.append("nolds")
-    if needs_ahrs:
-        try:
-            import ahrs  # noqa: F401
-        except ImportError:
-            missing.append("ahrs")
-    if needs_pywt:
-        try:
-            import pywt  # noqa: F401
-        except ImportError:
-            missing.append("PyWavelets")
+            missing.append(label)
+
+    _require("antropy", "antropy", needs_antropy)
+    _require("nolds", "nolds", needs_nolds)
+    _require("ahrs", "ahrs", needs_ahrs)
+    _require("PyWavelets", "pywt", needs_pywt)
 
     if missing:
         raise RuntimeError(
@@ -278,9 +352,11 @@ def load_resources() -> None:
     global anomaly_models, anomaly_scalers, trial_feature_medians
     global expected_patient_feature_count, expected_trial_feature_count
     global anomaly_feature_schema, patient_schema_mismatch, trial_schema_mismatch
-    global anomaly_schema_message, clinical_threshold
+    global anomaly_schema_message, clinical_threshold, runtime_dependencies
 
     config = load_config()
+    runtime_dependencies = _probe_runtime_dependencies()
+    _assert_startup_dependencies(runtime_dependencies)
     loaded_threshold = load_clinical_threshold_artifact(CLINICAL_THRESHOLD_PATH)
     if loaded_threshold:
         clinical_threshold = loaded_threshold
@@ -347,7 +423,11 @@ def load_resources() -> None:
         .columns.tolist()
     )
     trial_feature_columns = list(parquet_trial_columns)
-    _verify_nonlinear_runtime_dependencies(patient_feature_columns, trial_feature_columns)
+    _verify_nonlinear_runtime_dependencies(
+        patient_feature_columns,
+        trial_feature_columns,
+        dep_status=runtime_dependencies,
+    )
 
     for model_name in ["ensemble", "lightgbm", "random_forest", "xgboost", "svm"]:
         model_path = MODEL_DIR / f"{model_name}.pkl"
@@ -1036,8 +1116,19 @@ async def root() -> dict[str, Any]:
 @app.get("/health")
 async def health_check() -> dict[str, Any]:
     try:
+        deps = runtime_dependencies or _probe_runtime_dependencies()
+        missing_required = [
+            name
+            for name, info in deps.items()
+            if info.get("required_at_startup") and not info.get("available")
+        ]
+        missing_inference = [
+            name for name, info in deps.items() if not info.get("available")
+        ]
         status = "healthy"
-        if patient_schema_mismatch or trial_schema_mismatch:
+        if missing_required:
+            status = "unhealthy"
+        elif patient_schema_mismatch or trial_schema_mismatch or missing_inference:
             status = "degraded"
         return {
             "status": status,
@@ -1049,6 +1140,8 @@ async def health_check() -> dict[str, Any]:
             "patient_schema_mismatch": patient_schema_mismatch,
             "trial_schema_mismatch": trial_schema_mismatch,
             "anomaly_schema_message": anomaly_schema_message or None,
+            "dependencies": deps,
+            "missing_required_dependencies": missing_required,
             "api_version": "2.0.0",
         }
     except Exception:
@@ -1057,6 +1150,7 @@ async def health_check() -> dict[str, Any]:
             "models_loaded": 0,
             "anomaly_models_loaded": 0,
             "feature_count": 0,
+            "dependencies": runtime_dependencies or {},
             "api_version": "2.0.0",
         }
 

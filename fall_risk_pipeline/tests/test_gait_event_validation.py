@@ -29,6 +29,9 @@ def processor_config() -> dict:
             "highpass_cutoff_hz": 0.1,
             "madgwick_beta": 0.1,
             "gait_event_source": "algorithm",
+            "heel_strike_threshold_mode": "prominence",
+            "heel_strike_peak_percentile": 85,
+            "heel_strike_min_interval_s": 0.5,
         },
     }
 
