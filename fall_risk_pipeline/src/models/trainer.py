@@ -4,7 +4,6 @@ import json
 import warnings
 from pathlib import Path
 from typing import Any
-from typing import Any
 
 import lightgbm as lgb
 import numpy as np
@@ -61,6 +60,35 @@ class ModelTrainer:
         self.random_state = config["models"]["evaluation"]["random_state"]
         self._fit_y: np.ndarray | None = None
 
+    @staticmethod
+    def _xgb_sample_weights(y: np.ndarray, config: dict) -> np.ndarray | None:
+        """Sklearn-style balanced per-sample weights for multiclass XGBoost."""
+        y = np.asarray(y).astype(int)
+        n_classes = len(np.unique(y))
+        if n_classes <= 2 and is_binary_task(y, config):
+            return None
+        counts = np.bincount(y, minlength=n_classes).astype(float)
+        counts = np.where(counts == 0, 1.0, counts)
+        class_weights = len(y) / (n_classes * counts)
+        return class_weights[y]
+
+    def _pipeline_fit_params(self, name: str, y: np.ndarray) -> dict[str, Any]:
+        if name != "xgboost":
+            return {}
+        weights = self._xgb_sample_weights(y, self.config)
+        if weights is None:
+            return {}
+        return {"clf__sample_weight": weights}
+
+    def fit_pipeline(self, name: str, pipeline: Pipeline, X, y, **extra: Any) -> Pipeline:
+        """Fit a sklearn pipeline; inject XGBoost multiclass sample weights when needed."""
+        fit_params = {**self._pipeline_fit_params(name, y), **extra}
+        if fit_params:
+            pipeline.fit(X, y, **fit_params)
+        else:
+            pipeline.fit(X, y)
+        return pipeline
+
     def run(self):
         """Train base models and ensembles.
 
@@ -115,7 +143,7 @@ class ModelTrainer:
                     model_name, X, y, groups, n_trials=self.n_trials, timeout=self.timeout
                 )
                 best_pipeline = self._build_pipeline_from_params(model_name, best_params, y)
-                best_pipeline.fit(X, y)
+                self.fit_pipeline(model_name, best_pipeline, X, y)
 
                 results[model_name] = {
                     "pipeline": best_pipeline,
@@ -226,7 +254,7 @@ class ModelTrainer:
             )
 
             pipeline = self._build_pipeline_from_params(name, best_params, y_train)
-            pipeline.fit(X_train, y_train)
+            self.fit_pipeline(name, pipeline, X_train, y_train)
             proba = pipeline.predict_proba(X_val)
             outer_scores.append(self._roc_auc_from_proba(y_val, proba))
 
@@ -244,6 +272,7 @@ class ModelTrainer:
 
         def objective(trial):
             pipeline = self._build_pipeline(name, trial)
+            fit_params = self._pipeline_fit_params(name, y)
             scores = cross_val_score(
                 pipeline,
                 X,
@@ -252,6 +281,7 @@ class ModelTrainer:
                 scoring=scoring,
                 groups=groups,
                 n_jobs=self.cv_jobs,
+                fit_params=fit_params if fit_params else None,
             )
             return float(np.mean(scores))
 
@@ -383,7 +413,7 @@ class ModelTrainer:
             clean = {
                 k: v
                 for k, v in params.items()
-                if k not in ("scale_pos_weight", "objective", "num_class", "eval_metric")
+                if k not in ("scale_pos_weight", "objective", "num_class", "eval_metric", "_sample_weight")
             }
             return xgb.XGBClassifier(
                 **clean,

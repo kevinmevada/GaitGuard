@@ -197,7 +197,7 @@ class FeatureAblationStudy:
             raise FileNotFoundError("Cannot compute SHAP top features without a checkpoint.")
 
         model = skbase.clone(checkpoint)
-        model.fit(X, y)
+        self.trainer.fit_pipeline(self.reference_model, model, X, y)
         clf = model.named_steps.get("clf") or model.named_steps.get("classifier")
         if clf is None and hasattr(model, "named_steps") and model.named_steps:
             clf = model.named_steps[list(model.named_steps.keys())[-1]]
@@ -253,7 +253,7 @@ class FeatureAblationStudy:
                 continue
 
             fold_model = skbase.clone(checkpoint)
-            fold_model.fit(X[train_idx], y[train_idx])
+            self.trainer.fit_pipeline(self.reference_model, fold_model, X[train_idx], y[train_idx])
 
             if binary_task:
                 proba = fold_model.predict_proba(X[test_idx])

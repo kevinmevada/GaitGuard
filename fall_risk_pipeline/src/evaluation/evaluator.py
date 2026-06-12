@@ -111,6 +111,10 @@ class Evaluator:
         mode = "FAST (per-fold refit)" if self.fast else "FULL nested CV"
         logger.info(f"Evaluator initialized — mode: {mode}")
 
+    def _fit_fold_model(self, name: str, model, X, y) -> None:
+        """LOSO fold fit with XGBoost multiclass sample weights when applicable."""
+        self.trainer.fit_pipeline(name, model, X, y)
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -243,7 +247,7 @@ class Evaluator:
 
             import sklearn.base as skbase
             fold_model = skbase.clone(checkpoint)
-            fold_model.fit(X[train_idx], y[train_idx])
+            self._fit_fold_model(name, fold_model, X[train_idx], y[train_idx])
 
             test_prob, pred_ty, pred_05, thresh = self._loso_fold_classifications(
                 fold_model, X, y, train_idx, test_idx
@@ -339,7 +343,7 @@ class Evaluator:
             tuned = []
             for name, ckpt in checkpoints.items():
                 fold_model = skbase.clone(ckpt)
-                fold_model.fit(X[train_idx], y[train_idx])
+                self._fit_fold_model(name, fold_model, X[train_idx], y[train_idx])
                 tuned.append((name, {"pipeline": fold_model, "cv_auc": 0.0}))
             top_models = self._select_top_base_models(tuned, top_k)
 
@@ -442,7 +446,9 @@ class Evaluator:
         best_pipeline = self.trainer._build_pipeline_from_params(
             name, best_params, y[train_idx]
         )
-        best_pipeline.fit(X[train_idx], y[train_idx])
+        self._fit_fold_model(
+            name, best_pipeline, X[train_idx], y[train_idx]
+        )
 
         test_prob, pred_ty, pred_05, thresh = self._loso_fold_classifications(
             best_pipeline, X, y, train_idx, test_idx
@@ -515,7 +521,9 @@ class Evaluator:
             best_pipeline = self.trainer._build_pipeline_from_params(
                 name, best_params, y[train_idx]
             )
-            best_pipeline.fit(X[train_idx], y[train_idx])
+            self._fit_fold_model(
+                name, best_pipeline, X[train_idx], y[train_idx]
+            )
             tuned_results.append((name, {"pipeline": best_pipeline, "cv_auc": best_score}))
         return sorted(tuned_results, key=lambda item: item[1]["cv_auc"], reverse=True)[:top_k]
 
@@ -1403,7 +1411,7 @@ class Evaluator:
                 continue
 
             fold_model = skbase.clone(checkpoint)
-            fold_model.fit(X[train_idx], y[train_idx])
+            self._fit_fold_model(name, fold_model, X[train_idx], y[train_idx])
 
             remaining = max_oof - n_explained
             idx = test_idx[:remaining]
@@ -1469,7 +1477,7 @@ class Evaluator:
             self._shap_loso_aggregate(name, X, y, groups, feat_names)
             return
 
-        checkpoint.fit(X, y)
+        self.trainer.fit_pipeline(name, checkpoint, X, y)
         x_proc = self._transform_for_shap(checkpoint, X)
 
         n_explain = min(int(self.config["explainability"]["n_shap_samples"]), len(x_proc))
@@ -1709,7 +1717,7 @@ class Evaluator:
                 if len(np.unique(y[train_idx])) < 2:
                     continue
                 fold_model = skbase.clone(checkpoint)
-                fold_model.fit(X[train_idx], y[train_idx])
+                self._fit_fold_model(name, fold_model, X[train_idx], y[train_idx])
 
                 if binary_task:
                     proba = fold_model.predict_proba(X[test_idx])[:, 1]

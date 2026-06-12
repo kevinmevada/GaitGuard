@@ -30,6 +30,7 @@ from sklearn.metrics import roc_auc_score
 
 from src.dataset.label_policy import is_binary_task
 from src.evaluation.multiclass_metrics import predict_multiclass
+from src.models.trainer import ModelTrainer
 from src.features.feature_matrix import load_patient_feature_matrix
 from src.utils.reproducibility import get_pipeline_seed
 
@@ -169,6 +170,8 @@ def _loso_evaluate_auc(
     binary = is_binary_task(y, config)
     all_true: list[int] = []
     all_probs: list[Any] = []
+    trainer = ModelTrainer(config)
+    model_name = str(config.get("ablation", {}).get("reference_model", "xgboost"))
 
     for subj in np.unique(groups):
         test_idx = np.where(groups == subj)[0]
@@ -177,7 +180,7 @@ def _loso_evaluate_auc(
             continue
 
         model = skbase.clone(checkpoint)
-        model.fit(X[train_idx], y[train_idx])
+        trainer.fit_pipeline(model_name, model, X[train_idx], y[train_idx])
 
         if binary:
             proba = model.predict_proba(X[test_idx])
