@@ -237,6 +237,7 @@ class ModelTrainer:
         cv = StratifiedGroupKFold(
             n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
         )
+        # Safe with evaluator Parallel(prefer="processes"): each worker gets its own Trainer copy.
         self._fit_y = np.asarray(y).astype(int)
 
         scoring = roc_auc_scoring_name(y, self.config)

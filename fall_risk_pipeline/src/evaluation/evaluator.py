@@ -177,15 +177,15 @@ class Evaluator:
             pd.DataFrame(),
             pd.DataFrame(),
         )
+        pairwise_df, vs_ref_df = self._run_auc_pairwise_tests(all_results, best_name)
         if binary_task:
-            pairwise_df, vs_ref_df = self._run_auc_pairwise_tests(all_results, best_name)
             mcnemar_pairwise_df, mcnemar_vs_ref_df, fold_disc_df = self._run_mcnemar_tests(
                 all_results, best_name
             )
         else:
             logger.info(
-                "Skipping DeLong/McNemar/threshold/ROC-PR (binary-only); "
-                "multiclass uses macro-OVR AUC and argmax predictions."
+                "Skipping DeLong/McNemar (not yet implemented for multiclass); "
+                "bootstrap AUC CIs are reported per model."
             )
 
         self._shap_analysis(best_name, X, y, groups, feat_names, cohorts)
@@ -1784,13 +1784,6 @@ class Evaluator:
         logger.info(f"Ensemble comparison saved → {comp_path}")
 
         if len(ensemble_results) < 2:
-            return
-
-        first = next(iter(ensemble_results.values()))
-        if not is_binary_task(np.asarray(first["y_true"]), self.config):
-            logger.info(
-                "Skipping ensemble pairwise AUC tests (DeLong/bootstrap are binary-only)."
-            )
             return
 
         eval_cfg = self.config.get("models", {}).get("evaluation", {})

@@ -27,17 +27,19 @@ These constraints are **acceptable for a methods-focused *Sensors* paper** when 
 
 1. **Internal validation only** — Performance metrics (e.g. LOSO macro AUC, Youden sensitivity/specificity) are from **cross-validation on the same dataset**, not independent prospective testing.
 
-2. **Not medical advice** — Text such as “may warrant further clinical assessment” is intentionally non-directive. It does **not** recommend a specific treatment, admission, or intervention.
+2. **Global feature selection before LOSO** — Feature selection was performed globally on all 260 patients prior to LOSO evaluation, which may modestly overstate feature-subset stability; model accuracy estimates are unaffected as Optuna tuning and prediction remain strictly within each LOSO fold.
 
-3. **Label heterogeneity** — Binary collapse of orthopedic and neurological tiers (if used) merges clinically distinct groups; multiclass pathology tiers are preferred for reporting.
+3. **Not medical advice** — Text such as “may warrant further clinical assessment” is intentionally non-directive. It does **not** recommend a specific treatment, admission, or intervention.
 
-4. **Single-trial API inference** — The public API scores one uploaded walk. Training used multi-trial patient aggregation (mean, variability, trend). See [`inference_single_trial_limitation.md`](inference_single_trial_limitation.md).
+4. **Label heterogeneity** — Binary collapse of orthopedic and neurological tiers (if used) merges clinically distinct groups; multiclass pathology tiers are preferred for reporting.
 
-5. **Thresholds** — The operating point uses Youden’s J from internal LOSO validation. It is **not** calibrated to Morse Fall Scale, STRATIFY, or other bedside tools without a dedicated study.
+5. **Single-trial API inference** — The public API scores one uploaded walk. Training used multi-trial patient aggregation (mean, variability, trend). See [`inference_single_trial_limitation.md`](inference_single_trial_limitation.md).
 
-6. **Generalization** — Sensor type, placement, walking protocol, and cohort mix may not match other populations. External validation is required before operational use.
+6. **Thresholds** — The operating point uses Youden’s J from internal LOSO validation. It is **not** calibrated to Morse Fall Scale, STRATIFY, or other bedside tools without a dedicated study.
 
-7. **Anomaly detection** — Unsupervised flags mark deviation from healthy training references; they are not validated predictors of falls or adverse events.
+7. **Generalization** — Sensor type, placement, walking protocol, and cohort mix may not match other populations. External validation is required before operational use.
+
+8. **Anomaly detection** — Unsupervised flags mark deviation from healthy training references; they are not validated predictors of falls or adverse events.
 
 ---
 

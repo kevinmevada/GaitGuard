@@ -25,12 +25,36 @@ from src.evaluation.multiclass_metrics import build_multiclass_metric_payload
 from src.models.deep_models import (
     DEEP_MODEL_REGISTRY,
     DeepModelTrainer,
+    GaitTransformer,
     build_deep_model,
     create_windows,
     trial_to_tensor,
 )
 from src.utils.progress import progress_bar, stderr_is_tty
 from src.utils.reproducibility import get_pipeline_seed, set_global_seed
+
+
+def extract_attention_weights(
+    model: GaitTransformer,
+    X: np.ndarray,
+    device: torch.device,
+) -> np.ndarray:
+    """Mean self-attention to each time step (last encoder layer, batch/query avg)."""
+    model.eval().to(device)
+    x = torch.tensor(X, dtype=torch.float32, device=device).transpose(1, 2)
+    with torch.no_grad():
+        x = model.input_proj(x)
+        x = model.pos_enc(x)
+        attn = None
+        for layer in model.encoder.layers:
+            attn_out, weights = layer.self_attn(
+                x, x, x, need_weights=True, average_attn_weights=True,
+            )
+            attn = weights
+            x = layer.norm1(x + layer.dropout1(attn_out))
+            ff = layer.linear2(layer.dropout(layer.activation(layer.linear1(x))))
+            x = layer.norm2(x + layer.dropout2(ff))
+    return attn.mean(dim=(0, 1)).cpu().numpy()
 
 
 class DeepLearningPipeline:
@@ -197,6 +221,14 @@ class DeepLearningPipeline:
                 on_epoch=on_epoch,
             )
 
+            if model_name == "gait_transformer":
+                self._gait_transformer_attn = {
+                    "state_dict": {k: v.cpu().clone() for k, v in model.state_dict().items()},
+                    "X_norm": X_test_norm[: min(128, len(X_test_norm))].copy(),
+                    "n_channels": n_channels,
+                    "n_classes": n_classes,
+                }
+
             proba_windows = trainer.predict_proba(model, X_test_norm)
             participant_proba = proba_windows.mean(axis=0)
 
@@ -267,6 +299,73 @@ class DeepLearningPipeline:
 
         return X_train_norm, X_apply_norm
 
+    def _plot_gait_transformer_attention(self) -> None:
+        """Save averaged temporal attention map from last LOSO fold GaitTransformer."""
+        info = getattr(self, "_gait_transformer_attn", None)
+        if not info:
+            return
+        model = build_deep_model(
+            "gait_transformer", info["n_channels"], self.window_len, info["n_classes"]
+        )
+        model.load_state_dict(info["state_dict"])
+        trainer = DeepModelTrainer(self.config)
+        weights = extract_attention_weights(model, info["X_norm"], trainer.device)
+        if weights.size == 0:
+            return
+
+        reporting = self.config.get("reporting", {})
+        ext = str(reporting.get("figure_format", "png"))
+        dpi = int(reporting.get("figure_dpi", 150))
+        stem = "dl_gait_transformer_attention"
+        fs = float(self.config.get("dataset", {}).get("sampling_rate", 100))
+        t_axis = np.arange(len(weights)) / fs
+
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(8, 3))
+        ax.plot(t_axis, weights, color="#0a84ff", linewidth=1.5)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Mean attention weight")
+        ax.set_title("GaitTransformer — averaged self-attention vs time (last LOSO fold)")
+        ax.grid(True, alpha=0.25)
+        fig.tight_layout()
+        fig.savefig(self.figures_dir / f"{stem}.{ext}", dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+
+        pd.DataFrame({"time_s": t_axis, "attention": weights}).to_csv(
+            self.metrics_dir / f"{stem}.csv", index=False
+        )
+        logger.info(f"GaitTransformer attention map saved → {self.figures_dir / f'{stem}.{ext}'}")
+
+    def _merge_dl_significance_into_metrics(self, pval_df: pd.DataFrame) -> None:
+        """Write DL vs classical bootstrap p-values into metrics.csv for paper tables."""
+        metrics_path = self.metrics_dir / "metrics.csv"
+        if not metrics_path.exists() or pval_df.empty:
+            return
+        mdf = pd.read_csv(metrics_path)
+        pv = pval_df.set_index("dl_model")
+        for i, row in mdf.iterrows():
+            model = str(row["model"])
+            if model not in pv.index:
+                continue
+            rec = pv.loc[model]
+            mdf.at[i, "p_delong_vs_best"] = float("nan")
+            mdf.at[i, "p_delong_fmt"] = "n/a (multiclass)"
+            mdf.at[i, "p_bootstrap_mwu_vs_best"] = rec.get("p_bootstrap_mwu", float("nan"))
+            mdf.at[i, "auc_reference_model"] = rec.get("classical_reference", "")
+        mdf.to_csv(metrics_path, index=False)
+        dl_metrics_path = self.metrics_dir / "deep_learning_metrics.csv"
+        if dl_metrics_path.exists():
+            ddf = pd.read_csv(dl_metrics_path)
+            for i, row in ddf.iterrows():
+                model = str(row["model"])
+                if model not in pv.index:
+                    continue
+                rec = pv.loc[model]
+                ddf.at[i, "p_bootstrap_mwu_vs_best"] = rec.get("p_bootstrap_mwu", float("nan"))
+                ddf.at[i, "classical_reference"] = rec.get("classical_reference", "")
+            ddf.to_csv(dl_metrics_path, index=False)
+
     # ─────────────────────────────────────────────────────────────
     # Main entry
     # ─────────────────────────────────────────────────────────────
@@ -307,6 +406,8 @@ class DeepLearningPipeline:
             try:
                 result = self._loso_evaluate(model_name, participants, n_channels, bar)
                 all_results[model_name] = result
+                if model_name == "gait_transformer":
+                    self._plot_gait_transformer_attention()
                 logger.info(
                     f"  {model_name}: AUC={result['auc']:.4f}  "
                     f"macro-F1={result['f1']:.4f}  acc={result['accuracy']:.4f}"
@@ -366,6 +467,17 @@ class DeepLearningPipeline:
             oof_path = self.metrics_dir / "deep_learning_oof_predictions.parquet"
             oof_df.to_parquet(oof_path, index=False)
             logger.info(f"DL OOF predictions saved → {oof_path}")
+
+            from src.evaluation.auc_significance import dl_vs_classical_auc_significance
+
+            eval_cfg = self.config.get("models", {}).get("evaluation", {})
+            n_boot = int(eval_cfg.get("delong_bootstrap_n", 1000))
+            seed = int(eval_cfg.get("random_state", self.seed))
+            pval_df = dl_vs_classical_auc_significance(
+                self.metrics_dir, n_bootstrap=n_boot, random_state=seed
+            )
+            if not pval_df.empty:
+                self._merge_dl_significance_into_metrics(pval_df)
 
         elapsed = time.time() - t0
         logger.info(f"=== Deep Learning Pipeline complete in {elapsed:.1f}s ===")

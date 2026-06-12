@@ -263,55 +263,41 @@ python main.py --config configs/pipeline_config.yaml
             logger.warning(f"Demographics table generation failed: {exc}")
 
     def _ensure_significance_pvalues(self) -> None:
-        """Recompute DeLong / McNemar p-values from saved OOF predictions if missing."""
-        label_mode = self.config.get("dataset", {}).get("label_mode", "multiclass")
-        if label_mode != "binary":
-            logger.info(
-                "Skipping DeLong/McNemar recomputation in report (binary-only tests; "
-                f"label_mode={label_mode})."
-            )
-            return
-
+        """Recompute AUC / McNemar p-values from saved OOF predictions if missing."""
         metrics_path = self.metrics_dir / "metrics.csv"
         oof_path = self.metrics_dir / "oof_predictions.parquet"
         if not metrics_path.exists() or not oof_path.exists():
             return
 
         df = pd.read_csv(metrics_path)
+        label_mode = self.config.get("dataset", {}).get("label_mode", "multiclass")
+        binary_task = label_mode == "binary"
         need_delong = (
             "p_delong_vs_best" not in df.columns or not df["p_delong_vs_best"].notna().any()
         )
-        need_mcnemar = (
+        need_bootstrap = (
+            "p_bootstrap_mwu_vs_best" not in df.columns
+            or not df["p_bootstrap_mwu_vs_best"].notna().any()
+        )
+        need_mcnemar = binary_task and (
             "p_mcnemar_vs_best" not in df.columns or not df["p_mcnemar_vs_best"].notna().any()
         )
-        if not need_delong and not need_mcnemar:
+        if not need_delong and not need_bootstrap and not need_mcnemar:
             return
+
+        from src.evaluation.auc_significance import (
+            _oof_group_to_result,
+            pairwise_auc_significance,
+        )
 
         oof = pd.read_parquet(oof_path)
         results: dict = {}
         for model in oof["model"].unique():
-            sub = oof[oof["model"] == model]
-            y_true = sub["y_true"].values
-            y_prob = sub["y_prob"].values
-            from sklearn.metrics import roc_auc_score, accuracy_score
-
-            entry: dict = {
-                "y_true": y_true,
-                "y_prob": y_prob,
-                "auc": float(roc_auc_score(y_true, y_prob)),
-                "accuracy": float(accuracy_score(y_true, (y_prob >= 0.5).astype(int))),
-            }
-            if "y_pred" in sub.columns:
-                entry["y_pred"] = sub["y_pred"].values.astype(int)
-            if "participant_id" in sub.columns:
-                entry["participant_ids"] = sub["participant_id"].values
-            results[model] = entry
+            results[str(model)] = _oof_group_to_result(oof[oof["model"] == model])
 
         eval_cfg = self.config.get("models", {}).get("evaluation", {})
 
-        if need_delong:
-            from src.evaluation.auc_significance import pairwise_auc_significance
-
+        if need_delong or need_bootstrap:
             ref = eval_cfg.get("auc_reference_model") or max(
                 results, key=lambda n: results[n]["auc"]
             )
@@ -731,9 +717,21 @@ python main.py --config configs/pipeline_config.yaml
             "Each model evaluated under the same Leave-One-Subject-Out protocol "
             "as the classical ML models (N participants).",
             "",
-            "| Architecture | AUC | 95% CI | Macro F1 | Accuracy |",
-            "|---|---:|---|---:|---:|",
         ]
+        pval_path = self.metrics_dir / "dl_vs_classical_pairwise_pvalues.csv"
+        pval_map: dict[str, dict] = {}
+        if pval_path.exists():
+            pv = pd.read_csv(pval_path)
+            pval_map = pv.set_index("dl_model").to_dict(orient="index")
+            lines.extend([
+                "| Architecture | AUC | 95% CI | Macro F1 | Accuracy | p (bootstrap MWU vs best classical) |",
+                "|---|---:|---|---:|---:|---:|",
+            ])
+        else:
+            lines.extend([
+                "| Architecture | AUC | 95% CI | Macro F1 | Accuracy |",
+                "|---|---:|---|---:|---:|",
+            ])
         for row in dl.itertuples(index=False):
             name = str(row.model).replace("dl_", "").replace("_", " ").title()
             auc_cell = f"{float(row.auc):.4f}" if pd.notna(row.auc) else "—"
@@ -742,10 +740,22 @@ python main.py --config configs/pipeline_config.yaml
                 if pd.notna(getattr(row, "auc_ci_low", float("nan")))
                 else "—"
             )
-            lines.append(
-                f"| {name} | {auc_cell} | {ci} | "
-                f"{float(row.macro_f1):.4f} | {float(row.accuracy):.4f} |"
-            )
+            p_cell = "—"
+            if pval_map:
+                pv = pval_map.get(str(row.model), {})
+                p_raw = pv.get("p_bootstrap_mwu")
+                if p_raw is not None and pd.notna(p_raw):
+                    p_cell = str(pv.get("p_bootstrap_mwu_fmt", f"{float(p_raw):.3f}"))
+            if pval_map:
+                lines.append(
+                    f"| {name} | {auc_cell} | {ci} | "
+                    f"{float(row.macro_f1):.4f} | {float(row.accuracy):.4f} | {p_cell} |"
+                )
+            else:
+                lines.append(
+                    f"| {name} | {auc_cell} | {ci} | "
+                    f"{float(row.macro_f1):.4f} | {float(row.accuracy):.4f} |"
+                )
 
         metrics_path = self.metrics_dir / "metrics.csv"
         if metrics_path.exists():
@@ -771,6 +781,12 @@ python main.py --config configs/pipeline_config.yaml
                     lines.append(
                         "Deep-model AUC is unavailable in this export because per-participant "
                         "OOF probability vectors were not saved."
+                    )
+                if pval_path.exists():
+                    lines.append(
+                        "Paired macro-OVR AUC significance vs best classical model: "
+                        "bootstrap Mann–Whitney U on LOSO OOF predictions "
+                        "(`dl_vs_classical_pairwise_pvalues.csv`)."
                     )
 
         lines.append("")
