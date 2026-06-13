@@ -2,7 +2,7 @@
 
 ## 1. Study design and objective
 
-This work is a retrospective secondary analysis of a public, de-identified wearable IMU gait dataset. The objective is pathology-tier gait screening using three supervised classes (healthy, orthopedic, neurological) as proxies for fall-risk stratification in mixed clinical populations. The analysis is implemented as an end-to-end reproducible pipeline with fixed configuration, deterministic seeding, and stage-wise artifact generation.
+This work is a retrospective secondary analysis of a public, de-identified wearable IMU gait dataset. The **primary** objective is Healthy-reference **gait anomaly screening**: trial-level unsupervised ensemble scores (isolation forest, local outlier factor, one-class SVM) evaluated with leave-one-subject-out (LOSO) out-of-fold scoring. Screening pseudo ground truth for evaluation metrics is non-Healthy vs Healthy trial labels (cohort proxy, not verified falls). **Secondary** supervised pathology-tier models (healthy, orthopedic, neurological) provide supplementary stratification benchmarks and must not be pooled with anomaly metrics in a single primary performance table. The analysis is implemented as an end-to-end reproducible pipeline with fixed configuration, deterministic seeding, and stage-wise artifact generation.
 
 ## 2. Dataset and cohorts
 
@@ -54,6 +54,7 @@ Trial-level features were extracted from multi-sensor signals across these domai
 
 - Temporal/gait-cycle metrics (e.g., stride timing, cadence, stance/swing characteristics)
 - Spectral features (including dominant frequency, spectral centroid/entropy, band powers)
+- Wavelet sub-band energy, energy ratios, and wavelet entropy (DWT decomposition)
 - Trunk dynamics (RMS, jerk, Lyapunov, approximate entropy, sample entropy, DFA)
 - Orientation/postural features (tilt/pitch/roll variability and sway surrogates)
 - Asymmetry features (between-limb timing and dynamic imbalance indicators)
@@ -73,7 +74,7 @@ To control dimensionality and improve generalization, feature selection was appl
 - Secondary ranking: SHAP-based importance pruning
 - Export cap: <=20 selected features (configurable)
 
-To preserve mechanistically relevant nonlinear dynamics in final training, required feature-family retention rules were enforced for specified substrings (including `sampen` and `dfa`) when configured. Final manuscript numbers should only claim retained nonlinear families after rerun-generated model metrics and SHAP outputs confirm their propagation into trained checkpoints and evaluation exports.
+To preserve mechanistically relevant nonlinear dynamics in final training, required feature-family retention rules were enforced for specified substrings (including `sampen` and `dfa`) when configured. When the family exceeds `max_required_features`, candidates are ranked by mean |SHAP| before the cap is applied (`required_feature_shap_audit.csv`). Final manuscript numbers should only claim retained nonlinear families after rerun-generated model metrics and SHAP outputs confirm their propagation into trained checkpoints and evaluation exports.
 
 ## 7. Tabular models and ensemble
 
@@ -97,22 +98,31 @@ The deep branch benchmarked five architectures:
 - CNN-1D
 - BiLSTM with attention
 
-Deep evaluation used leave-one-subject-out (LOSO) design with per-subject holdout. Mixed precision (AMP) was enabled on CUDA when available. Probability outputs were numerically stabilized before metric computation (finite-value guard, clipping, and row normalization) to ensure valid multiclass AUC evaluation.
+Deep evaluation used leave-one-subject-out (LOSO) design with per-subject holdout. Each LOSO train fold held out ~10% of remaining participants for inner validation (participant-level split; no window leakage). Mixed precision (AMP) was enabled on CUDA when available. Probability outputs were numerically stabilized before metric computation (finite-value guard, clipping, and row normalization) to ensure valid multiclass AUC evaluation.
+
+Hyperparameter protocol (ML-042): tabular models re-tune with Optuna on each LOSO train fold. Deep models use fixed global settings from `pipeline_config.yaml` (`learning_rate`, `batch_size`, `max_epochs`, early stopping) unless `deep_learning.loso_hyperparameter_tuning.enabled` is set; when enabled, learning rate is searched per LOSO fold via Optuna on the inner participant validation split (short-epoch search budget, then full training with the selected rate). Exported `deep_learning_metrics.csv` includes `hyperparameter_protocol` (`fixed_global_config` vs `loso_inner_participant_optuna_lr`).
+
+Window overlap protocol (ML-043): trials are sliced with 50% overlap (`overlap: 0.5`) to increase held-out participant coverage for participant-level soft voting at inference. Overlapping windows are highly correlated; by default, inner train/validation use `training_window_deduplication: true`, retaining at most one window per non-overlapping stride block per trial. Participant-balanced CE weights and participant-level validation AUC / soft-vote aggregation further reduce window-level pseudo-replication. Metrics export `window_overlap`, `training_window_protocol`, and `inference_window_protocol`.
 
 ## 9. Evaluation protocol and metrics
 
 ### 9.1 Primary protocol
 
-Primary performance estimation used participant-grouped validation (LOSO for deep models; grouped/nested scheme for tabular evaluation paths). This minimizes participant overlap risk between training and testing folds and was paired with an explicit grouped-vs-ungrouped sensitivity audit.
+**Primary endpoint (`anomaly_ensemble`):** trial-level Healthy-reference anomaly screening with LOSO out-of-fold evaluation (ANOM-001). For each held-out participant, one-class models (isolation forest, LOF, one-class SVM) were fit on Healthy training trials only; held-out trials received normalized decision scores averaged into an ensemble. Evaluation pseudo-label: non-Healthy trial = positive (screening target). Youden J thresholds were fit on OOF scores for sensitivity/specificity reporting. Artifacts: `anomaly_metrics.csv`, `anomaly_threshold.json`, `primary_endpoint.json`.
+
+**Secondary supervised protocol:** participant-grouped nested RFECV LOSO for pathology-tier tabular models (deploy-schema ensemble for API parity). This must not be pooled with primary anomaly metrics in a single headline table.
 
 ### 9.2 Primary and secondary metrics
 
-Primary metric:
+Primary metrics (anomaly ensemble, LOSO OOF):
+
+- ROC-AUC (non-Healthy vs Healthy pseudo-label)
+- PR-AUC
+- Sensitivity / specificity at Youden J threshold
+
+Secondary supervised metrics (pathology-tier tabular models):
 
 - Macro one-vs-rest AUC (multiclass)
-
-Secondary metrics:
-
 - Macro F1
 - Accuracy
 - Sensitivity/specificity summaries
@@ -125,11 +135,10 @@ For discrete operating-point metrics, thresholds were derived from training data
 
 Paired model-comparison procedures included:
 
-- DeLong-style paired AUC testing
-- Bootstrap-based paired comparisons
-- McNemar testing on paired categorical predictions
+- **Binary label mode:** DeLong-style paired AUC testing and McNemar testing on paired categorical predictions.
+- **Multiclass label mode (primary):** Bootstrap paired macro-OVR AUC differences with Benjamini–Hochberg FDR correction; DeLong is not applied to multiclass OvR scores. McNemar tests use argmax OOF class predictions (correct-vs-wrong discordant pairs).
 
-These tests were performed on aligned out-of-fold predictions to maintain pairing validity.
+All tests use aligned out-of-fold predictions to maintain pairing validity.
 
 ## 10. Explainability and robustness analyses
 
@@ -144,19 +153,19 @@ Robustness:
 - Sensor ablation (single-sensor through multi-sensor subsets)
 - Cross-cohort transfer evaluation (train on N-1 cohorts, test on held-out cohort)
 
-Protocol disclosure: unlike the primary tabular/deep evaluation paths, sensor ablation is run with **StratifiedGroupKFold (5 folds)** participant-grouped CV (not full LOSO) for computational tractability across all sensor-subset combinations. Sensor-ablation AUCs are grouped-CV estimates (5-fold StratifiedGroupKFold) rather than full LOSO, making them appropriate for within-experiment sensor-subset ranking but not directly comparable to primary LOSO AUC estimates. The ranking finding (head+right foot >= full 4-sensor) is robust to this protocol difference.
+Protocol disclosure: feature and sensor ablations use **leave-one-subject-out (LOSO)** with **per-fold nested RFECV** intersected with each scenario column mask (`nested_in_ablation: true`). Primary Table 2 tabular LOSO uses the same nested RFECV protocol on the full feature matrix. Ablation AUCs rank feature/sensor subsets within that shared protocol but remain exploratory (different column sets per scenario).
 
-For held-out cohorts with single-class test composition, AUC was marked undefined and accompanied by fallback confidence-oriented reporting fields.
+For held-out cohorts with single-class test composition, AUC was marked undefined and accompanied by fallback confidence-oriented reporting fields. Cohort subgroup rows in `metrics_by_cohort.csv` with `n < cohort_auc_min_n` (default 15) export `auc_status: unstable_small_n` and leave AUC / AUC CI / AUC-PR blank (NaN) so small-n point estimates are not cited as stable (ML-044).
 
-## 11. Anomaly analysis
+## 11. Anomaly screening (primary endpoint)
 
-In addition to supervised screening, unsupervised anomaly analysis was performed using:
+Trial-level Healthy-reference anomaly screening used three one-class detectors:
 
-- Isolation Forest
-- Local Outlier Factor
-- One-Class SVM
+- Isolation Forest (`contamination=0.1`, 100 trees)
+- Local Outlier Factor (`novelty=True`, adaptive `n_neighbors`)
+- One-Class SVM (RBF kernel, `nu=0.1`)
 
-A majority-vote decision rule (>=2 positive anomaly votes) generated a companion anomaly flag. This module is supplemental and does not replace supervised pathology-tier evaluation.
+`StandardScaler` was fit on Healthy training rows only. Per-method decision scores were min–max normalized (Healthy-reference range per LOSO fold) and averaged into an ensemble score. Deploy/API inference uses full-cohort Healthy-fit scalers with deploy-time calibration ranges (`deploy_calibration.json`) and LOSO Youden cutoff (`anomaly_threshold.json`). A majority-vote rule (≥2 of 3 methods) is retained as a secondary binary flag for interpretability.
 
 ## 12. Reproducibility and implementation
 

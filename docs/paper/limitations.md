@@ -10,7 +10,7 @@ This study has several important limitations. First, it was a **retrospective** 
 
 Second, evaluation was **entirely on the same dataset** used for feature and model development. We did not include external multi-site replication. Single-trial deployment inference (API) does not reproduce multi-trial patient-level aggregation (mean, standard deviation, range, and trend) used in training, which may underestimate uncertainty for real-world monitoring.
 
-Feature selection was performed globally on all 260 patients prior to LOSO evaluation, which may modestly overstate feature-subset stability; model accuracy estimates are unaffected as Optuna tuning and prediction remain strictly within each LOSO fold.
+Feature selection during evaluation uses **nested leave-one-subject-out RFECV** on each training fold (`nested_in_evaluation: true`), so reported accuracy and AUC are not inflated by global feature screening; global RFECV still defines the deployment feature list in `selected_features.json`.
 
 Third, this system is a **research prototype**. Outputs are not medical advice, regulatory-cleared diagnostics, or substitutes for established tools such as the Morse Fall Scale or STRATIFY. Risk thresholds were derived from internal Youden J optimization and are not calibrated to bedside screening scores without further study.
 

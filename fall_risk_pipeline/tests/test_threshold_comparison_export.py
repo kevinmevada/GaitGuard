@@ -25,7 +25,7 @@ def test_save_threshold_comparison_includes_threshold_source(tmp_path):
         },
         "reproducibility": {"seed": 42},
     }
-    ev = Evaluator(config, fast=True)
+    ev = Evaluator(config)
     ev.metrics_dir.mkdir(parents=True, exist_ok=True)
     ev._save_threshold_comparison({
         "xgboost": {

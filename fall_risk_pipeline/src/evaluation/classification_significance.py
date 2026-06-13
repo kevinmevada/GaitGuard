@@ -5,6 +5,10 @@ Each participant contributes exactly one held-out prediction per model (LOSO).
 Discordant counts are aggregated across all folds into a single 2×2 table, then
 ``statsmodels.stats.contingency_tables.mcnemar`` is applied — equivalent to
 summing per-fold confusion-matrix disagreements when folds are non-overlapping.
+
+For multiclass tasks, McNemar is applied to argmax class predictions using
+correct-vs-wrong discordant pairs only. This is an exploratory accuracy comparison,
+not a Stuart–Maxwell test for full multiclass contingency tables.
 """
 
 from __future__ import annotations
@@ -17,11 +21,31 @@ import pandas as pd
 from loguru import logger
 from statsmodels.stats.contingency_tables import mcnemar
 
-from src.evaluation.auc_significance import _format_pvalue
+from src.evaluation.auc_significance import _format_pvalue, apply_fdr_correction
+
+MCNEMAR_EXPLORATORY_SUFFIX = " (expl.)"
+MCNEMAR_INTERPRETATION_BINARY = "loso_oof_binary"
+MCNEMAR_INTERPRETATION_MULTICLASS = "multiclass_argmax_exploratory"
+
+
+def format_mcnemar_pvalue_display(p: float | str, *, exploratory: bool = False) -> str:
+    """Format McNemar p-value for export; multiclass argmax tests are labeled exploratory."""
+    if isinstance(p, str):
+        base = p
+    else:
+        base = _format_pvalue(p)
+    if exploratory and base not in ("ref", "—", ""):
+        return f"{base}{MCNEMAR_EXPLORATORY_SUFFIX}"
+    return base
 
 
 def predictions_from_result(res: dict[str, Any]) -> np.ndarray:
-    """Binary class predictions from stored OOF probabilities and threshold."""
+    """
+    Class predictions from stored OOF outputs.
+
+    Binary: thresholded ``y_prob`` (or ``y_pred`` when present).
+    Multiclass: argmax ``y_pred`` — McNemar on these is exploratory (ML-038).
+    """
     if "y_pred" in res:
         return np.asarray(res["y_pred"], dtype=int)
     y_prob = np.asarray(res["y_prob"], dtype=float)
@@ -110,13 +134,14 @@ def pairwise_classification_significance(
     *,
     reference: str | None = None,
     exact_mcnemar: bool = False,
+    apply_fdr: bool = True,
+    multiclass_mcnemar: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Pairwise McNemar tests on pooled LOSO out-of-fold classifications.
 
-    Returns
-    -------
-    pairwise_df, vs_reference_df, fold_discordant_df
+    When ``multiclass_mcnemar`` is True, p-values are labeled exploratory in
+    ``p_mcnemar_fmt`` (correct-vs-wrong argmax pairs; not Stuart–Maxwell).
     """
     if len(results) < 2:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -135,6 +160,12 @@ def pairwise_classification_significance(
     if reference is None:
         reference = max(names, key=lambda n: float(results[n]["accuracy"]))
 
+    interpretation = (
+        MCNEMAR_INTERPRETATION_MULTICLASS
+        if multiclass_mcnemar
+        else MCNEMAR_INTERPRETATION_BINARY
+    )
+
     pairwise_rows: list[dict[str, Any]] = []
     fold_rows: list[dict[str, Any]] = []
 
@@ -149,6 +180,7 @@ def pairwise_classification_significance(
         pairwise_rows.append({
             "model_a": model_a,
             "model_b": model_b,
+            "interpretation": interpretation,
             "accuracy_a": acc_a,
             "accuracy_b": acc_b,
             "delta_accuracy": acc_a - acc_b,
@@ -157,7 +189,9 @@ def pairwise_classification_significance(
             "both_correct": bc,
             "both_wrong": bw,
             "p_mcnemar": p_val,
-            "p_mcnemar_fmt": _format_pvalue(p_val),
+            "p_mcnemar_fmt": format_mcnemar_pvalue_display(
+                p_val, exploratory=multiclass_mcnemar
+            ),
             "reference_pair": reference in (model_a, model_b),
         })
         if len(pids) == len(y_ref):
@@ -168,6 +202,8 @@ def pairwise_classification_significance(
             )
 
     pairwise_df = pd.DataFrame(pairwise_rows)
+    if apply_fdr and not pairwise_df.empty:
+        pairwise_df = apply_fdr_correction(pairwise_df, "p_mcnemar", "fdr_q_mcnemar")
 
     vs_rows: list[dict[str, Any]] = []
     for name in names:
@@ -187,13 +223,20 @@ def pairwise_classification_significance(
         vs_rows.append({
             "model": name,
             "reference_model": reference,
+            "interpretation": interpretation,
             "p_mcnemar_vs_reference": p_val,
-            "p_mcnemar_fmt": _format_pvalue(p_val),
+            "p_mcnemar_fmt": format_mcnemar_pvalue_display(
+                p_val, exploratory=multiclass_mcnemar
+            ),
             "n_01_vs_reference": n_01,
             "n_10_vs_reference": n_10,
         })
 
     vs_reference_df = pd.DataFrame(vs_rows)
+    if apply_fdr and not vs_reference_df.empty:
+        vs_reference_df = apply_fdr_correction(
+            vs_reference_df, "p_mcnemar_vs_reference", "fdr_q_mcnemar_vs_reference"
+        )
     fold_discordant_df = pd.DataFrame(fold_rows)
 
     logger.info(

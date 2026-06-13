@@ -7,7 +7,7 @@ train the reference model under LOSO cross-validation and report macro-OVR AUC.
 Output
 ------
 results/metrics/sensor_ablation.csv
-    Columns: sensor_subset, n_features, auc_mean, auc_std, auc_ci_low, auc_ci_high,
+    Columns: sensor_subset, n_features, auc_mean, auc_bootstrap_std, auc_ci_low, auc_ci_high,
     validation (loso_subject_grouped)
 results/figures/models/sensor_ablation.{pdf,png}
     Bar chart comparing AUC across sensor subsets.
@@ -15,7 +15,6 @@ results/figures/models/sensor_ablation.{pdf,png}
 
 from __future__ import annotations
 
-import pickle
 import re
 from itertools import combinations
 from pathlib import Path
@@ -31,7 +30,11 @@ from sklearn.metrics import roc_auc_score
 from src.dataset.label_policy import is_binary_task
 from src.evaluation.multiclass_metrics import predict_multiclass
 from src.models.trainer import ModelTrainer
-from src.features.feature_matrix import load_patient_feature_matrix
+from src.features.feature_matrix import (
+    intersect_nested_rfecv_columns,
+    load_patient_feature_matrix,
+)
+from src.utils.checkpoint_io import CheckpointIntegrityError, load_checkpoint
 from src.utils.reproducibility import get_pipeline_seed
 
 SENSOR_POSITIONS = ["head", "lower_back", "left_foot", "right_foot"]
@@ -156,6 +159,8 @@ def _loso_evaluate_auc(
     checkpoint,
     config: dict,
     *,
+    feat_cols: list[str],
+    scenario_col_idx: list[int],
     n_bootstrap: int,
     random_state: int,
 ) -> dict[str, float]:
@@ -163,8 +168,13 @@ def _loso_evaluate_auc(
     True leave-one-subject-out: one participant held out per fold, macro-OVR AUC
     on pooled out-of-fold predictions (same protocol as feature_ablation).
     """
-    nan = {"auc": float("nan"), "auc_std": float("nan"), "auc_ci_low": float("nan"), "auc_ci_high": float("nan")}
-    if X.shape[1] == 0:
+    nan = {
+        "auc": float("nan"),
+        "auc_bootstrap_std": float("nan"),
+        "auc_ci_low": float("nan"),
+        "auc_ci_high": float("nan"),
+    }
+    if not scenario_col_idx:
         return nan
 
     binary = is_binary_task(y, config)
@@ -179,15 +189,21 @@ def _loso_evaluate_auc(
         if len(np.unique(y[train_idx])) < 2:
             continue
 
+        fold_cols = intersect_nested_rfecv_columns(
+            config, X, y, groups, feat_cols, train_idx, scenario_col_idx
+        )
+        if not fold_cols:
+            continue
+
         model = skbase.clone(checkpoint)
-        trainer.fit_pipeline(model_name, model, X[train_idx], y[train_idx])
+        trainer.fit_pipeline(model_name, model, X[train_idx][:, fold_cols], y[train_idx])
 
         if binary:
-            proba = model.predict_proba(X[test_idx])
+            proba = model.predict_proba(X[test_idx][:, fold_cols])
             score = proba[:, 1] if proba.shape[1] > 1 else proba.ravel()
             all_probs.extend(score.tolist())
         else:
-            proba, _ = predict_multiclass(model, X[test_idx])
+            proba, _ = predict_multiclass(model, X[test_idx][:, fold_cols])
             all_probs.append(proba)
 
         all_true.extend(y[test_idx].tolist())
@@ -202,7 +218,7 @@ def _loso_evaluate_auc(
             auc = float(roc_auc_score(y_true, y_prob))
         except ValueError:
             auc = float("nan")
-        ci_low, ci_high, auc_std = _bootstrap_binary_auc_ci(
+        ci_low, ci_high, auc_bootstrap_std = _bootstrap_binary_auc_ci(
             y_true, y_prob, n_bootstrap, random_state
         )
     else:
@@ -220,13 +236,13 @@ def _loso_evaluate_auc(
             )
         except ValueError:
             auc = float("nan")
-        ci_low, ci_high, auc_std = _bootstrap_macro_auc_ci(
+        ci_low, ci_high, auc_bootstrap_std = _bootstrap_macro_auc_ci(
             y_true, y_proba, n_bootstrap, random_state, labels
         )
 
     return {
         "auc": auc,
-        "auc_std": auc_std,
+        "auc_bootstrap_std": auc_bootstrap_std,
         "auc_ci_low": ci_low,
         "auc_ci_high": ci_high,
     }
@@ -258,8 +274,15 @@ class SensorAblationStudy:
         if not ckpt_path.exists():
             logger.error(f"Checkpoint {ckpt_path} not found — run train first.")
             return pd.DataFrame()
-        with open(ckpt_path, "rb") as f:
-            checkpoint = pickle.load(f)
+        try:
+            checkpoint = load_checkpoint(
+                ckpt_path,
+                manifest_dir=self.ckpt_dir,
+                require_manifest=False,
+            )
+        except CheckpointIntegrityError as exc:
+            logger.error("Checkpoint verification failed for %s: %s", self.reference_model, exc)
+            return pd.DataFrame()
 
         subsets = []
         for r in range(1, len(SENSOR_POSITIONS) + 1):
@@ -274,14 +297,15 @@ class SensorAblationStudy:
                 logger.warning(f"No features for {combo} — skipping")
                 continue
 
-            X_sub = X[:, col_idx]
             label = "+".join(s.replace("_", "") for s in combo)
             metrics = _loso_evaluate_auc(
-                X_sub,
+                X,
                 y,
                 groups,
                 checkpoint,
                 self.config,
+                feat_cols=feat_names,
+                scenario_col_idx=col_idx,
                 n_bootstrap=self.n_bootstrap,
                 random_state=self.seed,
             )
@@ -295,7 +319,7 @@ class SensorAblationStudy:
                 "n_sensors": len(combo),
                 "n_features": len(col_idx),
                 "auc_mean": metrics["auc"],
-                "auc_std": metrics["auc_std"],
+                "auc_bootstrap_std": metrics["auc_bootstrap_std"],
                 "auc_ci_low": metrics["auc_ci_low"],
                 "auc_ci_high": metrics["auc_ci_high"],
                 "validation": "loso_subject_grouped",
@@ -321,7 +345,7 @@ class SensorAblationStudy:
         df_sorted = df.sort_values("auc_mean", ascending=True)
         labels = df_sorted["sensor_subset"].values
         aucs = df_sorted["auc_mean"].values
-        errs = df_sorted["auc_std"].values
+        errs = df_sorted["auc_bootstrap_std"].values
         n_sensors = df_sorted["n_sensors"].values
 
         colors = {1: "#e74c3c", 2: "#f39c12", 3: "#2ecc71", 4: "#3498db"}

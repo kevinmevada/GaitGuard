@@ -1,0 +1,56 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONHASHSEED=42
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r gaitguard \
+    && useradd -r -g gaitguard -d /app gaitguard
+
+COPY api/requirements-lock.txt /tmp/api_requirements-lock.txt
+COPY api/requirements-inference.txt /tmp/inference_requirements.txt
+RUN pip install --upgrade pip && \
+    pip install -r /tmp/api_requirements-lock.txt && \
+    pip install -r /tmp/inference_requirements.txt
+
+COPY scripts/download_models.py /app/scripts/download_models.py
+COPY scripts/sync_front_end.py /app/scripts/sync_front_end.py
+COPY fall_risk_pipeline /app/fall_risk_pipeline
+
+# Optional: bake Hub artifacts at build time
+#   docker build -f Dockerfile.api --build-arg GAITGUARD_HF_REPO=your-org/gaitguard-models .
+ARG GAITGUARD_HF_REPO=""
+ARG GAITGUARD_HF_REVISION="main"
+ARG ENVIRONMENT=""
+ARG CHECKPOINT_HMAC_KEY=""
+RUN if [ "${ENVIRONMENT}" = "production" ] || [ "${ENVIRONMENT}" = "prod" ]; then \
+      if [ -z "${CHECKPOINT_HMAC_KEY}" ]; then \
+        echo "ERROR: CHECKPOINT_HMAC_KEY must be set for production API builds (DEP-004)." >&2; \
+        exit 1; \
+      fi; \
+      if [ -z "${GAITGUARD_HF_REVISION}" ] || [ "${GAITGUARD_HF_REVISION}" = "main" ]; then \
+        echo "ERROR: Pin GAITGUARD_HF_REVISION to an immutable Hub tag (DEP-004)." >&2; \
+        exit 1; \
+      fi; \
+    fi; \
+    if [ -n "$GAITGUARD_HF_REPO" ]; then \
+      pip install huggingface_hub && \
+      GAITGUARD_HF_REPO="$GAITGUARD_HF_REPO" GAITGUARD_HF_REVISION="$GAITGUARD_HF_REVISION" \
+        python scripts/download_models.py --repo "$GAITGUARD_HF_REPO" --revision "$GAITGUARD_HF_REVISION"; \
+    fi
+
+COPY api /app/api
+COPY Front_end /app/Front_end
+RUN python scripts/sync_front_end.py && chown -R gaitguard:gaitguard /app
+
+EXPOSE 8000
+WORKDIR /app
+USER gaitguard
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

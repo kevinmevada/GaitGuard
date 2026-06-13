@@ -43,7 +43,6 @@ dataset:
   high_risk_threshold: 1
   binary_strategy: "threshold_ge_1"
   report_class_distribution: true
-  probability_calibration: false
 
   laterality_flags:
     HipOA: "right_dominant"
@@ -196,12 +195,14 @@ features:
 # RFECV (Guyon 2002) + SHAP pruning cap p at ≤20; Lasso-style sparsity per Tibshirani 1996.
 feature_selection:
   enabled: true
+  nested_in_evaluation: true   # LOSO evaluator runs RFECV on each train fold only (ML-001)
   max_features: 20
   min_features: 5
   primary_method: "rfecv"   # rfecv | shap | intersection (exported as rfecv_capped when max_features < RFECV CV optimum)
-  # Force-keep nonlinear dynamics so final trained models include these families.
+  # Force-keep nonlinear dynamics; rank by mean |SHAP| before cap (ML-040).
   required_feature_substrings: ["sampen", "dfa"]
-  max_required_features: 10   # cap forced-required columns (default: half of max_features)
+  max_required_features: 4    # cap forced nonlinear slots; raise only if SHAP audit shows gain
+  nested_in_ablation: true   # LOSO ablations intersect per-fold RFECV mask (ML-025)
   compare_before_after: true
   cv_folds: 5
 
@@ -224,18 +225,21 @@ models:
     cv_folds: 5
 
   evaluation:
-    mode: "paper"
     strategy: "nested_group_cv"
-    fast_strategy: "grouped_checkpoint_cv"
+    # ML-032 / ANOM-001: primary manuscript endpoint (supervised deploy vs anomaly LOSO).
+    primary_endpoint: anomaly_ensemble   # anomaly_ensemble | deploy_ensemble | best_loso_nested
+    report_deploy_loso_gap: true        # export deploy_loso_gap.csv + primary_endpoint.json
     random_state: 42   # keep equal to reproducibility.seed
     nested_n_trials: 10
     nested_timeout_per_model: 300
-    leakage_comparison: true      # run ungrouped StratifiedKFold to quantify subject-leakage bias
+    leakage_comparison: true      # LOSO vs KFold split-protocol audit (ML-048; split_protocol_comparison.csv)
     leakage_kfold_splits: 10
     # Paired AUC significance (DeLong + bootstrap MWU/Wilcoxon) for Table 1
     auc_pairwise_tests: true
     auc_reference_model: null   # null => highest-AUC model (usually ensemble)
     delong_bootstrap_n: 1000
+    # Multiple comparison control across pairwise tests (fdr_bh | none)
+    multiple_testing_correction: fdr_bh
     # Paired classification significance (McNemar on LOSO OOF predictions)
     mcnemar_tests: true
     mcnemar_reference_model: null   # null => same as auc_reference_model or highest accuracy
@@ -243,6 +247,8 @@ models:
     # Classification threshold: Youden J fit on each LOSO train fold, applied to test fold
     threshold_strategy: train_fold_youden   # primary (unbiased)
     report_threshold_comparison: true       # also save 0.5 vs eval-Youden (optimistic) metrics
+    auc_ci_bootstrap_n: 2000               # subject-level bootstrap for binary AUC CIs (MET-002)
+    cohort_auc_min_n: 15                   # flag cohort/subgroup AUC as unstable below this n (ML-011); AUC suppressed when unstable (ML-044)
 
   ensemble:
     enabled: true
@@ -260,7 +266,8 @@ models:
 deep_learning:
   enabled: true
   sequence_length: 256           # window length in samples (256 / 100 Hz ≈ 2.56 s)
-  overlap: 0.5                   # 50 % overlap between windows
+  overlap: 0.5                   # dense sliding windows for held-out participant inference
+  training_window_deduplication: true  # ML-043: train/val use one window per stride block per trial
   batch_size: 64
   mixed_precision: true          # AMP on CUDA for faster training/inference
   amp_dtype: "float16"           # "float16" (fastest) or "bfloat16" (more stable)
@@ -268,12 +275,30 @@ deep_learning:
   learning_rate: 0.001
   early_stopping_patience: 12
   device: "auto"                 # "auto" → CUDA if available, else CPU
+  # ML-042: optional per-LOSO-fold lr search on inner participant val (tabular uses Optuna per fold)
+  loso_hyperparameter_tuning:
+    enabled: false               # set true for protocol-aligned DL tuning (slower)
+    n_trials: 5
+    timeout_seconds: 120
+    search_epochs: 12            # short budget for lr search only
+    search_patience: 4
+    lr_min_factor: 0.1             # search in [base_lr * min, base_lr * max]
+    lr_max_factor: 10.0
   models:                        # architectures to evaluate in LOSO
     - inception_time             # Fawaz et al. 2020 — benchmark leader
     - gait_transformer           # Transformer encoder for sensor time series
     - tcn                        # Temporal Convolutional Network (Bai et al. 2018)
     - cnn1d                      # Residual 1-D CNN with channel attention
     - bilstm_attention           # Bidirectional LSTM + multi-head attention
+
+# Unsupervised anomaly screening (ANOM-001 — primary when evaluation.primary_endpoint: anomaly_ensemble)
+anomaly:
+  loso_evaluation: true
+  methods:
+    - isolation_forest
+    - lof
+    - one_class_svm
+  ensemble_vote_threshold: 2   # API/deploy binary flag: ≥2 of 3 methods vote anomaly
 
 # Feature ablation (LOSO AUC; run after train, ideally after evaluate for SHAP context)
 ablation:

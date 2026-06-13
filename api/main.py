@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 import os
 import secrets
 import sys
@@ -20,15 +21,32 @@ import warnings
 import zipfile
 from contextlib import asynccontextmanager
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
+from urllib.parse import urlparse
 
-# Load environment variables from .env file
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass  # python-dotenv not installed, will use system env vars
+
+def _deployment_env() -> str:
+    return os.getenv("ENVIRONMENT", os.getenv("ENV", "development")).lower()
+
+
+def _is_production_deployment() -> bool:
+    return _deployment_env() in ("production", "prod")
+
+
+def _load_local_dotenv() -> None:
+    """Load .env for local development only; production uses platform env (SEC-013)."""
+    if _is_production_deployment():
+        return
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass  # python-dotenv not installed; use system env vars
+
+
+_load_local_dotenv()
 
 import numpy as np
 import pandas as pd
@@ -36,8 +54,10 @@ import uvicorn
 import yaml
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sklearn.utils.validation import check_is_fitted
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # Logging setup
 log_level = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -79,18 +99,106 @@ PAPER_INFERENCE_LIMITATION = (
 
 DISPLAY_GAUGES_NOTE = (
     "Sidebar gauge bars (display_gauges) are UI-only. They are not SHAP values and "
-    "must not be reported as clinical confidence in publications. confidence and "
-    "risk_score are classifier outputs; anomaly is the fraction of anomaly detectors "
-    "voting anomaly; trials is upload coverage vs mean training trials per participant, "
-    "not a model score."
+    "must not be reported as clinical confidence in publications. anomaly_score is the "
+    "primary continuous ensemble screening score (0–100); risk_score is a secondary "
+    "supervised pathology-tier classifier output; trials is upload coverage vs mean "
+    "training trials per participant, not a model score."
 )
+
+# Rate limiting / inference concurrency (SEC-008 / SEC-011)
+_PREDICT_MAX_CONCURRENT_RAW = int(os.getenv("PREDICT_MAX_CONCURRENT", "2"))
+PREDICT_MAX_CONCURRENT = min(4, max(2, _PREDICT_MAX_CONCURRENT_RAW))
+PREDICT_REQUEST_TIMEOUT_SEC = max(10, int(os.getenv("PREDICT_REQUEST_TIMEOUT_SEC", "120")))
+PREDICT_RATE_LIMIT = os.getenv("PREDICT_RATE_LIMIT", "10/minute")
+_predict_semaphore = asyncio.Semaphore(PREDICT_MAX_CONCURRENT)
+
+
+def _trust_proxy_headers() -> bool:
+    """Trust X-Forwarded-For / X-Real-IP only behind a known reverse proxy."""
+    explicit = os.getenv("TRUST_PROXY_HEADERS", "").lower()
+    if explicit in ("1", "true", "yes"):
+        return True
+    if explicit in ("0", "false", "no"):
+        return False
+    return _is_production_deployment()
+
+
+def _api_docs_enabled() -> bool:
+    """
+    SEC-010: disable Swagger/ReDoc/OpenAPI in production unless explicitly enabled.
+
+    Set ENABLE_API_DOCS=true for short-lived debugging only.
+    """
+    explicit = os.getenv("ENABLE_API_DOCS", "").lower()
+    if explicit in ("1", "true", "yes"):
+        return True
+    if explicit in ("0", "false", "no"):
+        return False
+    return not _is_production_deployment()
+
+
+def _is_ui_response_path(path: str) -> bool:
+    return path == "/" or path.startswith("/app") or path.startswith("/static")
+
+
+def _security_headers_for_path(path: str) -> dict[str, str]:
+    """SEC-010: baseline headers on every response; CSP tuned for bundled UI routes."""
+    headers = {
+        "X-Frame-Options": "DENY",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+    }
+    if _is_ui_response_path(path):
+        headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com data:; "
+            "img-src 'self' data: blob:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
+    else:
+        headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    if _is_production_deployment():
+        headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return headers
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        for key, value in _security_headers_for_path(request.url.path).items():
+            response.headers.setdefault(key, value)
+        return response
+
+
+def rate_limit_client_key(request: Request) -> str:
+    """Per-client slowapi key; uses leftmost X-Forwarded-For when proxy headers are trusted."""
+    if _trust_proxy_headers():
+        forwarded = (request.headers.get("X-Forwarded-For") or "").strip()
+        if forwarded:
+            client = forwarded.split(",")[0].strip()
+            if client:
+                return client
+        real_ip = (request.headers.get("X-Real-IP") or "").strip()
+        if real_ip:
+            return real_ip
+
+    client = getattr(request, "client", None)
+    if client is not None and getattr(client, "host", None):
+        return str(client.host)
+    return "unknown"
+
 
 # Rate limiting
 try:
     from slowapi import Limiter, _rate_limit_exceeded_handler
     from slowapi.errors import RateLimitExceeded
-    from slowapi.util import get_remote_address
-    limiter = Limiter(key_func=get_remote_address)
+    limiter = Limiter(key_func=rate_limit_client_key)
     rate_limit_exception_handler = _rate_limit_exceeded_handler
     RATE_LIMITING_AVAILABLE = True
 except ImportError:
@@ -122,7 +230,7 @@ from src.evaluation.research_disclaimers import (  # type: ignore
     screening_note,
 )
 from src.preprocessing.signal_processor import SignalProcessor  # type: ignore
-from src.utils.checkpoint_io import CheckpointIntegrityError, load_checkpoint  # type: ignore
+from src.utils.checkpoint_io import CheckpointIntegrityError, assert_production_checkpoint_policy, load_checkpoint  # type: ignore
 
 
 def parse_cors_origins(value: str | None) -> list[str]:
@@ -158,9 +266,11 @@ def resolve_cors_origins(value: str | None) -> tuple[list[str], bool]:
             "Set CORS_ORIGINS to your deployed frontend URL(s) before going live."
         )
         return list(_DEFAULT_LOCAL_CORS_ORIGINS), False
-    for local_origin in ("http://localhost:5500", "http://127.0.0.1:5500"):
-        if local_origin not in origins:
-            origins.append(local_origin)
+    deploy_env = os.getenv("ENVIRONMENT", os.getenv("ENV", "development")).lower()
+    if deploy_env not in ("production", "prod"):
+        for local_origin in ("http://localhost:5500", "http://127.0.0.1:5500"):
+            if local_origin not in origins:
+                origins.append(local_origin)
     return origins, False
 
 
@@ -169,6 +279,13 @@ cors_origins, allow_all_origins = resolve_cors_origins(os.getenv("CORS_ORIGINS")
 CONFIG_PATH = Path(os.getenv("CONFIG_PATH", PIPELINE_ROOT / "configs" / "pipeline_config.yaml"))
 MODEL_DIR = Path(os.getenv("MODEL_DIR", PIPELINE_ROOT / "results" / "checkpoints"))
 ANOMALY_DIR = Path(os.getenv("ANOMALY_DIR", PIPELINE_ROOT / "results" / "anomaly_detection"))
+METRICS_DIR = Path(os.getenv("METRICS_DIR", PIPELINE_ROOT / "results" / "metrics"))
+ANOMALY_THRESHOLD_PATH = Path(
+    os.getenv("ANOMALY_THRESHOLD_PATH", METRICS_DIR / "anomaly_threshold.json")
+)
+ANOMALY_CALIBRATION_PATH = Path(
+    os.getenv("ANOMALY_CALIBRATION_PATH", ANOMALY_DIR / "deploy_calibration.json")
+)
 PATIENT_FEATURES_PATH = Path(os.getenv("PATIENT_FEATURES_PATH", PIPELINE_ROOT / "data" / "features" / "patient_features.parquet"))
 TRIAL_FEATURES_PATH = Path(os.getenv("TRIAL_FEATURES_PATH", PIPELINE_ROOT / "data" / "features" / "trial_features.parquet"))
 CLINICAL_THRESHOLD_PATH = Path(
@@ -185,8 +302,14 @@ REQUIRED_FILES = {
     "right_foot_raw.csv": "right_foot",
 }
 METADATA_FILE = "metadata.json"
+ALLOWED_UPLOAD_NAMES = frozenset([*REQUIRED_FILES.keys(), METADATA_FILE])
 MAX_FILE_SIZE_MB = float(os.getenv("MAX_FILE_SIZE_MB", "50"))
 MAX_TOTAL_SIZE_MB = float(os.getenv("MAX_TOTAL_SIZE_MB", "200"))
+MAX_UNCOMPRESSED_ZIP_MB = float(
+    os.getenv("MAX_UNCOMPRESSED_ZIP_MB", str(int(MAX_TOTAL_SIZE_MB)))
+)
+MAX_ZIP_COMPRESSION_RATIO = float(os.getenv("MAX_ZIP_COMPRESSION_RATIO", "100"))
+API_KEY = os.getenv("GAITGUARD_API_KEY", "").strip()
 
 COHORT_FALL_PROBABILITIES = {
     "healthy": 0.052,
@@ -216,6 +339,8 @@ anomaly_feature_schema: dict[str, Any] | None = None
 patient_schema_mismatch: bool = False
 trial_schema_mismatch: bool = False
 anomaly_schema_message: str = ""
+anomaly_threshold: dict[str, Any] = {}
+anomaly_deploy_calibration: dict[str, Any] = {}
 clinical_threshold: dict[str, Any] = {}
 runtime_dependencies: dict[str, dict[str, Any]] = {}
 
@@ -353,8 +478,19 @@ def load_resources() -> None:
     global expected_patient_feature_count, expected_trial_feature_count
     global anomaly_feature_schema, patient_schema_mismatch, trial_schema_mismatch
     global anomaly_schema_message, clinical_threshold, runtime_dependencies
+    global anomaly_threshold, anomaly_deploy_calibration
 
     config = load_config()
+    deploy_env = os.getenv("ENVIRONMENT", os.getenv("ENV", "development")).lower()
+    if deploy_env in ("production", "prod") and not API_KEY:
+        raise RuntimeError(
+            "GAITGUARD_API_KEY must be set when ENVIRONMENT=production (SEC-005)."
+        )
+    assert_production_checkpoint_policy()
+    if deploy_env in ("production", "prod") and not RATE_LIMITING_AVAILABLE:
+        raise RuntimeError(
+            "slowapi must be installed when ENVIRONMENT=production (SEC-017)."
+        )
     runtime_dependencies = _probe_runtime_dependencies()
     _assert_startup_dependencies(runtime_dependencies)
     loaded_threshold = load_clinical_threshold_artifact(CLINICAL_THRESHOLD_PATH)
@@ -375,6 +511,27 @@ def load_resources() -> None:
             "run `python main.py --stage evaluate` in fall_risk_pipeline.",
             CLINICAL_THRESHOLD_PATH,
         )
+
+    if ANOMALY_THRESHOLD_PATH.is_file():
+        with open(ANOMALY_THRESHOLD_PATH, encoding="utf-8") as fh:
+            anomaly_threshold = json.load(fh)
+        logger.info(
+            "Anomaly screening cutoff loaded: prob=%.3f source=%s",
+            anomaly_threshold.get("probability", 0.5),
+            anomaly_threshold.get("source", "unknown"),
+        )
+    else:
+        anomaly_threshold = {}
+
+    calib_path = ANOMALY_CALIBRATION_PATH
+    if not calib_path.is_file():
+        calib_path = METRICS_DIR / "deploy_calibration.json"
+    if calib_path.is_file():
+        with open(calib_path, encoding="utf-8") as fh:
+            anomaly_deploy_calibration = json.load(fh)
+    else:
+        anomaly_deploy_calibration = {}
+
     signal_processor = SignalProcessor(config)
     feature_extractor = FeatureExtractor(config)
 
@@ -563,12 +720,21 @@ async def lifespan(app: FastAPI):
 # App factory
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="GaitGuard API", version="2.0.0", lifespan=lifespan)
+_docs_enabled = _api_docs_enabled()
+app = FastAPI(
+    title="GaitGuard API",
+    version="2.0.0",
+    lifespan=lifespan,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
+)
 
 if RATE_LIMITING_AVAILABLE and limiter:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, rate_limit_exception_handler)  # type: ignore[arg-type]
 
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
@@ -576,6 +742,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # ---------------------------------------------------------------------------
@@ -588,17 +758,26 @@ def normalize_cohort_name(cohort: str | None) -> str:
     return str(cohort).strip().lower().replace(" ", "").replace("_", "")
 
 
-def infer_sensor_name(filename: str) -> str:
-    lowered = filename.lower()
-    if "head" in lowered:
-        return "head"
-    if "back" in lowered:
-        return "lower_back"
-    if "left_foot" in lowered or "lfoot" in lowered:
-        return "left_foot"
-    if "right_foot" in lowered or "rfoot" in lowered:
-        return "right_foot"
-    raise HTTPException(status_code=400, detail=f"Unrecognized sensor file: {filename}")
+def upload_basename(filename: str) -> str:
+    """Lowercased basename only — rejects path components (SEC-007)."""
+    if not filename or not str(filename).strip():
+        raise HTTPException(status_code=400, detail="Upload filename is missing.")
+    base = Path(filename).name.lower()
+    if not base or base in (".", ".."):
+        raise HTTPException(status_code=400, detail=f"Invalid upload filename: {filename}")
+    return base
+
+
+def require_allowed_upload_name(filename: str) -> str:
+    """Whitelist exact sensor/metadata basenames; reject substring guessing (SEC-007)."""
+    base = upload_basename(filename)
+    if base not in ALLOWED_UPLOAD_NAMES:
+        allowed = ", ".join(sorted(ALLOWED_UPLOAD_NAMES))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unrecognized upload file '{filename}'. Allowed files: {allowed}",
+        )
+    return base
 
 
 def validate_csv_content(df: pd.DataFrame, sensor_name: str) -> None:
@@ -628,12 +807,130 @@ def validate_csv_content(df: pd.DataFrame, sensor_name: str) -> None:
         )
 
 
+def _require_api_key(request: Request) -> None:
+    """Optional shared-secret gate when GAITGUARD_API_KEY is set (SEC-001)."""
+    if not API_KEY:
+        return
+    supplied = (request.headers.get("X-API-Key") or "").strip()
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        supplied = auth[7:].strip() if not supplied else supplied
+    if not supplied or not secrets.compare_digest(supplied, API_KEY):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+
+
+def _request_host(request: Request) -> str:
+    host_header = (request.headers.get("host") or "").strip()
+    if not host_header:
+        return ""
+    return host_header.split(":")[0].lower()
+
+
+def _is_same_origin_ui_request(request: Request) -> bool:
+    """
+    True when the request appears to come from the bundled UI on this host (SEC-006).
+
+    Browser UI must use POST /app/predict (same origin, no client-side secrets).
+    Programmatic integrations use POST /predict with X-API-Key or an edge auth gateway.
+    """
+    host = _request_host(request)
+    if not host:
+        return False
+
+    origin = (request.headers.get("origin") or "").strip()
+    if origin:
+        parsed = urlparse(origin)
+        return bool(parsed.hostname and parsed.hostname.lower() == host)
+
+    referer = (request.headers.get("referer") or "").strip()
+    if not referer:
+        return False
+    parsed = urlparse(referer)
+    if not parsed.hostname or parsed.hostname.lower() != host:
+        return False
+    path = parsed.path or ""
+    return path == "/" or path.startswith("/app") or path.startswith("/static")
+
+
+@asynccontextmanager
+async def _predict_concurrency_slot():
+    """
+    Cap concurrent CPU-bound inference jobs (SEC-008 / SEC-011).
+
+    Fast-fail with 503 when all slots are busy instead of unbounded ``to_thread`` queueing.
+    """
+    if _predict_semaphore.locked():
+        raise HTTPException(
+            status_code=503,
+            detail="Too many concurrent inference requests. Please retry shortly.",
+        )
+    await _predict_semaphore.acquire()
+    try:
+        yield
+    finally:
+        _predict_semaphore.release()
+
+
+def _bounded_read(stream, max_bytes: int, *, label: str = "upload") -> bytes:
+    """Stream-read with a hard byte cap (SEC-002: bypass of UploadFile.size)."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = stream.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{label} exceeds maximum allowed size of {max_bytes // (1024 * 1024)}MB",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _is_safe_zip_member(name: str) -> bool:
+    """Reject Zip Slip / absolute paths before reading archive entries (SEC-012)."""
+    if not name or name.endswith("/") or "\0" in name:
+        return False
+    normalized = name.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if path.is_absolute() or normalized.startswith(("/", "../")):
+        return False
+    return ".." not in path.parts
+
+
+def _validate_zip_bomb_guard(archive: zipfile.ZipFile, compressed_size: int) -> None:
+    """Reject archives with excessive uncompressed payload (SEC-003)."""
+    total_uncompressed = 0
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        total_uncompressed += int(info.file_size)
+        limit = int(MAX_UNCOMPRESSED_ZIP_MB * 1024 * 1024)
+        if total_uncompressed > limit:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"ZIP uncompressed size exceeds {MAX_UNCOMPRESSED_ZIP_MB}MB "
+                    "(possible zip bomb)"
+                ),
+            )
+    if compressed_size > 0 and (total_uncompressed / compressed_size) > MAX_ZIP_COMPRESSION_RATIO:
+        raise HTTPException(
+            status_code=413,
+            detail="ZIP compression ratio exceeds safe limit (possible zip bomb)",
+        )
+
+
 def _safe_archive_read(archive: zipfile.ZipFile, safe_name: str, name_map: dict[str, str]) -> bytes:
     """Read from archive using only the validated safe name mapping."""
+    if safe_name not in name_map:
+        raise HTTPException(status_code=400, detail=f"Missing ZIP member: {safe_name}")
     original_name = name_map[safe_name]
-    # Guard against path traversal: ensure the resolved path stays within archive
-    resolved = Path(original_name).name.lower()
-    if resolved != safe_name:
+    if not _is_safe_zip_member(original_name):
+        raise HTTPException(status_code=400, detail="Invalid file path in ZIP archive.")
+    if Path(original_name).name.lower() != safe_name:
         raise HTTPException(status_code=400, detail="Invalid file path in ZIP archive.")
     return archive.read(original_name)
 
@@ -645,12 +942,7 @@ def parse_uploaded_files(files: list[UploadFile]) -> tuple[dict[str, pd.DataFram
     if len(files) > 20:
         raise HTTPException(status_code=400, detail="Too many files uploaded. Maximum 20 files allowed.")
 
-    total_size = sum(f.size if f.size else 0 for f in files)
-    if total_size > MAX_TOTAL_SIZE_MB * 1024 * 1024:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Total upload size exceeds maximum allowed size of {MAX_TOTAL_SIZE_MB}MB",
-        )
+    # Total size enforced via _bounded_read per file (SEC-004: do not trust UploadFile.size).
 
     sensor_frames: dict[str, pd.DataFrame] = {}
     metadata: dict[str, Any] = {}
@@ -658,13 +950,16 @@ def parse_uploaded_files(files: list[UploadFile]) -> tuple[dict[str, pd.DataFram
     # --- ZIP branch ---
     if len(files) == 1 and files[0].filename and files[0].filename.lower().endswith(".zip"):
         uploaded = files[0]
-        if uploaded.size and uploaded.size > MAX_FILE_SIZE_MB * 1024 * 1024:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File size exceeds maximum allowed size of {MAX_FILE_SIZE_MB}MB",
-            )
+        max_zip_bytes = int(MAX_FILE_SIZE_MB * 1024 * 1024)
+        zip_bytes = _bounded_read(uploaded.file, max_zip_bytes, label="ZIP archive")
 
-        with zipfile.ZipFile(uploaded.file, "r") as archive:
+        with zipfile.ZipFile(BytesIO(zip_bytes), "r") as archive:
+            if len(archive.infolist()) > 50:
+                raise HTTPException(
+                    status_code=413,
+                    detail="ZIP archive has too many entries (possible zip bomb)",
+                )
+            _validate_zip_bomb_guard(archive, len(zip_bytes))
             # Build a map of safe (basename only) → original archive name
             # Reject any entry whose basename differs from what we'd expect
             # to prevent path traversal attacks.
@@ -672,10 +967,25 @@ def parse_uploaded_files(files: list[UploadFile]) -> tuple[dict[str, pd.DataFram
             for entry in archive.namelist():
                 if entry.endswith("/"):
                     continue
+                if not _is_safe_zip_member(entry):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid file path in ZIP archive (path traversal rejected).",
+                    )
                 safe = Path(entry).name.lower()
-                # Reject entries that try to escape via path components
-                if Path(entry).name != Path(entry).parts[-1]:
-                    continue
+                if safe not in ALLOWED_UPLOAD_NAMES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"ZIP contains unrecognized file '{Path(entry).name}'. "
+                            f"Allowed: {', '.join(sorted(ALLOWED_UPLOAD_NAMES))}"
+                        ),
+                    )
+                if safe in name_map:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"ZIP contains duplicate file '{safe}'.",
+                    )
                 name_map[safe] = entry
 
             required = [*REQUIRED_FILES.keys(), METADATA_FILE]
@@ -696,32 +1006,46 @@ def parse_uploaded_files(files: list[UploadFile]) -> tuple[dict[str, pd.DataFram
         return sensor_frames, metadata
 
     # --- Individual files branch ---
-    uploads_by_name = {
-        (upload.filename or "").lower(): upload
-        for upload in files
-        if upload.filename
-    }
+    uploads_by_name: dict[str, UploadFile] = {}
+    for upload in files:
+        if not upload.filename:
+            raise HTTPException(status_code=400, detail="Upload filename is missing.")
+        basename = require_allowed_upload_name(upload.filename)
+        if basename in uploads_by_name:
+            raise HTTPException(status_code=400, detail=f"Duplicate upload for {basename}")
+        uploads_by_name[basename] = upload
+
     required = [*REQUIRED_FILES.keys(), METADATA_FILE]
     missing = [n for n in required if n not in uploads_by_name]
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing required files: {missing}")
 
-    for upload in files:
-        if not upload.filename:
-            continue
-        if upload.size and upload.size > MAX_FILE_SIZE_MB * 1024 * 1024:
+    bytes_read = 0
+    max_file_bytes = int(MAX_FILE_SIZE_MB * 1024 * 1024)
+    max_total_bytes = int(MAX_TOTAL_SIZE_MB * 1024 * 1024)
+
+    for file_name, sensor_name in REQUIRED_FILES.items():
+        upload = uploads_by_name[file_name]
+        raw = _bounded_read(upload.file, max_file_bytes, label=f"File '{file_name}'")
+        bytes_read += len(raw)
+        if bytes_read > max_total_bytes:
             raise HTTPException(
                 status_code=413,
-                detail=f"File '{upload.filename}' exceeds maximum allowed size of {MAX_FILE_SIZE_MB}MB",
+                detail=f"Total upload size exceeds maximum allowed size of {MAX_TOTAL_SIZE_MB}MB",
             )
-        lowered = upload.filename.lower()
-        if lowered.endswith(".csv"):
-            sensor_name = infer_sensor_name(lowered)
-            df = pd.read_csv(upload.file)
-            validate_csv_content(df, sensor_name)
-            sensor_frames[sensor_name] = df
-        elif lowered == METADATA_FILE:
-            metadata = json.loads(upload.file.read().decode("utf-8"))
+        df = pd.read_csv(BytesIO(raw))
+        validate_csv_content(df, sensor_name)
+        sensor_frames[sensor_name] = df
+
+    meta_upload = uploads_by_name[METADATA_FILE]
+    raw_meta = _bounded_read(meta_upload.file, max_file_bytes, label=METADATA_FILE)
+    bytes_read += len(raw_meta)
+    if bytes_read > max_total_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Total upload size exceeds maximum allowed size of {MAX_TOTAL_SIZE_MB}MB",
+        )
+    metadata = json.loads(raw_meta.decode("utf-8"))
 
     _validate_metadata(metadata)
     return sensor_frames, metadata
@@ -810,34 +1134,14 @@ def extract_trial_features(processed: dict[str, pd.DataFrame], metadata: dict[st
     cohort = str(metadata.get("cohort", "unknown"))
     normalized_cohort = normalize_cohort_name(cohort)
 
-    trial_features: dict[str, Any] = {
-        "trial_id": metadata.get("trial_id", "uploaded_trial"),
-        "participant_id": metadata.get("participant_id", "uploaded_participant"),
+    extraction_meta = {
+        **metadata,
         "cohort": cohort,
         "fall_probability": float(COHORT_FALL_PROBABILITIES.get(normalized_cohort, 0.10)),
         "risk_label": 0,
         "laterality_biased": normalized_cohort in LATERALITY_BIASED_COHORTS,
     }
-
-    lower_back = processed.get("lower_back")
-    head = processed.get("head")
-    left_foot = processed.get("left_foot")
-    right_foot = processed.get("right_foot")
-
-    if lower_back is not None:
-        trial_features.update(feature_extractor._trunk_dynamics(lower_back))
-        trial_features.update(feature_extractor._spectral_features(lower_back, prefix="lb"))
-        trial_features.update(feature_extractor._orientation_features(lower_back, prefix="lb"))
-
-    if head is not None:
-        trial_features.update(feature_extractor._trunk_dynamics(head, prefix="head"))
-        trial_features.update(feature_extractor._orientation_features(head, prefix="head"))
-
-    if left_foot is not None and right_foot is not None:
-        trial_features.update(feature_extractor._gait_cycle_features(left_foot, right_foot))
-        trial_features.update(feature_extractor._asymmetry_features(left_foot, right_foot))
-
-    return trial_features
+    return feature_extractor.extract_trial_features_from_processed(processed, extraction_meta)
 
 
 def build_patient_feature_vector(trial_features: dict[str, Any]) -> pd.DataFrame:
@@ -931,6 +1235,18 @@ def predict_risk(feature_vector: pd.DataFrame) -> tuple[dict[str, Any], str]:
     )
 
 
+def _normalise_deploy_anomaly_score(raw_score: float, method_name: str) -> float:
+    """Map raw decision score to [0, 1] using deploy-time calibration ranges."""
+    methods = anomaly_deploy_calibration.get("methods", {})
+    calib = methods.get(method_name, {})
+    lo = calib.get("min")
+    hi = calib.get("max")
+    if lo is None or hi is None or float(hi) - float(lo) < 1e-12:
+        return 0.0
+    normed = (float(raw_score) - float(lo)) / (float(hi) - float(lo))
+    return float(max(0.0, min(1.0, normed)))
+
+
 def predict_anomaly(trial_vector: pd.DataFrame) -> tuple[str, dict[str, Any]]:
     if trial_schema_mismatch:
         raise HTTPException(
@@ -947,6 +1263,7 @@ def predict_anomaly(trial_vector: pd.DataFrame) -> tuple[str, dict[str, Any]]:
 
     votes = 0
     details: dict[str, Any] = {"available": True, "methods": {}}
+    norm_layers: list[float] = []
 
     for method_name, model in anomaly_models.items():
         scaler = anomaly_scalers[method_name]
@@ -955,13 +1272,27 @@ def predict_anomaly(trial_vector: pd.DataFrame) -> tuple[str, dict[str, Any]]:
         score = float(-model.decision_function(transformed)[0])
         is_anomaly = label == -1
         votes += int(is_anomaly)
+        norm_layers.append(_normalise_deploy_anomaly_score(score, method_name))
         details["methods"][method_name] = {
             "label": "anomaly" if is_anomaly else "normal",
             "score": score,
+            "score_normalized": norm_layers[-1],
         }
 
+    ensemble_norm = float(np.mean(norm_layers)) if norm_layers else 0.0
+    anomaly_score = round(ensemble_norm * 100.0, 2)
+    youden_prob = float(anomaly_threshold.get("probability", 0.5))
+    vote_status = "Detected" if votes >= 2 else "Normal"
+    youden_status = "Detected" if ensemble_norm >= youden_prob else "Normal"
+    primary_status = youden_status if anomaly_threshold else vote_status
+
     details["votes"] = votes
-    return ("Detected" if votes >= 2 else "Normal"), details
+    details["ensemble_score_normalized"] = ensemble_norm
+    details["anomaly_score"] = anomaly_score
+    details["youden_cutoff"] = youden_prob
+    details["vote_status"] = vote_status
+    details["screening_mode"] = "anomaly_ensemble"
+    return primary_status, details
 
 
 def build_display_gauges(
@@ -975,15 +1306,15 @@ def build_display_gauges(
     confidence_pct = round(float(prediction.get("confidence", 0.0)) * 100, 2)
     risk_pct = float(prediction.get("risk_score", 0))
 
-    anomaly_pct = 0.0
-    if anomaly_details.get("available"):
+    anomaly_pct = float(anomaly_details.get("anomaly_score", 0.0))
+    if anomaly_pct <= 0.0 and anomaly_details.get("available"):
         votes = int(anomaly_details.get("votes", 0))
         n_methods = len(anomaly_details.get("methods") or {})
         if n_methods > 0:
             anomaly_pct = round(100.0 * votes / n_methods, 2)
         elif anomaly_status == "Detected":
             anomaly_pct = 100.0
-    elif anomaly_status == "Detected":
+    elif anomaly_status == "Detected" and anomaly_pct <= 0.0:
         anomaly_pct = 100.0
 
     training_trials = float(INFERENCE_SCOPE["training_trials"])
@@ -995,9 +1326,10 @@ def build_display_gauges(
     )
 
     values = {
-        "confidence": confidence_pct,
+        "anomaly_score": anomaly_pct,
         "anomaly": anomaly_pct,
         "risk_score": risk_pct,
+        "confidence": confidence_pct,
         "trials": trial_coverage_pct,
     }
 
@@ -1007,9 +1339,10 @@ def build_display_gauges(
         "description": DISPLAY_GAUGES_NOTE,
         "values": values,
         "sources": {
+            "anomaly_score": "ensemble anomaly score × 100 (primary screening endpoint)",
+            "anomaly": "alias of anomaly_score for legacy frontends",
+            "risk_score": "secondary supervised pathology-tier classifier (0–100)",
             "confidence": "max predicted class probability × 100 (classifier)",
-            "anomaly": "anomaly detector votes ÷ number of methods × 100",
-            "risk_score": "classifier risk_score (0–100)",
             "trials": (
                 "n_trials_in_request vs mean training trials per participant "
                 f"(~{typical_trials_per_participant:.1f}); coverage indicator only"
@@ -1034,22 +1367,28 @@ def build_response(
         n_trials_in_request=n_trials,
     )
     gauge_values = display_gauges["values"]
-    # Deprecated alias for older frontends; "cohort" was never a model score.
-    graph_values = {**gauge_values, "cohort": gauge_values["risk_score"]}
+    graph_values = {
+        **gauge_values,
+        "cohort": gauge_values.get("risk_score", 0),
+    }
 
     participant_id = metadata.get("participant_id") or metadata.get("patient_id") or "Uploaded Patient"
     trial_id = metadata.get("trial_id") or "Uploaded Trial"
     cohort = metadata.get("cohort", "Unknown")
+    anomaly_score = float(
+        anomaly_details.get("anomaly_score", gauge_values.get("anomaly_score", 0))
+    )
 
     return {
         "success": True,
         "participant_id": participant_id,
         "trial_id": trial_id,
+        "anomaly_score": anomaly_score,
+        "anomaly_status": anomaly_status,
         "risk_score": prediction["risk_score"],
         "risk_level": prediction["risk_level"],
         "single_trial_limitation": INFERENCE_SCOPE_NOTE,
         "confidence_limitation": CONFIDENCE_LIMITATION_NOTE,
-        "anomaly_status": anomaly_status,
         "display_gauges": display_gauges,
         "graph_values": graph_values,
         "model_used": model_name,
@@ -1062,9 +1401,11 @@ def build_response(
             "primary_cutoff": clinical_threshold.get("primary_cutoff", {}),
             "clinical_screening_tools": clinical_threshold.get("clinical_screening_tools", {}),
             "borderline_moderate_band": clinical_threshold.get("borderline_moderate_band", {}),
+            "anomaly_screening": anomaly_threshold,
             "this_request": {
                 "elevated_probability": prediction.get("risk_probability"),
                 "above_primary_cutoff": prediction.get("above_clinical_cutoff"),
+                "anomaly_above_cutoff": anomaly_status == "Detected",
                 "risk_level_rule": (
                     "high if elevated_probability ≥ Youden J cutoff; "
                     "moderate if in [0.5×Youden, Youden); low otherwise. "
@@ -1079,9 +1420,9 @@ def build_response(
             "confidence": CONFIDENCE_LIMITATION_NOTE,
             "display_gauges": DISPLAY_GAUGES_NOTE,
             "clinical_threshold": (
-                "Risk level uses Youden J from LOSO validation (see clinical_threshold.json), "
-                "not fixed 70/40 score bands. Morse Fall Scale and STRATIFY are cited for "
-                "screening-tool context only; IMU probability is not calibrated to those instruments."
+                "Primary screening uses anomaly ensemble LOSO Youden cutoff "
+                "(anomaly_threshold.json). Supervised risk level uses Youden J from "
+                "pathology-tier LOSO (clinical_threshold.json)."
             ),
             "paper_methods": PAPER_INFERENCE_LIMITATION,
         },
@@ -1091,6 +1432,7 @@ def build_response(
             "confidence": f"{int(round(prediction['confidence'] * 100))}%",
             "confidence_meaning": "model max class probability (not clinical calibration)",
             "anomaly": anomaly_status,
+            "anomaly_score": f"{int(round(anomaly_score))}%",
             "trials": str(n_trials),
             "inference_note": INFERENCE_SCOPE_NOTE,
         },
@@ -1100,17 +1442,71 @@ def build_response(
     }
 
 
+def _run_prediction_pipeline(
+    raw_sensor_frames: dict[str, pd.DataFrame],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """CPU-bound inference path (SEC-002) — run via asyncio.to_thread from /predict."""
+    sampling_rate = float(metadata.get("sampling_rate", config["dataset"]["sampling_rate"]))
+
+    normalized_frames = {
+        sensor_name: normalize_sensor_dataframe(sensor_name, df, sampling_rate)
+        for sensor_name, df in raw_sensor_frames.items()
+    }
+    processed_frames = preprocess_sensor_data(normalized_frames)
+    trial_features = extract_trial_features(processed_frames, metadata)
+
+    patient_vector = build_patient_feature_vector(trial_features)
+    trial_vector = build_trial_feature_vector(trial_features)
+
+    prediction, model_name = predict_risk(patient_vector)
+    anomaly_status, anomaly_details = predict_anomaly(trial_vector)
+
+    return build_response(
+        metadata=metadata,
+        trial_features=trial_features,
+        prediction=prediction,
+        model_name=model_name,
+        anomaly_status=anomaly_status,
+        anomaly_details=anomaly_details,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
 @app.get("/")
 async def root() -> dict[str, Any]:
+    if _is_production_deployment():
+        return {
+            "message": "GaitGuard API",
+            "health": "/health",
+            "ui_path": "/app",
+        }
+    ui = STATIC_DIR / "index.html"
     return {
         "message": "GaitGuard API is running",
         "models_loaded": sorted(models.keys()),
         "anomaly_models_loaded": sorted(anomaly_models.keys()),
+        "ui_path": "/app" if ui.is_file() else None,
+        "ui_predict_path": "/app/predict" if ui.is_file() else None,
+        "programmatic_predict_path": "/predict",
+        "static_mount": "/static" if STATIC_DIR.is_dir() else None,
+        "docs_path": "/docs" if _docs_enabled else None,
     }
+
+
+@app.get("/app")
+async def serve_ui() -> FileResponse:
+    """Synced frontend (STR-001). Run scripts/sync_front_end.py after Front_end changes."""
+    index = STATIC_DIR / "index.html"
+    if not index.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="UI not found — run scripts/sync_front_end.py",
+        )
+    return FileResponse(index)
 
 
 @app.get("/health")
@@ -1155,59 +1551,86 @@ async def health_check() -> dict[str, Any]:
         }
 
 
+@app.post("/app/predict")
+async def predict_fall_risk_ui(
+    request: Request, files: list[UploadFile] = File(...)
+) -> JSONResponse:
+    """
+    Same-origin browser proxy for the bundled UI (SEC-006).
+
+    Never embed GAITGUARD_API_KEY in static JS — this route validates Origin/Referer
+    against the service Host. For cross-origin or programmatic access use POST /predict
+    with X-API-Key, or place Cloudflare Access / Render auth in front of the service.
+    """
+    if not _is_same_origin_ui_request(request):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Bundled UI inference requires same-origin access via /app. "
+                "Use POST /predict with X-API-Key for programmatic clients."
+            ),
+        )
+    return await _execute_predict(files)
+
+
 @app.post("/predict")
 async def predict_fall_risk(request: Request, files: list[UploadFile] = File(...)) -> JSONResponse:
-    # Apply rate limit when slowapi is available
-    if RATE_LIMITING_AVAILABLE and limiter:
-        try:
-            await limiter._check_request_limit(request, predict_fall_risk, "10/minute")  # type: ignore[attr-defined]
-        except Exception:
-            # Do not fail prediction requests if slowapi internals differ by runtime.
-            logger.warning("Rate limit check failed; continuing without rate enforcement.", exc_info=True)
+    _require_api_key(request)
+    return await _execute_predict(files)
 
+
+async def _execute_predict(files: list[UploadFile]) -> JSONResponse:
     try:
-        raw_sensor_frames, metadata = parse_uploaded_files(files)
-        sampling_rate = float(metadata.get("sampling_rate", config["dataset"]["sampling_rate"]))
-
-        normalized_frames = {
-            sensor_name: normalize_sensor_dataframe(sensor_name, df, sampling_rate)
-            for sensor_name, df in raw_sensor_frames.items()
-        }
-        processed_frames = preprocess_sensor_data(normalized_frames)
-        trial_features = extract_trial_features(processed_frames, metadata)
-
-        patient_vector = build_patient_feature_vector(trial_features)
-        trial_vector = build_trial_feature_vector(trial_features)
-
-        prediction, model_name = predict_risk(patient_vector)
-        anomaly_status, anomaly_details = predict_anomaly(trial_vector)
-
-        payload = build_response(
-            metadata=metadata,
-            trial_features=trial_features,
-            prediction=prediction,
-            model_name=model_name,
-            anomaly_status=anomaly_status,
-            anomaly_details=anomaly_details,
-        )
-
-        return JSONResponse(
-            content=payload,
-            headers={
-                "Cache-Control": "no-store, no-cache, must-revalidate",
-                "Pragma": "no-cache",
-            },
-        )
+        raw_sensor_frames, metadata = await asyncio.to_thread(parse_uploaded_files, files)
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("Unhandled error in /predict")
-        if log_level == "DEBUG":
-            raise HTTPException(status_code=500, detail=f"Processing failed: {str(exc)}") from exc
-        raise HTTPException(
-            status_code=500,
-            detail="Processing failed. Please verify uploaded files and try again.",
-        ) from exc
+        logger.exception("Upload parsing failed")
+        raise HTTPException(status_code=400, detail="Invalid upload.") from exc
+
+    async with _predict_concurrency_slot():
+        try:
+            payload = await asyncio.wait_for(
+                asyncio.to_thread(_run_prediction_pipeline, raw_sensor_frames, metadata),
+                timeout=PREDICT_REQUEST_TIMEOUT_SEC,
+            )
+
+            return JSONResponse(
+                content=payload,
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate",
+                    "Pragma": "no-cache",
+                },
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Inference timed out after %ds (SEC-011)",
+                PREDICT_REQUEST_TIMEOUT_SEC,
+            )
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    f"Inference timed out after {PREDICT_REQUEST_TIMEOUT_SEC}s. "
+                    "Try a smaller upload or retry later."
+                ),
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Unhandled error in /predict")
+            if log_level == "DEBUG":
+                raise HTTPException(status_code=500, detail=f"Processing failed: {str(exc)}") from exc
+            raise HTTPException(
+                status_code=500,
+                detail="Processing failed. Please verify uploaded files and try again.",
+            ) from exc
+
+
+if RATE_LIMITING_AVAILABLE and limiter:
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        if path in ("/predict", "/app/predict") and hasattr(route, "endpoint"):
+            route.endpoint = limiter.limit(PREDICT_RATE_LIMIT)(route.endpoint)  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------

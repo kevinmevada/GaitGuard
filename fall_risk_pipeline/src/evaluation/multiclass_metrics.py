@@ -14,6 +14,7 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
 )
+from sklearn.preprocessing import label_binarize
 
 from loguru import logger
 
@@ -169,11 +170,12 @@ def build_multiclass_metric_payload(
     avg_sens = float(np.nanmean(macro_sens)) if macro_sens else float("nan")
     avg_spec = float(np.nanmean(macro_spec)) if macro_spec else float("nan")
 
-    # Macro average precision (OvR)
+    # Macro average precision (OvR) — binarize y_true to match y_proba columns
     try:
-        macro_ap = float(average_precision_score(
-            np.eye(len(labels))[y_true], y_proba, average="macro"
-        ))
+        y_bin = label_binarize(y_true, classes=labels)
+        if y_bin.ndim == 1:
+            y_bin = y_bin.reshape(-1, 1)
+        macro_ap = float(average_precision_score(y_bin, y_proba, average="macro"))
     except (ValueError, IndexError):
         macro_ap = float("nan")
 

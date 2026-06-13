@@ -6,7 +6,7 @@ A full professional ML pipeline for research reporting and reproducible internal
 **A Dataset of Clinical Gait Signals with Wearable Sensors from Healthy, Neurological, and Orthopedic Cohorts**  
 - 1,356 trials, 260 participants, 4 IMUs (head, lower back, left/right foot)  
 - Cohorts: Healthy | Parkinson's (PD) | CVA | CIPN | RIL | Hip OA | Knee OA | ACL
-- Practical sensor-ablation result: **head + right foot (2 sensors) AUC 0.9336**, higher than all 4 sensors (AUC 0.9273)
+- Sensor ablation (head + right foot vs four IMUs): regenerate from [`docs/paper/results.md`](../docs/paper/results.md) after `python main.py --stage sensor_ablation` and `python ../scripts/regenerate_paper_results.py`
 
 ## Project Structure
 ```
@@ -48,7 +48,7 @@ fall_risk_pipeline/
 5. **Features** — temporal, spectral, trunk-dynamics (Lyapunov, ApEn, SampEn, DFA), wavelet, orientation, asymmetry, turning; patient aggregation (mean, std, range, trend)  
 6. **Select Features** — RFECV / SHAP pruning to <=20 patient-level features (grouped CV)  
 7. **Train** — XGBoost, LightGBM, Random Forest, SVM, MLP with Optuna tuning  
-8. **Evaluate** — nested LOSO cross-validation, DeLong/McNemar tests, calibration (Brier + ECE), leakage comparison  
+8. **Evaluate** — nested LOSO cross-validation, bootstrap multiclass AUC deltas (+ BH-FDR), McNemar (exploratory), calibration, split-protocol comparison (ML-048)  
 9. **Train Deep** — InceptionTime, Gait Transformer, TCN, CNN-1D, BiLSTM-Attention; **LOSO train + evaluate in one stage** (GPU recommended)  
 10. **Ablation** — feature ablation study (all features, top-10 SHAP, leave-one-group-out)  
 11. **Sensor Ablation** — which IMU positions are needed? AUC for every sensor subset (1-sensor to 4-sensor)  
@@ -58,9 +58,23 @@ fall_risk_pipeline/
 15. **Report** — Sensors-ready tables, figures, demographics, and markdown report  
 
 ## Setup
+
+**Reproducible install (matches CI — REP-010):**
+
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-lock.txt --extra-index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements-dev-lock.txt
 ```
+
+Or from repo root: `make install`
+
+**Before running the pipeline**, set the hash seed *before* starting Python (Windows PowerShell):
+
+```powershell
+$env:PYTHONHASHSEED = "42"
+```
+
+Linux/macOS: `export PYTHONHASHSEED=42` or `make pipeline` (Makefile exports it).
 
 ## Reproducible one-command run
 

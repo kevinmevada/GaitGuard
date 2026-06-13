@@ -227,34 +227,150 @@ def _format_pvalue(p: float) -> str:
     return f"{p:.3f}"
 
 
+def benjamini_hochberg_qvalues(pvalues: np.ndarray) -> np.ndarray:
+    """Benjamini-Hochberg FDR q-values for a vector of p-values."""
+    p = np.asarray(pvalues, dtype=float)
+    n = len(p)
+    if n == 0:
+        return p
+    order = np.argsort(p)
+    ranked = p[order]
+    q = np.empty(n, dtype=float)
+    prev = 1.0
+    for i in range(n - 1, -1, -1):
+        rank = i + 1
+        val = ranked[i] * n / rank
+        prev = min(prev, val)
+        q[i] = prev
+    out = np.empty(n, dtype=float)
+    out[order] = np.clip(q, 0.0, 1.0)
+    return out
+
+
+def apply_fdr_correction(
+    df: pd.DataFrame,
+    p_col: str,
+    q_col: str,
+) -> pd.DataFrame:
+    """Add FDR q-value column in place (NaN p-values stay NaN)."""
+    if df.empty or p_col not in df.columns:
+        return df
+    pvals = df[p_col].values.astype(float)
+    mask = np.isfinite(pvals)
+    qvals = np.full(len(pvals), np.nan, dtype=float)
+    if mask.sum() > 0:
+        qvals[mask] = benjamini_hochberg_qvalues(pvals[mask])
+    df = df.copy()
+    df[q_col] = qvals
+    return df
+
+
+def paired_bootstrap_auc_difference_test(
+    y_true: np.ndarray,
+    prob_a: np.ndarray,
+    prob_b: np.ndarray,
+    *,
+    n_bootstrap: int = 1000,
+    random_state: int = 42,
+) -> dict[str, float]:
+    """
+    Subject-level paired bootstrap on macro/binary AUC difference (A − B).
+
+    Primary exploratory test for LOSO OOF comparisons: resamples subjects
+    with replacement and tests whether the bootstrap AUC delta distribution
+    is centered at zero.
+    """
+    samples_a, samples_b = paired_bootstrap_auc_samples(
+        y_true,
+        prob_a,
+        prob_b,
+        n_bootstrap=n_bootstrap,
+        random_state=random_state,
+    )
+    n = len(samples_a)
+    if n < 10:
+        return {
+            "p_value": float("nan"),
+            "ci_low": float("nan"),
+            "ci_high": float("nan"),
+            "mean_delta_auc": float("nan"),
+            "n_bootstrap": float(n),
+        }
+    deltas = samples_a - samples_b
+    p = 2.0 * min(float(np.mean(deltas <= 0)), float(np.mean(deltas >= 0)))
+    p = min(1.0, p)
+    ci_low, ci_high = np.percentile(deltas, [2.5, 97.5])
+    return {
+        "p_value": p,
+        "ci_low": float(ci_low),
+        "ci_high": float(ci_high),
+        "mean_delta_auc": float(np.mean(deltas)),
+        "n_bootstrap": float(n),
+    }
+
+
+def _align_paired_oof_probs(
+    results: dict[str, dict[str, Any]],
+) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray | None]:
+    """
+    Align model OOF predictions to a common subject order (one row per participant).
+    """
+    names = list(results.keys())
+    ref = results[names[0]]
+    y_ref = np.asarray(ref["y_true"]).astype(int)
+    pids = ref.get("participant_ids")
+    if pids is not None and len(pids) == len(y_ref):
+        order = np.argsort(np.asarray(pids, dtype=str))
+        y_ref = y_ref[order]
+        pid_order = np.asarray(pids, dtype=str)[order]
+    else:
+        order = np.arange(len(y_ref))
+        pid_order = None
+
+    probs: dict[str, np.ndarray] = {}
+    for name in names:
+        y_true = np.asarray(results[name]["y_true"]).astype(int)
+        prob = _result_probability_matrix(results[name])
+        if y_true.shape != np.asarray(ref["y_true"]).shape:
+            raise ValueError(f"Out-of-fold labels for {name} do not align with {names[0]}")
+        if pid_order is not None:
+            pids_n = np.asarray(results[name].get("participant_ids", pids), dtype=str)
+            if not np.array_equal(np.sort(pids_n), np.sort(pid_order)):
+                raise ValueError(f"participant_ids for {name} do not match reference")
+            idx = np.argsort(pids_n)
+            y_true = y_true[idx]
+            prob = prob[idx]
+        if not np.array_equal(y_true, y_ref):
+            raise ValueError(f"Out-of-fold labels for {name} do not align after sorting")
+        probs[name] = prob
+
+    return y_ref, probs, pid_order
+
+
 def pairwise_auc_significance(
     results: dict[str, dict[str, Any]],
     *,
     reference: str | None = None,
     n_bootstrap: int = 1000,
     random_state: int = 42,
+    apply_fdr: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Pairwise DeLong + bootstrap tests on nested-CV out-of-fold predictions.
+    Pairwise AUC significance on LOSO out-of-fold predictions (exploratory).
 
-    Multiclass: DeLong is omitted (binary-only); paired bootstrap uses macro-OVR AUC.
+    Primary p-value: paired **subject-level bootstrap** on AUC difference (A−B).
+    Binary supplementary: DeLong on paired subjects. Wilcoxon/MWU on bootstrap
+    AUC marginals are retained as sensitivity checks only.
+
+    When ``apply_fdr`` is True, Benjamini-Hochberg q-values are added across
+    all pairwise comparisons (ML-007).
     """
     if len(results) < 2:
         return pd.DataFrame(), pd.DataFrame()
 
     names = list(results.keys())
-    y_ref = np.asarray(results[names[0]]["y_true"]).astype(int)
+    y_ref, probs, _ = _align_paired_oof_probs(results)
     multiclass = _is_multiclass_results(results)
-
-    probs: dict[str, np.ndarray] = {}
-    for name in names:
-        y_true = np.asarray(results[name]["y_true"]).astype(int)
-        if y_true.shape != y_ref.shape or not np.array_equal(y_true, y_ref):
-            raise ValueError(
-                f"Out-of-fold labels for {name} do not align with {names[0]}; "
-                "cannot run paired AUC tests."
-            )
-        probs[name] = _result_probability_matrix(results[name])
 
     if reference is None:
         reference = max(names, key=lambda n: float(results[n]["auc"]))
@@ -267,6 +383,14 @@ def pairwise_auc_significance(
         else:
             p_delong = delong_roc_pvalue(y_ref, probs[model_a], probs[model_b])
             p_delong_fmt = _format_pvalue(p_delong)
+
+        delta_test = paired_bootstrap_auc_difference_test(
+            y_ref,
+            probs[model_a],
+            probs[model_b],
+            n_bootstrap=n_bootstrap,
+            random_state=random_state,
+        )
         p_wilcoxon = bootstrap_auc_wilcoxon_pvalue(
             y_ref, probs[model_a], probs[model_b],
             n_bootstrap=n_bootstrap, random_state=random_state,
@@ -279,9 +403,18 @@ def pairwise_auc_significance(
             "model_a": model_a,
             "model_b": model_b,
             "label_mode": "multiclass" if multiclass else "binary",
+            "interpretation": "exploratory_loso_oof",
+            "significance_method": "paired_subject_bootstrap_delta",
+            "n_subjects": int(len(y_ref)),
             "auc_a": float(results[model_a]["auc"]),
             "auc_b": float(results[model_b]["auc"]),
             "delta_auc": float(results[model_a]["auc"] - results[model_b]["auc"]),
+            "p_bootstrap_delta": delta_test["p_value"],
+            "p_bootstrap_delta_fmt": _format_pvalue(delta_test["p_value"]),
+            "bootstrap_delta_ci_low": delta_test["ci_low"],
+            "bootstrap_delta_ci_high": delta_test["ci_high"],
+            "bootstrap_mean_delta_auc": delta_test["mean_delta_auc"],
+            "n_bootstrap_replicates": delta_test["n_bootstrap"],
             "p_delong": p_delong,
             "p_bootstrap_wilcoxon": p_wilcoxon,
             "p_bootstrap_mwu": p_mwu,
@@ -290,6 +423,14 @@ def pairwise_auc_significance(
         })
 
     pairwise_df = pd.DataFrame(pairwise_rows)
+    if apply_fdr and not pairwise_df.empty:
+        pairwise_df = apply_fdr_correction(
+            pairwise_df, "p_bootstrap_delta", "fdr_q_bootstrap_delta"
+        )
+        if "p_delong" in pairwise_df.columns:
+            pairwise_df = apply_fdr_correction(
+                pairwise_df, "p_delong", "fdr_q_delong"
+            )
 
     vs_rows: list[dict[str, Any]] = []
     for name in names:
@@ -298,6 +439,10 @@ def pairwise_auc_significance(
                 "model": name,
                 "reference_model": reference,
                 "label_mode": "multiclass" if multiclass else "binary",
+                "interpretation": "exploratory_loso_oof",
+                "significance_method": "paired_subject_bootstrap_delta",
+                "p_bootstrap_delta_vs_reference": 1.0,
+                "p_bootstrap_delta_fmt": "ref",
                 "p_delong_vs_reference": 1.0,
                 "p_bootstrap_wilcoxon_vs_reference": 1.0,
                 "p_bootstrap_mwu_vs_reference": 1.0,
@@ -310,6 +455,14 @@ def pairwise_auc_significance(
         else:
             p_delong = delong_roc_pvalue(y_ref, probs[name], probs[reference])
             p_delong_fmt = _format_pvalue(p_delong)
+
+        delta_test = paired_bootstrap_auc_difference_test(
+            y_ref,
+            probs[name],
+            probs[reference],
+            n_bootstrap=n_bootstrap,
+            random_state=random_state,
+        )
         p_wilcoxon = bootstrap_auc_wilcoxon_pvalue(
             y_ref, probs[name], probs[reference],
             n_bootstrap=n_bootstrap, random_state=random_state,
@@ -322,6 +475,13 @@ def pairwise_auc_significance(
             "model": name,
             "reference_model": reference,
             "label_mode": "multiclass" if multiclass else "binary",
+            "interpretation": "exploratory_loso_oof",
+            "significance_method": "paired_subject_bootstrap_delta",
+            "n_subjects": int(len(y_ref)),
+            "p_bootstrap_delta_vs_reference": delta_test["p_value"],
+            "p_bootstrap_delta_fmt": _format_pvalue(delta_test["p_value"]),
+            "bootstrap_delta_ci_low": delta_test["ci_low"],
+            "bootstrap_delta_ci_high": delta_test["ci_high"],
             "p_delong_vs_reference": p_delong,
             "p_bootstrap_wilcoxon_vs_reference": p_wilcoxon,
             "p_bootstrap_mwu_vs_reference": p_mwu,
@@ -329,10 +489,17 @@ def pairwise_auc_significance(
         })
 
     vs_reference_df = pd.DataFrame(vs_rows)
-    mode = "macro-OVR bootstrap" if multiclass else "DeLong+bootstrap"
+    if apply_fdr and not vs_reference_df.empty:
+        vs_reference_df = apply_fdr_correction(
+            vs_reference_df,
+            "p_bootstrap_delta_vs_reference",
+            "fdr_q_bootstrap_delta_vs_reference",
+        )
+
+    mode = "paired subject bootstrap delta" if multiclass else "DeLong + paired bootstrap delta"
     logger.info(
         f"AUC pairwise tests complete ({mode}, reference={reference}, "
-        f"{len(pairwise_rows)} pairs)"
+        f"{len(pairwise_rows)} pairs, exploratory LOSO OOF)"
     )
     return pairwise_df, vs_reference_df
 
@@ -373,6 +540,7 @@ def dl_vs_classical_auc_significance(
     *,
     n_bootstrap: int = 1000,
     random_state: int = 42,
+    apply_fdr: bool = True,
 ) -> pd.DataFrame:
     """Bootstrap paired macro-OVR AUC: each DL model vs best classical ML model."""
     from pathlib import Path
@@ -405,6 +573,13 @@ def dl_vs_classical_auc_significance(
             logger.warning(f"Skipping DL vs classical test for {dl_model}: label misalignment")
             continue
         dl_probs = _result_probability_matrix(dl_res)
+        delta_test = paired_bootstrap_auc_difference_test(
+            y_ref,
+            dl_probs,
+            ref_probs,
+            n_bootstrap=n_bootstrap,
+            random_state=random_state,
+        )
         p_wilcoxon = bootstrap_auc_wilcoxon_pvalue(
             y_ref, dl_probs, ref_probs,
             n_bootstrap=n_bootstrap, random_state=random_state,
@@ -416,9 +591,16 @@ def dl_vs_classical_auc_significance(
         rows.append({
             "dl_model": str(dl_model),
             "classical_reference": best_cl,
+            "interpretation": "exploratory_loso_oof",
+            "significance_method": "paired_subject_bootstrap_delta",
+            "n_subjects": int(len(y_ref)),
             "auc_dl": float(dl_res["auc"]),
             "auc_classical": float(ref["auc"]),
             "delta_auc_dl_minus_classical": float(dl_res["auc"] - ref["auc"]),
+            "p_bootstrap_delta": delta_test["p_value"],
+            "p_bootstrap_delta_fmt": _format_pvalue(delta_test["p_value"]),
+            "bootstrap_delta_ci_low": delta_test["ci_low"],
+            "bootstrap_delta_ci_high": delta_test["ci_high"],
             "p_bootstrap_wilcoxon": p_wilcoxon,
             "p_bootstrap_mwu": p_mwu,
             "p_bootstrap_mwu_fmt": _format_pvalue(p_mwu),
@@ -426,6 +608,8 @@ def dl_vs_classical_auc_significance(
         })
 
     out = pd.DataFrame(rows)
+    if apply_fdr and not out.empty:
+        out = apply_fdr_correction(out, "p_bootstrap_delta", "fdr_q_bootstrap_delta")
     if not out.empty:
         out.to_csv(metrics_dir / "dl_vs_classical_pairwise_pvalues.csv", index=False)
         logger.info(

@@ -1,0 +1,35 @@
+# Auto-generated CPU lockfile (RES-007) — regenerate after dependency changes:
+#   python scripts/generate_requirements_lock.py --install --torch-index cpu
+#
+# Install exact versions (CI / CPU researchers):
+#   pip install -r fall_risk_pipeline/requirements-lock.txt
+#
+# GPU training (optional — reinstall torch from CUDA index if needed):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+# Or regenerate a CUDA lockfile:
+#   python scripts/generate_requirements_lock.py --install --torch-index cu128 \
+#     --output fall_risk_pipeline/requirements-lock-cu128.txt
+
+AHRS==0.4.0
+PyWavelets==1.9.0
+PyYAML==6.0.3
+antropy==0.2.2
+joblib==1.5.2
+lightgbm==4.6.0
+loguru==0.7.3
+matplotlib==3.10.6
+nolds==0.6.3
+numpy==2.3.5
+optuna==4.8.0
+pandas==2.3.3
+pingouin==0.6.0
+pyarrow==21.0.0
+rich==14.2.0
+scikit-learn==1.8.0
+scipy==1.16.3
+seaborn==0.13.2
+shap==0.51.0
+statsmodels==0.14.5
+torch==2.12.0+cpu
+tqdm==4.67.1
+xgboost==3.1.3

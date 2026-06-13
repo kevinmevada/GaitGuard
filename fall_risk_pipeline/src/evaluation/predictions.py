@@ -8,7 +8,6 @@ FIX: fall_probability and laterality_biased excluded from feature columns,
 from __future__ import annotations
 
 import json
-import pickle
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +27,9 @@ from src.evaluation.research_disclaimers import (
     limitations_payload,
     screening_note,
 )
+from src.evaluation.primary_endpoint import resolve_inference_checkpoint_name
 from src.features.feature_matrix import load_patient_feature_matrix
+from src.utils.checkpoint_io import CheckpointIntegrityError, load_checkpoint
 
 
 class PredictionGenerator:
@@ -58,6 +59,12 @@ class PredictionGenerator:
         self._save_summary(df, y_prob)
 
     def _load_best_model(self):
+        deploy_name = resolve_inference_checkpoint_name(self.config, self.results_dir)
+        model = self._load_fitted_model(self.ckpt_dir / f"{deploy_name}.pkl")
+        if model is not None:
+            logger.info(f"Loaded primary deploy checkpoint: {deploy_name}")
+            return model
+
         metrics_path = self.results_dir / "metrics.csv"
         if metrics_path.exists():
             df = pd.read_csv(metrics_path)
@@ -97,8 +104,20 @@ class PredictionGenerator:
         if not model_path.exists():
             return None
 
-        with open(model_path, "rb") as f:
-            model = pickle.load(f)
+        try:
+            model = load_checkpoint(
+                model_path,
+                manifest_dir=self.ckpt_dir,
+                require_manifest=True,
+            )
+        except CheckpointIntegrityError as exc:
+            logger.warning(
+                f"Checkpoint verification failed for {model_path.name}: {exc}"
+            )
+            return None
+        except Exception as exc:
+            logger.warning(f"Failed to load checkpoint {model_path.name}: {exc}")
+            return None
 
         try:
             check_is_fitted(model)

@@ -15,4 +15,6 @@ fall_risk_pipeline/data
 fall_risk_pipeline/results
 fall_risk_pipeline/logs
 api/__pycache__
-Front_end/node_modules
+.env
+.env.*
+**/.env

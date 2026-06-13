@@ -312,6 +312,14 @@ class DataLoader:
         if not signals:
             raise ValueError("No valid signals")
 
+        expected_sensors = set(SENSOR_FILE_MAPPING)
+        missing_sensors = expected_sensors - set(signals)
+        if missing_sensors:
+            logger.warning(
+                f"{trial_dir.name}: missing sensors {sorted(missing_sensors)} — "
+                "bilateral/asymmetry and cross-sensor features may be degraded"
+            )
+
         from src.preprocessing.gait_events_gt import load_ground_truth_gait_events
 
         gait_events = load_ground_truth_gait_events(trial_dir)

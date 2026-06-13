@@ -27,7 +27,7 @@ These constraints are **acceptable for a methods-focused *Sensors* paper** when 
 
 1. **Internal validation only** — Performance metrics (e.g. LOSO macro AUC, Youden sensitivity/specificity) are from **cross-validation on the same dataset**, not independent prospective testing.
 
-2. **Global feature selection before LOSO** — Feature selection was performed globally on all 260 patients prior to LOSO evaluation, which may modestly overstate feature-subset stability; model accuracy estimates are unaffected as Optuna tuning and prediction remain strictly within each LOSO fold.
+2. **Global feature selection before LOSO** — The `select_features` pipeline stage exports a global mask from all 260 participants for **deployment checkpoints** and exploratory reports. Primary LOSO evaluation (`nested_in_evaluation: true`) re-runs RFECV on each train fold only so held-out subjects do not influence the feature set used for scoring. Reported LOSO metrics use this nested path; the global mask must not be used to interpret unbiased evaluation performance.
 
 3. **Not medical advice** — Text such as “may warrant further clinical assessment” is intentionally non-directive. It does **not** recommend a specific treatment, admission, or intervention.
 
@@ -39,7 +39,13 @@ These constraints are **acceptable for a methods-focused *Sensors* paper** when 
 
 7. **Generalization** — Sensor type, placement, walking protocol, and cohort mix may not match other populations. External validation is required before operational use.
 
-8. **Anomaly detection** — Unsupervised flags mark deviation from healthy training references; they are not validated predictors of falls or adverse events.
+8. **Forced nonlinear feature slots** — Up to four `sampen`/`dfa` family features may be retained regardless of RFECV rank (ranked by mean |SHAP| when capped). This preserves mechanistic coverage but can displace stronger linear predictors; review `required_feature_shap_audit.csv` after rerun before raising `max_required_features`.
+
+9. **Deep learning hyperparameters** — Tabular models re-tune with Optuna on each LOSO train fold; deep models use fixed global settings unless `deep_learning.loso_hyperparameter_tuning.enabled` is set (see `docs/paper/methods.md`, ML-042).
+
+10. **Deep learning window overlap** — Held-out participant inference uses overlapping windows for soft voting; inner train/validation deduplicate to one window per stride block per trial by default (`training_window_deduplication`, ML-043).
+
+11. **Anomaly detection** — Unsupervised flags mark deviation from healthy training references; they are not validated predictors of falls or adverse events.
 
 ---
 

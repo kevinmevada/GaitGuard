@@ -41,7 +41,7 @@ The primary task is supervised 3-class screening (Healthy vs orthopedic vs neuro
 - Dataset: 1,356 trials from 260 participants (8 open-data cohorts)
 - Features: trial-level temporal, spectral (incl. centroid), trunk, orientation, and asymmetry indicators (no uncalibrated step length / gait speed)
 - Models: tabular ensemble (XGBoost, LightGBM, Random Forest, SVM) + deep models (InceptionTime, Transformer, TCN, CNN-1D, BiLSTM-Attention)
-- Sensor ablation headline: `head + right_foot` (2 sensors) achieved AUC `0.9336`, outperforming all 4 sensors (AUC `0.9273`)
+- Sensor ablation: see [`docs/paper/results.md`](docs/paper/results.md) section 7 after `python main.py --stage sensor_ablation` and `python ../scripts/regenerate_paper_results.py` (do not cite pre-fix AUCs from older drafts)
 - Anomaly Detection: 3 unsupervised methods (Isolation Forest, LOF, One-Class SVM)
 
 ### Open Data Cohorts

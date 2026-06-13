@@ -17,7 +17,7 @@ This study makes six practical contributions for Sensors-style reproducible rese
 3. Joint interpretability and robustness analyses (SHAP, feature ablation, sensor ablation, and cross-cohort transfer).
 4. Publicly inspectable artifacts and automation-oriented execution entry points intended to support independent replication.
 5. Dual-layer architecture combining supervised pathology-tier classification with unsupervised anomaly detection.
-6. Sensor-efficiency evidence: two-sensor configuration (head + right foot) achieves AUC 0.934, exceeding the four-sensor baseline.
+6. Sensor-efficiency evidence from LOSO sensor ablation (two-sensor head + right foot configurations vs four-sensor baseline); headline AUC values are reported in `docs/paper/results.md` (section 7; regenerate after pipeline rerun).
 
 We emphasize that labels in this dataset are cohort-level pathology categories rather than prospectively adjudicated individual fall outcomes. Accordingly, performance metrics should be interpreted as evidence for pathology-tier screening utility, not direct clinical fall prediction. Prospective external validation with participant-level incident falls is required before clinical deployment claims.
 

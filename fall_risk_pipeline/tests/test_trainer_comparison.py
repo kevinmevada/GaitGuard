@@ -57,7 +57,7 @@ def test_save_comparison_reports_nested_cv_and_deployed_params(trainer: ModelTra
     }
 
     ens_row = df.loc[df["model"] == "ensemble_stacking"].iloc[0]
-    assert ens_row["cv_auc_source"] == "ensemble_cv"
+    assert ens_row["cv_auc_source"] == "nested_rfecv_ensemble_cv"
 
     params_path = trainer.metrics_dir / "model_deployed_params.json"
     saved = json.loads(params_path.read_text(encoding="utf-8"))

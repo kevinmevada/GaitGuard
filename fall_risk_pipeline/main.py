@@ -75,7 +75,7 @@ def setup_logging(config: dict):
     logger.add(log_dir / "pipeline.log", level="DEBUG", rotation="5 MB")
 
 
-def run_stage(stage: str, config: dict, *, fast_eval: bool = False) -> float:
+def run_stage(stage: str, config: dict) -> float:
     t0 = time.time()
 
     if stage == "ingest":
@@ -108,7 +108,7 @@ def run_stage(stage: str, config: dict, *, fast_eval: bool = False) -> float:
             logger.info("Deep learning disabled in config — skipping train_deep.")
     elif stage == "evaluate":
         from src.evaluation.evaluator import Evaluator
-        Evaluator(config, fast=fast_eval).run()
+        Evaluator(config).run()
     elif stage == "ablation":
         from src.evaluation.feature_ablation import run_feature_ablation
         run_feature_ablation(config)
@@ -145,13 +145,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/pipeline_config.yaml")
     parser.add_argument("--stage", default="all")
-    parser.add_argument(
-        "--fast-eval", "--fast",
-        action="store_true",
-        dest="fast_eval",
-        help="Use per-fold checkpoint refit for evaluate/ablation (faster). "
-        "Omit for full nested Optuna LOSO (paper-grade, much slower).",
-    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -208,7 +201,7 @@ def main():
             )
 
             try:
-                elapsed = run_stage(stage, config, fast_eval=args.fast_eval)
+                elapsed = run_stage(stage, config)
                 stage_timings.append((stage, elapsed, "[green]OK[/green]"))
                 console.print(
                     f"  [green][OK][/green] {stage} completed in {_fmt_time(elapsed)}"

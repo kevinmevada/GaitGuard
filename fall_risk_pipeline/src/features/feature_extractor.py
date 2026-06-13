@@ -159,6 +159,61 @@ class FeatureExtractor:
         patient_df.to_parquet(patient_path, index=False)
         logger.info(f"Patient features saved → {patient_path}  shape={patient_df.shape}")
 
+    def extract_trial_features_from_processed(
+        self,
+        processed: dict[str, pd.DataFrame],
+        metadata: dict,
+    ) -> dict:
+        """
+        Extract one trial's feature dict from preprocessed sensor DataFrames.
+
+        Public entry point for deployment inference (replaces direct ``_*`` calls).
+        Mirrors ``_extract_trial`` but accepts in-memory processed frames instead of
+        loading from disk.
+        """
+        feats: dict = {
+            "trial_id": metadata.get("trial_id", "uploaded_trial"),
+            "session": metadata.get("session"),
+            "participant_id": metadata.get("participant_id", "uploaded_participant"),
+            "cohort": metadata.get("cohort"),
+            "risk_label": metadata.get("risk_label", 0),
+            "multiclass_label": metadata.get("multiclass_label"),
+            "fall_probability": metadata.get("fall_probability"),
+            "laterality_biased": metadata.get("laterality_biased", False),
+        }
+        if feats["multiclass_label"] is None and feats.get("cohort") is not None:
+            feats["multiclass_label"] = multiclass_label_from_cohort(str(feats["cohort"]))
+
+        lb = processed.get("lower_back")
+        if lb is not None:
+            feats.update(self._trunk_dynamics(lb, prefix="lb"))
+            feats.update(self._spectral_features(lb, prefix="lb"))
+            feats.update(self._wavelet_features(lb, prefix="lb"))
+            feats.update(self._orientation_features(lb, prefix="lb"))
+
+        lf = processed.get("left_foot")
+        rf = processed.get("right_foot")
+        if lf is not None and rf is not None:
+            feats.update(self._gait_cycle_features(lf, rf))
+            feats.update(self._asymmetry_features(lf, rf))
+
+        hd = processed.get("head")
+        if hd is not None:
+            feats.update(self._trunk_dynamics(hd, prefix="head"))
+            feats.update(self._spectral_features(hd, prefix="head"))
+            feats.update(self._wavelet_features(hd, prefix="head"))
+            feats.update(self._orientation_features(hd, prefix="head"))
+
+        if lb is not None and hd is not None:
+            feats.update(self._head_lb_transmission(feats))
+
+        uturn_start = metadata.get("uturn_start")
+        uturn_end = metadata.get("uturn_end")
+        if lb is not None and uturn_start is not None and uturn_end is not None:
+            feats.update(self._turning_features(lb, int(uturn_start), int(uturn_end)))
+
+        return feats
+
     # ── Per-trial extraction ───────────────────────────────────────────────────
 
     def _extract_trial(self, row: dict) -> Optional[dict]:

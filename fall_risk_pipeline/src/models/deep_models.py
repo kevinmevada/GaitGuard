@@ -28,6 +28,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from loguru import logger
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader, Dataset
 
@@ -49,6 +50,44 @@ class GaitSequenceDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
+
+
+def participant_balanced_ce_class_weights(
+    y: np.ndarray,
+    participant_ids: np.ndarray,
+    n_classes: int,
+) -> np.ndarray:
+    """
+    CrossEntropyLoss class weights from **participant** counts (not windows).
+
+    Matches sklearn/XGBoost multiclass balancing: N / (n_classes * count_per_class)
+    where N is the number of unique training participants.
+    """
+    y = np.asarray(y, dtype=int)
+    pids = np.asarray(participant_ids)
+    if len(y) != len(pids):
+        raise ValueError("y and participant_ids must have the same length")
+
+    pid_to_label: dict[str, int] = {}
+    for pid, label in zip(pids, y):
+        key = str(pid)
+        label_i = int(label)
+        if key in pid_to_label and pid_to_label[key] != label_i:
+            raise ValueError(f"Participant {key} has conflicting window labels")
+        pid_to_label[key] = label_i
+
+    participant_labels = np.fromiter(pid_to_label.values(), dtype=int)
+    counts = np.bincount(participant_labels, minlength=n_classes).astype(float)
+    counts = np.where(counts == 0, 1.0, counts)
+    return (len(participant_labels) / (n_classes * counts)).astype(np.float32)
+
+
+def window_level_ce_class_weights(y: np.ndarray, n_classes: int) -> np.ndarray:
+    """Legacy inverse-frequency weights from duplicated per-window labels."""
+    counts = np.bincount(np.asarray(y, dtype=int), minlength=n_classes).astype(float)
+    counts = np.where(counts == 0, 1.0, counts)
+    weights = 1.0 / counts
+    return (weights / weights.sum()).astype(np.float32)
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -381,23 +420,61 @@ def create_windows(
     signal: np.ndarray,
     window_len: int,
     overlap: float,
-) -> np.ndarray:
+    *,
+    return_starts: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """
     Slide fixed-length windows over a (C, T) signal array.
-    Returns (n_windows, C, window_len).
+    Returns (n_windows, C, window_len), optionally with start indices per window.
     """
     if overlap >= 1.0:
         raise ValueError("Overlap must be < 1")
     step = max(1, int(window_len * (1 - overlap)))
     C, T = signal.shape
     windows = []
+    starts: list[int] = []
     start = 0
     while start + window_len <= T:
         windows.append(signal[:, start:start + window_len])
+        starts.append(start)
         start += step
     if not windows:
-        return np.empty((0, C, window_len), dtype=np.float32)
-    return np.stack(windows, axis=0)
+        empty = np.empty((0, C, window_len), dtype=np.float32)
+        if return_starts:
+            return empty, np.array([], dtype=int)
+        return empty
+    stacked = np.stack(windows, axis=0)
+    if return_starts:
+        return stacked, np.asarray(starts, dtype=int)
+    return stacked
+
+
+def independent_stride_window_indices(
+    starts: np.ndarray,
+    trial_ids: np.ndarray,
+    window_len: int,
+    *,
+    seed: int,
+) -> np.ndarray:
+    """
+    Select at most one window per non-overlapping stride block within each trial (ML-043).
+
+    With 50% overlap, consecutive windows share half their samples; this keeps one window
+    per ``[k * window_len, (k+1) * window_len)`` block per trial for training/validation.
+    """
+    from collections import defaultdict
+
+    if len(starts) != len(trial_ids):
+        raise ValueError("starts and trial_ids must have the same length")
+
+    rng = np.random.default_rng(seed)
+    groups: dict[tuple[str, int], list[int]] = defaultdict(list)
+    for i, (tid, start) in enumerate(zip(trial_ids, starts, strict=True)):
+        block = int(start) // window_len
+        groups[(str(tid), block)].append(i)
+
+    keep = sorted(int(rng.choice(indices)) for indices in groups.values())
+    return np.asarray(keep, dtype=int)
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -442,6 +519,8 @@ class DeepModelTrainer:
         X_val: np.ndarray,
         y_val: np.ndarray,
         *,
+        participant_ids_train: np.ndarray | None = None,
+        participant_ids_val: np.ndarray | None = None,
         shuffle_seed: int | None = None,
         on_epoch: Callable[[int, float, float, float], None] | None = None,
     ) -> nn.Module:
@@ -461,12 +540,19 @@ class DeepModelTrainer:
             generator=train_generator,
             drop_last=len(train_ds) > self.batch_size,
         )
-        val_dl = DataLoader(val_ds, batch_size=self.batch_size)
+        val_dl = DataLoader(val_ds, batch_size=self.batch_size, shuffle=False)
 
         n_classes = int(max(y_train.max(), y_val.max())) + 1
-        counts = np.bincount(y_train, minlength=n_classes).astype(float)
-        weights = 1.0 / (counts + 1e-6)
-        weights = weights / weights.sum()
+        if participant_ids_train is not None:
+            weights = participant_balanced_ce_class_weights(
+                y_train, participant_ids_train, n_classes
+            )
+        else:
+            logger.warning(
+                "DeepModelTrainer.train called without participant_ids_train; "
+                "using window-level class weights (deprecated)"
+            )
+            weights = window_level_ce_class_weights(y_train, n_classes)
         weights_t = torch.tensor(weights, dtype=torch.float32).to(self.device)
 
         criterion = nn.CrossEntropyLoss(weight=weights_t)
@@ -501,7 +587,9 @@ class DeepModelTrainer:
                 n_batches += 1
 
             scheduler.step()
-            val_auc = self._evaluate_auc(model, val_dl, n_classes)
+            val_auc = self._evaluate_auc(
+                model, val_dl, n_classes, participant_ids_val=participant_ids_val
+            )
             mean_loss = running_loss / max(n_batches, 1)
 
             if on_epoch is not None:
@@ -537,24 +625,51 @@ class DeepModelTrainer:
                 probs.append(prob)
         return np.vstack(probs)
 
-    def _evaluate_auc(self, model: nn.Module, dl: DataLoader, n_classes: int) -> float:
+    def _evaluate_auc(
+        self,
+        model: nn.Module,
+        dl: DataLoader,
+        n_classes: int,
+        *,
+        participant_ids_val: np.ndarray | None = None,
+    ) -> float:
+        """Validation AUC; aggregates window probs per participant when IDs given (ML-016)."""
         model.eval()
-        all_y, all_prob = [], []
+        all_y: list[int] = []
+        all_prob: list[np.ndarray] = []
         with torch.no_grad():
             for Xb, yb in dl:
                 with self._autocast_context():
                     logits = model(Xb.to(next(model.parameters()).device))
                 prob = torch.softmax(logits, dim=1).cpu().numpy()
                 all_prob.append(prob)
-                all_y.extend(yb.numpy())
+                all_y.extend(yb.numpy().tolist())
 
-        all_y = np.array(all_y)
-        all_prob = np.vstack(all_prob)
-        if len(set(all_y)) < 2:
+        if not all_y:
+            return 0.5
+
+        y_arr = np.asarray(all_y, dtype=int)
+        prob_arr = np.vstack(all_prob)
+
+        if participant_ids_val is not None and len(participant_ids_val) == len(y_arr):
+            pids = np.asarray(participant_ids_val)
+            unique_pids = np.unique(pids)
+            agg_y: list[int] = []
+            agg_prob: list[np.ndarray] = []
+            for pid in unique_pids:
+                mask = pids == pid
+                agg_y.append(int(y_arr[mask][0]))
+                agg_prob.append(prob_arr[mask].mean(axis=0))
+            y_arr = np.asarray(agg_y, dtype=int)
+            prob_arr = np.vstack(agg_prob)
+
+        if len(np.unique(y_arr)) < 2:
             return 0.5
         try:
             if n_classes == 2:
-                return roc_auc_score(all_y, all_prob[:, 1])
-            return roc_auc_score(all_y, all_prob, multi_class="ovr", average="macro")
+                return float(roc_auc_score(y_arr, prob_arr[:, 1]))
+            return float(
+                roc_auc_score(y_arr, prob_arr, multi_class="ovr", average="macro")
+            )
         except ValueError:
             return 0.5

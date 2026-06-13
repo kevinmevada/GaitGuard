@@ -9,7 +9,9 @@ from sklearn.metrics import roc_auc_score
 
 from src.evaluation.auc_significance import (
     _oof_group_to_result,
+    benjamini_hochberg_qvalues,
     dl_vs_classical_auc_significance,
+    paired_bootstrap_auc_difference_test,
     paired_bootstrap_macro_auc_samples,
     pairwise_auc_significance,
 )
@@ -60,11 +62,36 @@ def test_pairwise_auc_significance_multiclass_omits_delong():
     )
     assert not pairwise_df.empty
     assert pairwise_df.iloc[0]["label_mode"] == "multiclass"
+    assert pairwise_df.iloc[0]["interpretation"] == "exploratory_loso_oof"
     assert np.isnan(pairwise_df.iloc[0]["p_delong"])
     assert pairwise_df.iloc[0]["p_delong_fmt"] == "n/a (multiclass)"
+    assert np.isfinite(pairwise_df.iloc[0]["p_bootstrap_delta"])
+    assert "fdr_q_bootstrap_delta" in pairwise_df.columns
     assert np.isfinite(pairwise_df.iloc[0]["p_bootstrap_mwu"])
     assert not vs_ref_df.empty
     assert vs_ref_df.iloc[0]["label_mode"] == "multiclass"
+
+
+def test_paired_bootstrap_auc_difference_test_returns_ci():
+    results = _multiclass_results(n=90, seed=3)
+    y = results["model_a"]["y_true"]
+    out = paired_bootstrap_auc_difference_test(
+        y,
+        results["model_a"]["y_proba_full"],
+        results["model_b"]["y_proba_full"],
+        n_bootstrap=200,
+        random_state=1,
+    )
+    assert np.isfinite(out["p_value"])
+    assert out["ci_low"] <= out["ci_high"]
+    assert out["n_bootstrap"] >= 10
+
+
+def test_benjamini_hochberg_monotone():
+    p = np.array([0.01, 0.04, 0.03, 0.20])
+    q = benjamini_hochberg_qvalues(p)
+    assert np.all(q >= p)
+    assert np.all(q <= 1.0)
 
 
 def test_oof_group_to_result_multiclass_columns():
@@ -118,6 +145,7 @@ def test_dl_vs_classical_auc_significance(tmp_path):
         metrics_dir, n_bootstrap=150, random_state=42
     )
     assert not out.empty
-    assert "p_bootstrap_mwu" in out.columns
-    assert np.isfinite(out.iloc[0]["p_bootstrap_mwu"])
+    assert "p_bootstrap_delta" in out.columns
+    assert "fdr_q_bootstrap_delta" in out.columns
+    assert np.isfinite(out.iloc[0]["p_bootstrap_delta"])
     assert (metrics_dir / "dl_vs_classical_pairwise_pvalues.csv").exists()

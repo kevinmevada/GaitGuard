@@ -138,13 +138,13 @@ document.querySelectorAll('[data-count]').forEach(el => ctrObs.observe(el));
 // ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
 
 (async function initHero() {
-  // Dynamically import Three.js ES modules
-  const THREE = await import('https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js');
-  const { GLTFLoader } = await import('https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/loaders/GLTFLoader.js');
-  const { EffectComposer } = await import('https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/postprocessing/EffectComposer.js');
-  const { RenderPass } = await import('https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/postprocessing/RenderPass.js');
-  const { UnrealBloomPass } = await import('https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/postprocessing/UnrealBloomPass.js');
-  const { ShaderPass } = await import('https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/postprocessing/ShaderPass.js');
+  // Import map + integrity pins in index.html (SEC-014); do not use bare CDN URLs here.
+  const THREE = await import('three');
+  const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+  const { EffectComposer } = await import('three/addons/postprocessing/EffectComposer.js');
+  const { RenderPass } = await import('three/addons/postprocessing/RenderPass.js');
+  const { UnrealBloomPass } = await import('three/addons/postprocessing/UnrealBloomPass.js');
+  const { ShaderPass } = await import('three/addons/postprocessing/ShaderPass.js');
 
   const canvas = document.getElementById('hero-canvas');
   if (!canvas) return;
@@ -679,16 +679,106 @@ document.querySelectorAll('[data-count]').forEach(el => ctrObs.observe(el));
 // ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
 
 const GRAPH_NAMES = [
+  'Anomaly Score',
+  'Pathology Tier',
   'Confidence',
-  'Anomaly',
-  'Cohort',
   'Trials'
 ];
 
-// API_BASE can be configured via window.GAITGUARD_API_BASE or environment variable
-// Defaults to localhost:8001 for development
-const API_BASE = window.GAITGUARD_API_BASE || 'http://localhost:8001';
-console.log('API_BASE set to:', API_BASE);
+// API_BASE can be configured via window.GAITGUARD_API_BASE.
+// We also keep safe local fallbacks because some browsers/environments
+// resolve localhost/127.0.0.1 differently.
+// API_BASE: same-origin when UI is served with the API (e.g. port 8000 Docker);
+// localhost:8001 remains the dev fallback when opened from a separate static server.
+const API_BASE = window.GAITGUARD_API_BASE || (
+  window.location.protocol !== 'file:' && window.location.origin
+    ? window.location.origin
+    : 'http://localhost:8001'
+);
+const API_BASE_CANDIDATES = Array.from(new Set([
+  API_BASE,
+  window.location.origin,
+  'http://localhost:8000',
+  'http://127.0.0.1:8000',
+  'http://localhost:8001',
+  'http://127.0.0.1:8001',
+].filter(Boolean)));
+console.log('API_BASE candidates:', API_BASE_CANDIDATES);
+
+if (window.location.protocol === 'file:') {
+  document.addEventListener('DOMContentLoaded', function () {
+    const dropzone = document.getElementById('dropzone');
+    if (!dropzone) return;
+    const warn = document.createElement('div');
+    warn.style.cssText = 'margin-top:12px;padding:10px 14px;border-radius:8px;background:#3b1f1f;color:#ffb4b4;font-size:13px;line-height:1.4;';
+    warn.textContent =
+      'Connection will fail when this page is opened as a file. ' +
+      'Run a local server and open http://localhost:5500 instead.';
+    dropzone.appendChild(warn);
+  });
+}
+
+// SEC-006: never embed GAITGUARD_API_KEY in static JS. Same-origin UI uses POST /app/predict
+// (server-side same-origin gate). Cross-origin or programmatic clients use POST /predict
+// with X-API-Key or an edge auth gateway (Cloudflare Access, Render auth).
+function predictPathForBase(baseUrl) {
+  try {
+    const normalizedBase = String(baseUrl || '').replace(/\/+$/, '');
+    const origin = window.location.origin ? window.location.origin.replace(/\/+$/, '') : '';
+    if (origin && normalizedBase === origin) {
+      return '/app/predict';
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  return '/predict';
+}
+
+async function postPredictWithFallback(formData) {
+  let lastNetworkError = null;
+
+  for (const baseUrl of API_BASE_CANDIDATES) {
+    const path = predictPathForBase(baseUrl);
+    const url = baseUrl.replace(/\/+$/, '') + path;
+    try {
+      console.log('Trying API:', url);
+      upsertApiDebugLine('Trying API: ' + url);
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData
+      });
+      upsertApiDebugLine('Connected API: ' + url + ' (status ' + response.status + ')');
+      return response;
+    } catch (error) {
+      lastNetworkError = error;
+      console.warn('API endpoint unreachable:', url, error);
+      upsertApiDebugLine(
+        'Connection failed: ' + url + ' | ' + (error && error.message ? error.message : 'network error')
+      );
+    }
+  }
+
+  throw new Error(
+    'Cannot connect to the API server. Please ensure the backend is running and reachable from this page.'
+  );
+}
+
+function upsertApiDebugLine(message) {
+  const dropzone = document.getElementById('dropzone');
+  if (!dropzone) return;
+
+  let debug = document.getElementById('api-debug-line');
+  if (!debug) {
+    debug = document.createElement('div');
+    debug.id = 'api-debug-line';
+    debug.style.marginTop = '10px';
+    debug.style.fontSize = '12px';
+    debug.style.color = '#6e6e73';
+    debug.style.wordBreak = 'break-word';
+    dropzone.appendChild(debug);
+  }
+  debug.textContent = message;
+}
 
 function createElement(tag, className, text) {
   const el = document.createElement(tag);
@@ -742,7 +832,7 @@ function setDropzoneState(icon, title, subtitle, options) {
 
 function createTrialRow(result, riskClass, riskLevel, anomaly, graphValues, metaObj) {
   const row = createElement('div', 'trial-row active');
-  row.dataset.score = result.risk_score || '-';
+  row.dataset.score = result.anomaly_score != null ? result.anomaly_score : (result.risk_score || '-');
   row.dataset.risk = riskLevel;
   row.dataset.name = result.participant_id || 'Uploaded Patient';
   row.dataset.id = result.trial_id || 'Uploaded Trial';
@@ -918,23 +1008,14 @@ async function handleFilesSafe(files) {
   if (!validation.valid) { alert(validation.error); return; }
 
   setDropzoneState('...', 'Processing...', 'Analysing gait patterns with ensemble models');
+  upsertApiDebugLine('Starting upload...');
 
   try {
     const formData = new FormData();
     fileList.forEach(function(f) { formData.append('files', f); });
 
-    let response;
-    try {
-      const url = (API_BASE || '') + '/predict';
-      console.log('Fetching from:', url);
-      response = await fetch(url, {
-        method: 'POST',
-        body: formData
-      });
-    } catch (error) {
-      console.error('Fetch error:', error);
-      throw new Error('Cannot connect to the API server. Please ensure the backend is running and reachable from this page.');
-    }
+    upsertApiDebugLine('Trying API endpoints: ' + API_BASE_CANDIDATES.join(' , '));
+    const response = await postPredictWithFallback(formData);
 
     if (!response.ok) {
       let detail = 'API Error: ' + response.status + ' ' + response.statusText;
@@ -953,6 +1034,7 @@ async function handleFilesSafe(files) {
     }
 
     setDropzoneState('Done', 'Analysis Complete!', 'Scroll down to see your fall risk report');
+    upsertApiDebugLine('Upload and prediction succeeded.');
     injectApiResultSafe(result);
     setTimeout(function() {
       var r = document.getElementById('results');
@@ -964,6 +1046,7 @@ async function handleFilesSafe(files) {
     setDropzoneState('Error', 'Upload Failed', msg, {
       onRetry: function() { window.location.reload(); }
     });
+    upsertApiDebugLine('Final error: ' + msg);
   }
 }
 
@@ -977,15 +1060,18 @@ function injectApiResultSafe(result) {
   const riskClass = riskLevel === 'high' ? 'r-high' : riskLevel === 'moderate' ? 'r-mod' : 'r-low';
   const anomaly   = result.anomaly_status || 'Not Detected';
   const graphValues = result.graph_values || {
+    anomaly_score: 0,
+    anomaly: 0,
+    risk_score: 0,
     confidence: 0,
-    anomaly: 20,
-    cohort: 50,
     trials: 20
   };
 
   const metaObj = {
-    Confidence: result.metadata && result.metadata.confidence ? result.metadata.confidence : '0%',
+    'Anomaly Score': result.metadata && result.metadata.anomaly_score ? result.metadata.anomaly_score : '0%',
     Anomaly: result.metadata && result.metadata.anomaly ? result.metadata.anomaly : 'Normal',
+    'Pathology Tier': result.risk_score != null ? String(result.risk_score) : '-',
+    Confidence: result.metadata && result.metadata.confidence ? result.metadata.confidence : '0%',
     Cohort: (result.metadata && result.metadata.cohort) ? result.metadata.cohort : 'Uploaded',
     Trials: result.metadata && result.metadata.trials ? result.metadata.trials : '1'
   };

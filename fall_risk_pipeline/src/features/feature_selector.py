@@ -29,6 +29,11 @@ from src.evaluation.shap_multiclass import (
     per_class_mean_abs_importance,
     split_shap_by_class,
 )
+
+
+def _rfe_pipeline_importance(estimator: Pipeline) -> np.ndarray:
+    """Expose fitted RF importances for RFECV when estimator is imputer→scaler→clf."""
+    return np.asarray(estimator.named_steps["clf"].feature_importances_)
 from src.features.feature_matrix import (
     SELECTED_FEATURES_FILE,
     get_numeric_feature_columns,
@@ -105,8 +110,10 @@ class FeatureSelector:
                 else "rfecv"
             )
 
-        selected, forced_required, dropped_required = self._enforce_required_features(
-            selected, feat_cols
+        selected, forced_required, dropped_required, required_shap_audit = (
+            self._enforce_required_features(
+                selected, feat_cols, shap_detail.get("full_mean_abs_shap")
+            )
         )
         n_features_after = len(selected)
         p_n_after = n_participants / max(n_features_after, 1)
@@ -130,6 +137,7 @@ class FeatureSelector:
             "required_feature_substrings": self.required_feature_substrings,
             "forced_required_features": forced_required,
             "dropped_required_features": dropped_required,
+            "required_feature_shap_audit": required_shap_audit,
             "features": selected,
             "rfecv_features": rfecv_features,
             "shap_features": shap_features,
@@ -144,6 +152,7 @@ class FeatureSelector:
             json.dump(payload, fh, indent=2)
 
         self._write_comparison_csv(comparison_rows)
+        self._write_required_shap_audit_csv(required_shap_audit)
         self._write_report_md(payload)
 
         meta_cols = [c for c in df.columns if c not in get_numeric_feature_columns(df)]
@@ -172,26 +181,67 @@ class FeatureSelector:
             ),
         ])
 
+    def select_feature_names(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        groups: np.ndarray,
+        feat_cols: list[str],
+        *,
+        n_jobs: int = 1,
+    ) -> list[str]:
+        """
+        Group-aware RFECV (+ optional required-feature enforcement) on ``X``.
+
+        Call on LOSO **train folds only** during evaluation to avoid leaking
+        held-out subjects into the feature mask.
+        """
+        rfecv_features, _ = self._select_rfecv(
+            X, y, groups, feat_cols, n_jobs=n_jobs
+        )
+        if self.primary_method == "shap":
+            shap_features, _ = self._select_shap(X, y, feat_cols, groups=groups)
+            selected = shap_features
+        elif self.primary_method == "intersection":
+            shap_features, _ = self._select_shap(X, y, feat_cols, groups=groups)
+            selected = [f for f in rfecv_features if f in set(shap_features)]
+            if len(selected) < self.min_features:
+                selected = rfecv_features[: self.max_features]
+        else:
+            selected = rfecv_features
+
+        shap_importance: dict[str, float] = {}
+        if self.required_feature_substrings:
+            _, shap_detail = self._select_shap(X, y, feat_cols, groups=groups)
+            shap_importance = shap_detail.get("full_mean_abs_shap", {})
+
+        selected, _, _, _ = self._enforce_required_features(
+            selected, feat_cols, shap_importance
+        )
+        return selected
+
     def _select_rfecv(
-        self, X: np.ndarray, y: np.ndarray, groups: np.ndarray, feat_cols: list[str]
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        groups: np.ndarray,
+        feat_cols: list[str],
+        *,
+        n_jobs: int = -1,
     ) -> tuple[list[str], dict]:
         cv = StratifiedGroupKFold(
             n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
         )
-        estimator = RandomForestClassifier(
-            n_estimators=120,
-            max_depth=6,
-            class_weight="balanced",
-            random_state=self.random_state,
-            n_jobs=1,
-        )
+        # Match training pipeline: impute → scale → RF (ML-005).
+        estimator = self._selection_pipeline()
         selector = RFECV(
             estimator=estimator,
             step=0.05,
             cv=cv,
             scoring=roc_auc_scoring_name(y, self.config),
             min_features_to_select=self.min_features,
-            n_jobs=-1,
+            n_jobs=n_jobs,
+            importance_getter=_rfe_pipeline_importance,
         )
         selector.fit(X, y, groups=groups)
 
@@ -220,12 +270,79 @@ class FeatureSelector:
         }
         return selected, detail
 
+    def _rank_required_candidates(
+        self, required: list[str], shap_importance: dict[str, float] | None
+    ) -> list[str]:
+        """ML-040: keep highest-SHAP required features when slots are capped."""
+        if not shap_importance:
+            return sorted(required)
+        return sorted(
+            required,
+            key=lambda name: shap_importance.get(name, 0.0),
+            reverse=True,
+        )
+
+    def _required_feature_shap_audit_rows(
+        self,
+        all_features: list[str],
+        required_kept: list[str],
+        forced: list[str],
+        dropped_required: list[str],
+        shap_importance: dict[str, float] | None,
+    ) -> list[dict]:
+        kept_set = set(required_kept)
+        forced_set = set(forced)
+        dropped_set = set(dropped_required)
+        rows: list[dict] = []
+        for feature in all_features:
+            if not any(
+                tok in feature.lower() for tok in self.required_feature_substrings
+            ):
+                continue
+            if feature in kept_set:
+                status = "forced_into_set" if feature in forced_set else "rfecv_or_shap_selected"
+            elif feature in dropped_set:
+                status = "dropped_by_max_required"
+            else:
+                status = "not_in_final_set"
+            rows.append({
+                "feature": feature,
+                "mean_abs_shap": float(shap_importance.get(feature, float("nan")))
+                if shap_importance
+                else float("nan"),
+                "status": status,
+                "required_family": next(
+                    tok
+                    for tok in self.required_feature_substrings
+                    if tok in feature.lower()
+                ),
+            })
+        rows.sort(
+            key=lambda row: (
+                row["status"] != "forced_into_set",
+                row["status"] != "rfecv_or_shap_selected",
+                -row["mean_abs_shap"]
+                if np.isfinite(row["mean_abs_shap"])
+                else float("inf"),
+            )
+        )
+        return rows
+
     def _enforce_required_features(
-        self, selected: list[str], all_features: list[str]
-    ) -> tuple[list[str], list[str], list[str]]:
-        """Force-keep required feature families while respecting max_features."""
+        self,
+        selected: list[str],
+        all_features: list[str],
+        shap_importance: dict[str, float] | None = None,
+    ) -> tuple[list[str], list[str], list[str], list[dict]]:
+        """
+        Force-keep required feature families while respecting max_features (ML-029/ML-040).
+
+        When ``max_required_features`` caps the nonlinear family, candidates are ranked
+        by mean |SHAP| (when available) rather than column order so weak predictors
+        do not crowd out stronger RFECV slots.
+        """
         if not self.required_feature_substrings:
-            return selected[: self.max_features], [], []
+            return selected[: self.max_features], [], [], []
 
         required = [
             f for f in all_features
@@ -235,12 +352,13 @@ class FeatureSelector:
             logger.warning(
                 f"No features matched required_feature_substrings={self.required_feature_substrings}"
             )
-            return selected[: self.max_features], [], []
+            return selected[: self.max_features], [], [], []
 
         fscfg = self.config.get("feature_selection", {})
         max_required = int(fscfg.get("max_required_features", max(1, self.max_features // 2)))
-        required_kept = required[:max_required]
-        dropped_required = required[max_required:]
+        ranked_required = self._rank_required_candidates(required, shap_importance)
+        required_kept = ranked_required[:max_required]
+        dropped_required = ranked_required[max_required:]
         remaining_slots = max(self.max_features - len(required_kept), 0)
         rfecv_slots = [
             f for f in selected if f not in required_kept
@@ -264,6 +382,11 @@ class FeatureSelector:
             preview,
             suffix,
         )
+        if shap_importance and forced:
+            logger.info(
+                "Required features ranked by mean |SHAP| before cap (ML-040); "
+                "see required_feature_shap_audit.csv for forced-vs-dropped comparison."
+            )
         if n_rfecv_in_merged == 0 and selected:
             logger.warning(
                 "Required features filled all %d slots; no RFECV-ranked features in final set. "
@@ -278,12 +401,19 @@ class FeatureSelector:
             )
         if dropped_required:
             logger.warning(
-                "Required features exceed max_required_features=%d; dropped %d matches. "
-                "Increase feature_selection.max_features or max_required_features.",
+                "Required features exceed max_required_features=%d; dropped %d lowest-SHAP "
+                "matches. Increase max_features or max_required_features only if audit shows gain.",
                 max_required,
                 len(dropped_required),
             )
-        return merged, forced, dropped_required
+        audit_rows = self._required_feature_shap_audit_rows(
+            all_features,
+            required_kept,
+            forced,
+            dropped_required,
+            shap_importance,
+        )
+        return merged, forced, dropped_required, audit_rows
 
     def _select_shap(
         self,
@@ -324,6 +454,9 @@ class FeatureSelector:
             "top_mean_abs_shap": {
                 selected[i]: float(importance[int(order[i])]) for i in range(len(selected))
             },
+            "full_mean_abs_shap": {
+                feat_cols[i]: float(importance[i]) for i in range(len(feat_cols))
+            },
             "aggregation": "global_class_average",
             "per_class_top_mean_abs_shap": per_class_tops,
         }
@@ -347,7 +480,11 @@ class FeatureSelector:
         rows = []
         for label, X_use, n_feat in (
             ("before_all_features", X, X.shape[1]),
-            ("after_selected_features", X_sel, X_sel.shape[1]),
+            (
+                "after_global_selection_grouped_cv_exploratory",
+                X_sel,
+                X_sel.shape[1],
+            ),
         ):
             scores = cross_val_score(
                 pipe,
@@ -365,6 +502,8 @@ class FeatureSelector:
                 "cv_auc_std": float(np.std(scores)),
                 "cv_folds": self.cv_folds,
                 "validation": "stratified_group_kfold",
+                "nested_selection": False,
+                "global_rfecv_mask": label == "after_global_selection_grouped_cv_exploratory",
             })
         return rows
 
@@ -373,6 +512,14 @@ class FeatureSelector:
             return
         pd.DataFrame(rows).to_csv(
             self.metrics_dir / "feature_selection_comparison.csv",
+            index=False,
+        )
+
+    def _write_required_shap_audit_csv(self, rows: list[dict]) -> None:
+        if not rows:
+            return
+        pd.DataFrame(rows).to_csv(
+            self.metrics_dir / "required_feature_shap_audit.csv",
             index=False,
         )
 
@@ -418,6 +565,19 @@ class FeatureSelector:
                 f"**{payload['primary_method']}**.",
             ])
 
+        if payload.get("forced_required_features"):
+            lines.extend([
+                "",
+                "### Required nonlinear families (ML-040)",
+                "",
+                f"- Forced into final set: **{len(payload['forced_required_features'])}**",
+                f"- Dropped by `max_required_features` cap: "
+                f"**{len(payload.get('dropped_required_features', []))}**",
+                "- Candidates are ranked by mean |SHAP| before the cap is applied.",
+                "- Review `required_feature_shap_audit.csv` after rerun to compare "
+                "forced vs dropped nonlinear features.",
+            ])
+
         lines.extend([
             "",
             "### SHAP-based pruning (secondary ranking)",
@@ -431,11 +591,17 @@ class FeatureSelector:
             "",
             "## Before / after (grouped CV, Random Forest surrogate)",
             "",
+            "> The **after_global_selection** row uses a feature mask fit on all "
+            "participants and is **exploratory only** — not a nested selection "
+            "estimate. Primary LOSO evaluation uses per-fold selection when "
+            "`nested_in_evaluation: true`.",
+            "",
         ])
 
         for row in payload.get("comparison", []):
+            nested = "nested" if row.get("nested_selection") else "exploratory (global mask)"
             lines.append(
-                f"- **{row['stage']}**: p={row['n_features']}, "
+                f"- **{row['stage']}** ({nested}): p={row['n_features']}, "
                 f"AUC={row['cv_auc_mean']:.4f} ± {row['cv_auc_std']:.4f}"
             )
 

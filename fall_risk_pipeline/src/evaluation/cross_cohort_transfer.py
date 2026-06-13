@@ -19,7 +19,6 @@ results/figures/models/cross_cohort_pairwise.{pdf,png}
 
 from __future__ import annotations
 
-import pickle
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -33,7 +32,12 @@ from sklearn.preprocessing import LabelEncoder
 
 from src.dataset.label_balance import balanced_scale_pos_weight
 from src.dataset.label_policy import is_binary_task
-from src.features.feature_matrix import load_patient_feature_matrix
+from src.features.feature_matrix import (
+    load_patient_feature_matrix,
+    nested_rfecv_column_indices,
+)
+from src.models.trainer import ModelTrainer
+from src.utils.checkpoint_io import load_checkpoint
 from src.utils.reproducibility import get_pipeline_seed
 
 
@@ -52,6 +56,10 @@ def _xgboost_kwargs_for_y(y: np.ndarray, config: dict) -> dict:
         "num_class": int(n_classes),
         "eval_metric": "mlogloss",
     }
+
+
+def _multiclass_sample_weights(y: np.ndarray, config: dict) -> np.ndarray | None:
+    return ModelTrainer._xgb_sample_weights(y, config)
 
 
 def _rebuild_xgb_pipeline(pipeline, y_train: np.ndarray, config: dict):
@@ -85,7 +93,11 @@ def _fit_transfer_model(checkpoint, X_train, y_train, config: dict):
     le = LabelEncoder()
     y_enc = le.fit_transform(y_train)
     model = _rebuild_xgb_pipeline(model, y_enc, config)
-    model.fit(X_train, y_enc)
+    weights = _multiclass_sample_weights(y_enc, config)
+    if weights is not None:
+        model.fit(X_train, y_enc, clf__sample_weight=weights)
+    else:
+        model.fit(X_train, y_enc)
     return model, le
 
 
@@ -109,7 +121,6 @@ def _score_transfer(
 
     try:
         if len(np.unique(y_enc)) < 2:
-            # AUC is undefined when the held-out cohort contains one class only.
             auc = float("nan")
             auc_status = "undefined_single_class_test"
         elif binary and proba.shape[1] == 2:
@@ -142,9 +153,14 @@ class CrossCohortTransfer:
 
         self.dpi = int(config.get("reporting", {}).get("figure_dpi", 300))
         self.fmt = config.get("reporting", {}).get("figure_format", "pdf")
+        self.cohort_auc_min_n = int(
+            config.get("models", {}).get("evaluation", {}).get("cohort_auc_min_n", 15)
+        )
 
     def run(self) -> pd.DataFrame:
-        X, y, groups, feat_names, df = load_patient_feature_matrix(self.config)
+        X, y, groups, feat_names, df = load_patient_feature_matrix(
+            self.config, use_selected=False
+        )
         cohorts = df["cohort"].astype(str).values
         binary = is_binary_task(y, self.config)
 
@@ -152,18 +168,18 @@ class CrossCohortTransfer:
         if not ckpt_path.exists():
             logger.error(f"Checkpoint {ckpt_path} not found — run train first.")
             return pd.DataFrame()
-        with open(ckpt_path, "rb") as f:
-            checkpoint = pickle.load(f)
+        checkpoint = load_checkpoint(
+            ckpt_path, manifest_dir=ckpt_path.parent, require_manifest=False
+        )
 
         unique_cohorts = sorted(np.unique(cohorts))
         logger.info(
             f"Cross-cohort transfer: {len(unique_cohorts)} cohorts, "
-            f"model={self.reference_model}"
+            f"model={self.reference_model}, nested_rfecv_per_train_fold=True"
         )
 
         rows = []
 
-        # Leave-one-cohort-out
         for held_out in unique_cohorts:
             train_mask = cohorts != held_out
             test_mask = cohorts == held_out
@@ -180,12 +196,20 @@ class CrossCohortTransfer:
                 logger.warning(f"Skipping {held_out}: only one class in training set")
                 continue
 
+            col_idx = nested_rfecv_column_indices(
+                self.config, X, y, groups, feat_names, train_mask
+            )
+            X_train = X[train_mask][:, col_idx]
+            X_test = X[test_mask][:, col_idx]
+
             model, le = _fit_transfer_model(
-                checkpoint, X[train_mask], y_train, self.config
+                checkpoint, X_train, y_train, self.config
             )
             auc, acc, f1, mean_true_class_proba, auc_status = _score_transfer(
-                model, le, X[test_mask], y_test, binary
+                model, le, X_test, y_test, binary
             )
+            if auc_status == "ok" and n_test < self.cohort_auc_min_n:
+                auc_status = "unstable_small_n"
 
             train_cohorts = ", ".join(
                 c for c in unique_cohorts if c != held_out
@@ -195,6 +219,7 @@ class CrossCohortTransfer:
                 "train_cohorts": train_cohorts,
                 "n_train": n_train,
                 "n_test": n_test,
+                "n_features": len(col_idx),
                 "n_train_classes": len(np.unique(y_train)),
                 "n_test_classes": len(np.unique(y_test)),
                 "auc": auc,
@@ -202,6 +227,7 @@ class CrossCohortTransfer:
                 "mean_true_class_proba": mean_true_class_proba,
                 "accuracy": acc,
                 "f1_macro": f1,
+                "feature_selection_protocol": "nested_rfecv_per_train_fold",
             })
             logger.info(
                 f"  Hold-out {held_out:10s}  n={n_test:3d}  "
@@ -209,7 +235,6 @@ class CrossCohortTransfer:
                 f"TrueP={mean_true_class_proba:.4f}  Acc={acc:.4f}  F1={f1:.4f}"
             )
 
-        # Pairwise: train on cohort A, test on cohort B
         pairwise_rows = []
         for train_cohort in unique_cohorts:
             for test_cohort in unique_cohorts:
@@ -239,23 +264,36 @@ class CrossCohortTransfer:
                     pairwise_rows.append(empty_row)
                     continue
 
+                col_idx = nested_rfecv_column_indices(
+                    self.config, X, y, groups, feat_names, train_mask
+                )
+                X_tr = X[train_mask][:, col_idx]
+                X_te = X[test_mask][:, col_idx]
+
                 model, le = _fit_transfer_model(
-                    checkpoint, X[train_mask], y_tr, self.config
+                    checkpoint, X_tr, y_tr, self.config
                 )
                 auc, acc, f1, mean_true_class_proba, auc_status = _score_transfer(
-                    model, le, X[test_mask], y_te, binary
+                    model, le, X_te, y_te, binary
                 )
+                if auc_status == "ok" and n_test < self.cohort_auc_min_n:
+                    auc_status = "unstable_small_n"
+                if auc_status == "ok" and n_train < self.cohort_auc_min_n:
+                    auc_status = "unstable_small_n"
+                    auc = float("nan")
 
                 pairwise_rows.append({
                     "train_cohort": train_cohort,
                     "test_cohort": test_cohort,
                     "n_train": n_train,
                     "n_test": n_test,
+                    "n_features": len(col_idx),
                     "auc": auc,
                     "auc_status": auc_status,
                     "mean_true_class_proba": mean_true_class_proba,
                     "accuracy": acc,
                     "f1_macro": f1,
+                    "feature_selection_protocol": "nested_rfecv_per_train_fold",
                 })
 
         loco_df = pd.DataFrame(rows)
@@ -294,7 +332,7 @@ class CrossCohortTransfer:
         colors = [tier_colors.get(c, "#95a5a6") for c in cohorts]
 
         fig, ax = plt.subplots(figsize=(9, 6))
-        bars = ax.barh(range(len(cohorts)), aucs, color=colors, edgecolor="white")
+        ax.barh(range(len(cohorts)), aucs, color=colors, edgecolor="white")
         ax.set_yticks(range(len(cohorts)))
         ax.set_yticklabels(cohorts, fontsize=10)
         ax.set_xlabel("Macro OvR AUC")

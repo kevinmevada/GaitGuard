@@ -186,11 +186,6 @@ def build_ensemble_estimator(
     raise ValueError(f"Unknown ensemble method: {method}")
 
 
-def _mean_base_proba(top_models: list[tuple[str, dict]], X: np.ndarray) -> np.ndarray:
-    probas = [res["pipeline"].predict_proba(X) for _, res in top_models]
-    return np.mean(probas, axis=0)
-
-
 def predict_ensemble_oof_proba(
     method: str,
     top_models: list[tuple[str, dict]],
@@ -206,7 +201,7 @@ def predict_ensemble_oof_proba(
     LOSO-fold ensemble probabilities: bases tuned on train_idx; meta/threshold unbiased.
 
     Binary: positive-class score (1d). Multiclass: full (n_samples, n_classes) matrix.
-    Stacking meta-learner is binary-only; multiclass uses mean base probabilities.
+    Stacking uses ``GroupStackingEnsemble`` for binary and multiclass (ML-026).
     """
     y_train = np.asarray(y_train).astype(int)
     n_classes = len(np.unique(y_train))
@@ -218,12 +213,11 @@ def predict_ensemble_oof_proba(
         return proba[:, 1] if n_classes <= 2 else proba
 
     if method == "stacking":
-        if n_classes <= 2:
-            fitted = build_stacking_ensemble(
-                top_models, cv_folds=cv_folds, random_state=random_state
-            )
-            fitted.fit(X_train, y_train, groups=groups_train)
-            return fitted.predict_proba(X_test)[:, 1]
-        return _mean_base_proba(top_models, X_test)
+        fitted = build_stacking_ensemble(
+            top_models, cv_folds=cv_folds, random_state=random_state
+        )
+        fitted.fit(X_train, y_train, groups=groups_train)
+        proba = fitted.predict_proba(X_test)
+        return proba[:, 1] if n_classes <= 2 else proba
 
     raise ValueError(f"Unknown ensemble method: {method}")

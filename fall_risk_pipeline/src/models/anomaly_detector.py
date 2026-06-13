@@ -34,6 +34,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import OneClassSVM
 
 from src.models.anomaly_feature_schema import save_trial_feature_schema
+from src.models.anomaly_scoring import ANOMALY_METHODS
+from src.evaluation.anomaly_loso_evaluator import run_anomaly_loso_evaluation
+from src.evaluation.primary_endpoint import resolve_primary_endpoint
 from src.utils.checkpoint_io import save_checkpoint
 from src.utils.reproducibility import get_pipeline_seed
 
@@ -89,6 +92,7 @@ class GaitAnomalyDetector:
         self._healthy_mask_size = int(healthy_mask.sum())
 
         results: Dict[str, Any] = {}
+        loso_metrics = None
 
         with Progress(
             SpinnerColumn(),
@@ -98,7 +102,7 @@ class GaitAnomalyDetector:
             TimeElapsedColumn(),
             console=console,
         ) as progress:
-            task_id = progress.add_task("Running anomaly detection...", total=6)
+            task_id = progress.add_task("Running anomaly detection...", total=7)
 
             progress.update(task_id, description="Anomaly method: isolation_forest")
             results["isolation_forest"] = self._isolation_forest_detection(X, metadata, healthy_mask)
@@ -125,13 +129,24 @@ class GaitAnomalyDetector:
             self._save_results(results, cohort_analysis, metadata)
             progress.advance(task_id)
 
+            progress.update(task_id, description="LOSO anomaly evaluation (ANOM-001)")
+            if self.config.get("anomaly", {}).get("loso_evaluation", True):
+                loso_metrics = run_anomaly_loso_evaluation(self.config)
+            progress.advance(task_id)
+
             progress.update(task_id, description="Anomaly detection complete")
 
         logger.info("Anomaly detection completed!")
+        summary = self._generate_summary(results, cohort_analysis)
+        if loso_metrics is not None and not loso_metrics.empty:
+            ens = loso_metrics[loso_metrics["method"] == "ensemble"]
+            if not ens.empty:
+                summary["loso_ensemble_auc"] = float(ens.iloc[0]["auc"])
         return {
             "detection_results": results,
             "cohort_analysis": cohort_analysis,
-            "summary": self._generate_summary(results, cohort_analysis),
+            "summary": summary,
+            "loso_metrics": loso_metrics,
         }
 
     # ------------------------------------------------------------------
@@ -263,10 +278,10 @@ class GaitAnomalyDetector:
         averaging, so a method with a larger raw score range cannot dominate.
         """
         normalised = []
-        for method_name, method_result in results.items():
-            if method_name == "ensemble":
+        for method_name in ANOMALY_METHODS:
+            if method_name not in results:
                 continue
-            normalised.append(_normalise(method_result["anomaly_scores"]))
+            normalised.append(_normalise(results[method_name]["anomaly_scores"]))
 
         ensemble_scores = np.mean(normalised, axis=0)
 
@@ -458,7 +473,34 @@ class GaitAnomalyDetector:
                 f"→ {schema_path}"
             )
 
+        self._save_deploy_calibration(results)
+
         logger.info("Results saved to anomaly detection directory")
+
+    def _save_deploy_calibration(self, results: Dict[str, Any]) -> None:
+        """Persist deploy-time score ranges for API ensemble normalisation."""
+        methods_calib: Dict[str, Dict[str, float]] = {}
+        for method_name in ANOMALY_METHODS:
+            if method_name not in results:
+                continue
+            scores = np.asarray(results[method_name]["anomaly_scores"], dtype=float)
+            methods_calib[method_name] = {
+                "min": float(np.nanmin(scores)),
+                "max": float(np.nanmax(scores)),
+            }
+        payload = {
+            "methods": methods_calib,
+            "ensemble_threshold_p90": float(results["ensemble"]["threshold"]),
+            "primary_endpoint": resolve_primary_endpoint(self.config),
+        }
+        path = self.results_dir / "deploy_calibration.json"
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        metrics_dir = Path(self.config["paths"]["metrics"])
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        (metrics_dir / "deploy_calibration.json").write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
 
     def _generate_summary(
         self, results: Dict[str, Any], cohort_analysis: Dict[str, Any]

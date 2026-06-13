@@ -89,5 +89,5 @@ def test_validate_nonlinear_metrics_bundle(nonlinear_cfg):
     rows, ok = validate_nonlinear_metrics(lyap_cfg, apen_cfg)
     assert ok
     checks = [r for r in rows if str(r["signal"]).startswith("check:")]
-    assert len(checks) == 4
+    assert len(checks) == 6
     assert all(r.get("passed") for r in checks)

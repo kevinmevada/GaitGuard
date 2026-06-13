@@ -1,0 +1,4 @@
+# Pinned dev/test tools for CI (REP-006). Install after requirements-lock.txt:
+#   pip install -r fall_risk_pipeline/requirements-dev-lock.txt
+pytest==8.4.2
+pytest-cov==6.3.0

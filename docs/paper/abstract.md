@@ -1,47 +1,43 @@
 # Paper draft — title and abstract
 
 **Journal target:** *Sensors* (MDPI)  
-**Status:** Abstract complete with evaluated metrics (AUC 0.91, 95% CI 0.88–0.94).
+**Status:** Abstract draft — numeric metrics auto-synced from `metrics.csv` via `scripts/regenerate_paper_results.py` (see Metrics fill-in below).
 **Keywords:** wearable sensors; inertial measurement unit; gait analysis; fall risk; machine learning; deep learning; pathology screening; leave-one-subject-out validation
 
 ---
 
 ## Working title
 
-**End-to-End Deep Learning vs Handcrafted Features for Wearable IMU Fall-Risk Screening Across Eight Clinical Cohorts: A Leave-One-Subject-Out Comparison in 260 Participants**
+**Healthy-Reference Gait Anomaly Screening with Wearable IMUs: Leave-One-Subject-Out Evaluation Across Eight Clinical Cohorts (N = 260)**
 
 *Alternates:*  
-- *Deep Learning and Ensemble Machine Learning for Multi-Sensor IMU Gait Screening: 1,356 Trials, Eight Cohorts, LOSO Validation*  
-- *GaitGuard: Comparing InceptionTime, Transformer, and Handcrafted Ensemble Pipelines on Open Multi-Cohort Wearable Gait Data*
+- *Unsupervised IMU Gait Anomaly Detection for Mixed Clinical Populations: 1,356 Trials, Eight Cohorts, LOSO Validation*  
+- *GaitGuard: Ensemble One-Class Anomaly Screening with Supplementary Pathology-Tier Supervised Models*
 
 ---
 
 ## Abstract (five sentences — *Sensors* structure)
 
-Falls affect approximately one in three community-dwelling adults aged ≥65 years annually and remain a leading cause of injury-related morbidity, hospitalization, and loss of independence worldwide. Wearable inertial measurement unit (IMU) gait analysis can quantify mobility impairment in clinical and ambulatory settings, yet many methods report trial-level classifiers without leave-one-subject-out (LOSO) validation, omit multi-trial session aggregation (mean, variability, and trajectory across repeated walks), or merge heterogeneous orthopedic and neurological pathologies into a single “high-risk” label, limiting both generalizability and interpretability. We developed and evaluated a reproducible pipeline on an open eight-cohort clinical dataset (N = 260 participants, 1,356 walking trials, four body-worn IMUs at 100 Hz) that extracts temporal, spectral, trunk-dynamics, orientation, and asymmetry features; aggregates them to participant-level statistics (mean, standard deviation, range, and linear trend across within-session trials); selects ≤20 predictors via grouped recursive feature elimination; and trains an XGBoost–LightGBM–random forest–support vector machine soft-voting ensemble under nested LOSO cross-validation to discriminate three **pathology-tier** labels (healthy, orthopedic, neurological) as **proxies for fall-risk stratification**; importantly, the dataset provides cohort-level diagnostic labels, not individual fall-outcome ground truth. In LOSO evaluation, the primary soft-voting ensemble achieved macro one-vs-rest area under the receiver operating characteristic curve (AUC) of **0.91** (95% bootstrap confidence interval **0.88–0.94**) for three-class pathology-tier discrimination, and sensor ablation showed that a **two-sensor** setup (head + right foot) reached **AUC 0.9336**, exceeding the full **four-sensor** configuration (**AUC 0.9273**); companion unsupervised anomaly detection (isolation forest, local outlier factor, one-class SVM) flagged gait patterns deviating from healthy training references. Because supervision is based on diagnostic cohort membership rather than adjudicated incident falls, these results support pathology-tier gait screening as a non-invasive stratification aid for prioritizing referral and longitudinal monitoring in mixed orthopedic–neurological populations, but **do not constitute direct fall prediction**; prospective validation with individual fall outcomes is required before clinical deployment.
+Falls affect approximately one in three community-dwelling adults aged ≥65 years annually and remain a leading cause of injury-related morbidity, hospitalization, and loss of independence worldwide. Wearable inertial measurement unit (IMU) gait analysis can quantify mobility impairment in clinical and ambulatory settings, yet many methods report in-sample anomaly flags or trial-level classifiers without leave-one-subject-out (LOSO) validation, omit multi-trial session aggregation, or merge heterogeneous orthopedic and neurological pathologies into a single “high-risk” label, limiting both generalizability and interpretability. We developed a reproducible pipeline on an open eight-cohort clinical dataset (N = 260 participants, 1,356 walking trials, four body-worn IMUs at 100 Hz) that extracts temporal, spectral, wavelet, trunk-dynamics, orientation, and asymmetry features and applies **primary** Healthy-reference unsupervised anomaly screening: isolation forest, local outlier factor, and one-class SVM scores are min–max normalized and averaged into a trial-level ensemble, evaluated with LOSO out-of-fold scoring against a screening pseudo-label (non-Healthy vs Healthy trials). **After full pipeline regeneration**, primary ensemble ROC-AUC and PR-AUC will be reported in **Metrics fill-in** below; supplementary supervised pathology-tier models (XGBoost, LightGBM, random forest, SVM, MLP with nested RFECV LOSO) provide secondary stratification benchmarks in `docs/paper/results.md`. Because evaluation uses cohort diagnostic membership rather than adjudicated incident falls, these results support gait **anomaly screening** as a non-invasive triage aid in mixed orthopedic–neurological populations, but **do not constitute direct fall prediction**; prospective validation with individual fall outcomes is required before clinical deployment.
 
 ---
 
 ## Metrics fill-in
 
-Metrics populated from `fall_risk_pipeline/results/metrics/metrics.csv` (ensemble_soft_voting row):
+_Artifacts not yet regenerated — run `python scripts/regenerate_paper_results.py` after `python main.py`._
 
 | Metric | Value |
 |--------|-------|
-| Macro OvR AUC | 0.91 |
-| 95% bootstrap CI lower | 0.88 |
-| 95% bootstrap CI upper | 0.94 |
+| Primary anomaly ensemble ROC-AUC (LOSO OOF) | _pending pipeline rerun_ |
+| Primary anomaly ensemble PR-AUC | _pending_ |
+| Secondary deployable ensemble macro OvR AUC | _pending pipeline rerun_ |
+| Best supervised single-model LOSO macro OvR AUC | _pending pipeline rerun_ |
 
-To regenerate after a pipeline re-run:
+Regenerate after each pipeline run:
 
 ```bash
-cd fall_risk_pipeline
-python -c "
-import pandas as pd
-m = pd.read_csv('results/metrics/metrics.csv')
-row = m[m['model'].str.contains('ensemble', case=False, na=False)].iloc[0]
-print(f\"AUC={row['auc']:.2f}, 95% CI [{row['auc_ci_low']:.2f}, {row['auc_ci_high']:.2f}]\")
-"
+cd fall_risk_pipeline && python main.py
+python ../scripts/regenerate_paper_results.py
 ```
 
 Optional sensitivity sentence (binary neurological high-risk only, `label_mode: binary`, `binary_strategy: threshold_ge_2`): report a second AUC from the same table if reviewers request a dichotomous endpoint.
@@ -54,8 +50,8 @@ Optional sensitivity sentence (binary neurological high-risk only, `label_mode: 
 |---------|---------------------|
 | **Introduction / background** | Fall epidemiology; IMU gait in aging and neuro/orthopedic disease; cite dataset (Figshare 10.6084/m9.figshare.28806086). |
 | **Gap** | Subject leakage, trial vs patient features, label heterogeneity, lack of open reproducible LOSO benchmarks on this cohort. |
-| **Methods** | N = 260, 1,356 trials, 8 cohorts, 4 IMUs, 100 Hz; preprocessing (Madgwick, gait events); feature families; RFECV cap ≤20; nested LOSO; Optuna trials; ensemble; macro-OVR AUC, macro F1, per-class metrics; **Youden J cutoff** (sens/spec at primary threshold); Morse/STRATIFY cited for screening context; DeLong/bootstrap comparisons. |
-| **Results** | Table 1 demographics; AUC **0.91 (95% CI 0.88–0.94)**; calibration; SHAP top features; **feature ablation** (`feature_ablation.csv`: all features, top-10 SHAP, leave-one-group-out, minus Lyapunov); anomaly vote rates by cohort; gait-event validation error (ms). |
+| **Methods** | N = 260, 1,356 trials, 8 cohorts, 4 IMUs, 100 Hz; preprocessing (Madgwick, gait events); temporal/spectral/wavelet/trunk/orientation/asymmetry features; RFECV cap ≤20; nested LOSO tabular eval; fixed global DL HP unless `loso_hyperparameter_tuning.enabled`; ensemble top-k soft voting; macro-OVR AUC, macro F1, per-class metrics; **Youden J** on train folds (binary); multiclass paired comparisons via bootstrap macro-OVR deltas + BH-FDR (DeLong binary-only). |
+| **Results** | Table 1 demographics; primary LOSO AUC from `docs/paper/results.md` (auto-generated); calibration; SHAP top features; **feature ablation** (LOSO); anomaly vote rates by cohort; gait-event validation error (ms). |
 | **Discussion / conclusion** | Screening vs diagnosis; single-trial API limitation; **limitations** (research prototype, no clinical decision support). |
 | **Limitations** | **Retrospective**, **single dataset**, **no prospective follow-up**, **no ground-truth fall outcomes** (cohort labels only); internal LOSO only; path to prospective validation — `docs/limitations.md`, `docs/paper/limitations.md`. |
 | **Ethics** | Public de-identified Figshare data; CPP Île-de-France II (2014-10-04 RNI); no new human data — see `docs/paper/ethics_statement.md`. |

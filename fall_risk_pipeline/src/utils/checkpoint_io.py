@@ -5,6 +5,10 @@ Checkpoints are stored with joblib and registered in ``checkpoint_manifest.json`
 (SHA-256 digest per file). When ``CHECKPOINT_HMAC_KEY`` is set, an HMAC-SHA256
 signature is also recorded so the API can reject tampered artifacts before
 deserializing (pickle/joblib payloads are not safe to load unchecked).
+
+SEC-009: SHA-256 alone does not defend against a compromised Hub repo that replaces
+both manifest and pickle; production requires ``CHECKPOINT_HMAC_KEY`` and HMAC
+entries in the manifest, plus a pinned ``GAITGUARD_HF_REVISION``.
 """
 
 from __future__ import annotations
@@ -21,10 +25,48 @@ import joblib
 
 MANIFEST_FILENAME = "checkpoint_manifest.json"
 _MANIFEST_VERSION = 1
+_FLOATING_HUB_REVISIONS = frozenset({"", "main", "master", "head"})
 
 
 class CheckpointIntegrityError(RuntimeError):
     """Raised when a checkpoint fails manifest or HMAC verification."""
+
+
+def is_production_environment() -> bool:
+    """True when API/training runs with ENVIRONMENT=production."""
+    deploy_env = os.environ.get("ENVIRONMENT", os.environ.get("ENV", "development")).lower()
+    return deploy_env in ("production", "prod")
+
+
+def assert_production_checkpoint_policy() -> None:
+    """
+    SEC-009: production must configure HMAC before deserializing Hub checkpoints.
+
+    SHA-256 manifest entries alone do not help if an attacker replaces manifest and
+    pickle together; HMAC ties artifacts to a deployment secret.
+    """
+    if not is_production_environment():
+        return
+    if _hmac_key() is None:
+        raise RuntimeError(
+            "CHECKPOINT_HMAC_KEY must be set when ENVIRONMENT=production (SEC-009)."
+        )
+
+
+def is_floating_hub_revision(revision: str) -> bool:
+    """True for branch names that move over time (unsafe for production pin)."""
+    return revision.strip().lower() in _FLOATING_HUB_REVISIONS
+
+
+def assert_production_hub_revision_policy(revision: str) -> None:
+    """SEC-009: refuse floating Hub revisions in production downloads."""
+    if not is_production_environment():
+        return
+    if is_floating_hub_revision(revision):
+        raise RuntimeError(
+            "GAITGUARD_HF_REVISION must be a pinned tag or commit hash in production "
+            "(SEC-009); 'main' is not allowed."
+        )
 
 
 def _hmac_key() -> bytes | None:
@@ -109,6 +151,7 @@ def _verify_checkpoint_bytes(
     manifest_dir: Path,
     *,
     require_manifest: bool,
+    require_hmac: bool = False,
 ) -> None:
     manifest = load_manifest(manifest_dir)
     files = manifest.get("files", {})
@@ -136,11 +179,17 @@ def _verify_checkpoint_bytes(
         )
 
     recorded_hmac = entry.get("hmac")
-    if recorded_hmac:
+    must_verify_hmac = require_hmac or bool(recorded_hmac)
+    if must_verify_hmac:
         key = _hmac_key()
         if key is None:
             raise CheckpointIntegrityError(
                 f"Checkpoint '{filename}' requires CHECKPOINT_HMAC_KEY for verification"
+            )
+        if not recorded_hmac:
+            raise CheckpointIntegrityError(
+                f"Checkpoint '{filename}' has no HMAC signature in {MANIFEST_FILENAME}; "
+                "re-sign checkpoints with CHECKPOINT_HMAC_KEY before production deploy (SEC-009)"
             )
         if not hmac.compare_digest(_hmac_hex(data, key), str(recorded_hmac)):
             raise CheckpointIntegrityError(
@@ -167,15 +216,19 @@ def load_checkpoint(
     *,
     manifest_dir: Path | None = None,
     require_manifest: bool = False,
+    require_hmac: bool | None = None,
 ) -> Any:
     """Load a checkpoint after optional manifest / HMAC verification."""
     path = Path(path)
     manifest_dir = manifest_dir or path.parent
+    if require_hmac is None:
+        require_hmac = is_production_environment()
     data = path.read_bytes()
     _verify_checkpoint_bytes(
         path.name,
         data,
         manifest_dir,
         require_manifest=require_manifest,
+        require_hmac=require_hmac,
     )
     return joblib.load(io.BytesIO(data))

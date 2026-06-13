@@ -87,3 +87,56 @@ def load_patient_feature_matrix(
     groups = df["participant_id"].values
 
     return X, y, groups, feat_cols, df
+
+
+def column_indices(feat_cols: list[str], selected: list[str]) -> list[int]:
+    """Map selected feature names to column indices (preserves order)."""
+    return [feat_cols.index(name) for name in selected]
+
+
+def nested_rfecv_column_indices(
+    config: dict,
+    X: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    feat_cols: list[str],
+    train_mask: np.ndarray,
+) -> list[int]:
+    """
+    RFECV on train rows only (ML-014). Returns column indices into ``feat_cols``.
+    """
+    from src.features.feature_selector import FeatureSelector
+
+    train_mask = np.asarray(train_mask, dtype=bool)
+    fscfg = config.get("feature_selection", {})
+    if not fscfg.get("enabled", False):
+        return list(range(len(feat_cols)))
+
+    fs = FeatureSelector(config)
+    selected = fs.select_feature_names(
+        X[train_mask],
+        y[train_mask],
+        groups[train_mask],
+        feat_cols,
+        n_jobs=1,
+    )
+    return column_indices(feat_cols, selected)
+
+
+def intersect_nested_rfecv_columns(
+    config: dict,
+    X: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    feat_cols: list[str],
+    train_mask: np.ndarray,
+    scenario_indices: list[int],
+) -> list[int]:
+    """Intersect scenario column indices with per-fold nested RFECV (ML-025)."""
+    fscfg = config.get("feature_selection", {})
+    if not fscfg.get("nested_in_ablation", True):
+        return list(scenario_indices)
+    nested_set = set(
+        nested_rfecv_column_indices(config, X, y, groups, feat_cols, train_mask)
+    )
+    return [idx for idx in scenario_indices if idx in nested_set]

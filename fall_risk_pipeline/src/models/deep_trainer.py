@@ -5,16 +5,18 @@ Loads cleaned per-trial signals, windows them, and runs Leave-One-Subject-Out
 cross-validation for each architecture in the deep_learning config.
 
 Trial-level window predictions are aggregated to participant-level via
-majority-vote (hard) and mean-probability (soft) to match the classical
+mean class probability (soft vote across windows) to match the classical
 ML evaluation granularity (N = 260 participants).
 """
 
 from __future__ import annotations
 
+import copy
 import time
 from pathlib import Path
 
 import numpy as np
+import optuna
 import pandas as pd
 import torch
 from loguru import logger
@@ -28,10 +30,13 @@ from src.models.deep_models import (
     GaitTransformer,
     build_deep_model,
     create_windows,
+    independent_stride_window_indices,
     trial_to_tensor,
 )
 from src.utils.progress import progress_bar, stderr_is_tty
 from src.utils.reproducibility import get_pipeline_seed, set_global_seed
+
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 def extract_attention_weights(
@@ -76,6 +81,9 @@ class DeepLearningPipeline:
         self.sensor_positions = config["dataset"]["sensor_positions"]
         self.window_len = int(self.dl_cfg["sequence_length"])
         self.overlap = float(self.dl_cfg["overlap"])
+        self.training_window_deduplication = bool(
+            self.dl_cfg.get("training_window_deduplication", True)
+        )
         self.enabled_models: list[str] = self.dl_cfg.get("models", list(DEEP_MODEL_REGISTRY.keys()))
 
     # ─────────────────────────────────────────────────────────────
@@ -111,27 +119,277 @@ class DeepLearningPipeline:
             signal = trial_signals[tid]
             if n_channels is None:
                 n_channels = signal.shape[0]
-            wins = create_windows(signal, self.window_len, self.overlap)
+            wins, starts = create_windows(
+                signal, self.window_len, self.overlap, return_starts=True
+            )
             if len(wins) == 0:
                 continue
             if pid not in participants:
-                participants[pid] = {"windows": [], "label": label, "trial_ids": []}
+                participants[pid] = {
+                    "windows": [],
+                    "window_starts": [],
+                    "window_trial_ids": [],
+                    "label": label,
+                    "trial_ids": [],
+                }
             participants[pid]["windows"].append(wins)
+            participants[pid]["window_starts"].append(starts)
+            participants[pid]["window_trial_ids"].extend([tid] * len(wins))
             participants[pid]["trial_ids"].append(tid)
             if bar is not None:
                 bar.update(1)
         for pid in participants:
             participants[pid]["windows"] = np.concatenate(participants[pid]["windows"], axis=0)
+            participants[pid]["window_starts"] = np.concatenate(
+                participants[pid]["window_starts"], axis=0
+            )
+            participants[pid]["window_trial_ids"] = np.asarray(
+                participants[pid]["window_trial_ids"], dtype=object
+            )
         logger.info(
             f"Windowed data: {len(participants)} participants, "
             f"{sum(p['windows'].shape[0] for p in participants.values())} total windows, "
-            f"{n_channels} channels, window_len={self.window_len}"
+            f"{n_channels} channels, window_len={self.window_len}, overlap={self.overlap}"
         )
         return participants, n_channels or 0
+
+    @staticmethod
+    def split_inner_train_val_participants(
+        train_pids: list[str],
+        participant_labels: dict[str, int],
+        *,
+        seed: int,
+        val_fraction: float = 0.1,
+    ) -> tuple[list[str], list[str]]:
+        """
+        Hold out entire participants for inner validation (no window-level leakage).
+
+        Splits at participant granularity with stratification on pathology label.
+        """
+        if len(train_pids) <= 2:
+            inner_val = [train_pids[-1]]
+            inner_train = train_pids[:-1]
+            return inner_train, inner_val
+
+        labels = np.array([participant_labels[pid] for pid in train_pids], dtype=int)
+        n_val = max(1, int(round(val_fraction * len(train_pids))))
+        if n_val >= len(train_pids):
+            n_val = max(1, len(train_pids) - 1)
+
+        sss = StratifiedShuffleSplit(
+            n_splits=1,
+            test_size=n_val,
+            random_state=seed,
+        )
+        try:
+            train_idx, val_idx = next(
+                sss.split(np.arange(len(train_pids)), labels)
+            )
+        except ValueError:
+            logger.warning(
+                "Participant-level stratified val split failed (n=%d); "
+                "using random participant holdout",
+                len(train_pids),
+            )
+            rng = np.random.default_rng(seed)
+            val_idx = rng.choice(len(train_pids), n_val, replace=False)
+            train_idx = np.setdiff1d(np.arange(len(train_pids)), val_idx)
+
+        inner_train = [train_pids[int(i)] for i in train_idx]
+        inner_val = [train_pids[int(i)] for i in val_idx]
+        return inner_train, inner_val
+
+    @staticmethod
+    def _collect_participant_window_rows(
+        participant_ids: list[str],
+        participants: dict,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return windows, labels, participant ids, trial ids, and start indices."""
+        X_list: list[np.ndarray] = []
+        y_list: list[int] = []
+        pid_list: list[str] = []
+        trial_list: list[str] = []
+        start_list: list[np.ndarray] = []
+        for pid in participant_ids:
+            wins = participants[pid]["windows"]
+            n = len(wins)
+            X_list.append(wins)
+            y_list.extend([int(participants[pid]["label"])] * n)
+            pid_list.extend([pid] * n)
+            if "window_trial_ids" in participants[pid]:
+                trial_list.extend(participants[pid]["window_trial_ids"].tolist())
+            else:
+                fallback_tid = participants[pid].get("trial_ids", [pid])[0]
+                trial_list.extend([fallback_tid] * n)
+            if "window_starts" in participants[pid]:
+                start_list.append(participants[pid]["window_starts"])
+            else:
+                start_list.append(np.arange(n, dtype=int))
+        if not X_list:
+            empty_x = np.zeros((0,), dtype=np.float32)
+            empty_i = np.array([], dtype=int)
+            empty_o = np.array([], dtype=object)
+            return empty_x, empty_i, empty_o, empty_o, empty_i
+        return (
+            np.concatenate(X_list, axis=0),
+            np.array(y_list, dtype=int),
+            np.asarray(pid_list, dtype=object),
+            np.asarray(trial_list, dtype=object),
+            np.concatenate(start_list, axis=0),
+        )
+
+    @staticmethod
+    def concat_participant_windows(
+        participant_ids: list[str],
+        participants: dict,
+        *,
+        independent_stride_only: bool = False,
+        window_len: int = 256,
+        seed: int = 0,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Concatenate windows for the given participants."""
+        windows, y, _, trial_ids, starts = DeepLearningPipeline._collect_participant_window_rows(
+            participant_ids, participants
+        )
+        if independent_stride_only and len(windows):
+            keep = independent_stride_window_indices(
+                starts, trial_ids, window_len, seed=seed
+            )
+            windows = windows[keep]
+            y = y[keep]
+        if len(windows) == 0:
+            return np.zeros((0,), dtype=np.float32), np.array([], dtype=int)
+        return windows, y
+
+    @staticmethod
+    def window_participant_ids(
+        participant_ids: list[str],
+        participants: dict,
+        *,
+        independent_stride_only: bool = False,
+        window_len: int = 256,
+        seed: int = 0,
+    ) -> np.ndarray:
+        """One participant id per window row (parallel to concat_participant_windows)."""
+        _, _, pids, trial_ids, starts = DeepLearningPipeline._collect_participant_window_rows(
+            participant_ids, participants
+        )
+        if independent_stride_only and len(pids):
+            keep = independent_stride_window_indices(
+                starts, trial_ids, window_len, seed=seed
+            )
+            pids = pids[keep]
+        return pids
 
     # ─────────────────────────────────────────────────────────────
     # LOSO evaluation
     # ─────────────────────────────────────────────────────────────
+
+    def _loso_tune_cfg(self) -> dict:
+        return self.dl_cfg.get("loso_hyperparameter_tuning") or {}
+
+    def _loso_tune_enabled(self) -> bool:
+        return bool(self._loso_tune_cfg().get("enabled", False))
+
+    def _make_trainer(
+        self,
+        *,
+        learning_rate: float | None = None,
+        max_epochs: int | None = None,
+        early_stopping_patience: int | None = None,
+    ) -> DeepModelTrainer:
+        """DeepModelTrainer with per-fold hyperparameter overrides (ML-042)."""
+        cfg = copy.deepcopy(self.config)
+        dl = dict(self.dl_cfg)
+        if learning_rate is not None:
+            dl["learning_rate"] = learning_rate
+        if max_epochs is not None:
+            dl["max_epochs"] = max_epochs
+        if early_stopping_patience is not None:
+            dl["early_stopping_patience"] = early_stopping_patience
+        cfg["deep_learning"] = dl
+        return DeepModelTrainer(cfg)
+
+    @staticmethod
+    def _participant_level_labels_proba(
+        y_windows: np.ndarray,
+        proba_windows: np.ndarray,
+        participant_ids: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Aggregate window labels/probabilities to one row per participant."""
+        unique_pids = np.unique(participant_ids)
+        agg_y: list[int] = []
+        agg_prob: list[np.ndarray] = []
+        for pid in unique_pids:
+            mask = participant_ids == pid
+            agg_y.append(int(y_windows[mask][0]))
+            agg_prob.append(proba_windows[mask].mean(axis=0))
+        return np.asarray(agg_y, dtype=int), np.vstack(agg_prob)
+
+    def _tune_loso_fold_learning_rate(
+        self,
+        model_name: str,
+        n_channels: int,
+        n_classes: int,
+        X_train_norm: np.ndarray,
+        y_train: np.ndarray,
+        X_val_norm: np.ndarray,
+        y_val: np.ndarray,
+        train_window_pids: np.ndarray,
+        val_window_pids: np.ndarray,
+        fold_seed: int,
+    ) -> float:
+        """Optuna search for learning rate on inner train/val (participant-level AUC)."""
+        tune = self._loso_tune_cfg()
+        base_lr = float(self.dl_cfg["learning_rate"])
+        n_trials = int(tune.get("n_trials", 5))
+        timeout = int(tune.get("timeout_seconds", 120))
+        search_epochs = int(tune.get("search_epochs", 12))
+        search_patience = int(tune.get("search_patience", 4))
+        lr_min = float(tune.get("lr_min_factor", 0.1)) * base_lr
+        lr_max = float(tune.get("lr_max_factor", 10.0)) * base_lr
+
+        def objective(trial: optuna.Trial) -> float:
+            lr = trial.suggest_float("learning_rate", lr_min, lr_max, log=True)
+            trainer = self._make_trainer(
+                learning_rate=lr,
+                max_epochs=search_epochs,
+                early_stopping_patience=search_patience,
+            )
+            model = build_deep_model(model_name, n_channels, self.window_len, n_classes)
+            model = trainer.train(
+                model,
+                X_train_norm,
+                y_train,
+                X_val_norm,
+                y_val,
+                participant_ids_train=train_window_pids,
+                participant_ids_val=val_window_pids,
+                shuffle_seed=fold_seed + trial.number + 1,
+            )
+            proba = trainer.predict_proba(model, X_val_norm)
+            y_part, p_part = self._participant_level_labels_proba(
+                y_val, proba, val_window_pids
+            )
+            if len(np.unique(y_part)) < 2:
+                return 0.5
+            try:
+                if n_classes == 2:
+                    return float(roc_auc_score(y_part, p_part[:, 1]))
+                return float(
+                    roc_auc_score(y_part, p_part, multi_class="ovr", average="macro")
+                )
+            except ValueError:
+                return 0.5
+
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=fold_seed),
+        )
+        study.optimize(objective, n_trials=n_trials, timeout=timeout)
+        if study.best_trial is not None:
+            return float(study.best_params.get("learning_rate", base_lr))
+        return base_lr
 
     def _loso_evaluate(
         self,
@@ -142,7 +400,8 @@ class DeepLearningPipeline:
     ) -> dict:
         pids = sorted(participants.keys())
         n_classes = len(set(p["label"] for p in participants.values()))
-        trainer = DeepModelTrainer(self.config)
+        base_lr = float(self.dl_cfg["learning_rate"])
+        fold_lrs: list[float] = []
 
         oof_y_true = []
         oof_y_proba = []
@@ -156,33 +415,42 @@ class DeepLearningPipeline:
             y_test_label = test_data["label"]
 
             train_pids = [p for p in pids if p != test_pid]
-            X_train_list, y_train_list = [], []
-            for tp in train_pids:
-                X_train_list.append(participants[tp]["windows"])
-                y_train_list.extend([participants[tp]["label"]] * len(participants[tp]["windows"]))
-            X_train = np.concatenate(X_train_list, axis=0)
-            y_train = np.array(y_train_list, dtype=int)
-
-            val_size = max(1, int(0.1 * len(X_train)))
-            sss = StratifiedShuffleSplit(
-                n_splits=1,
-                test_size=0.1,
-                random_state=self.seed + fold_idx,
+            participant_labels = {
+                pid: int(participants[pid]["label"]) for pid in train_pids
+            }
+            inner_train_pids, inner_val_pids = self.split_inner_train_val_participants(
+                train_pids,
+                participant_labels,
+                seed=self.seed + fold_idx,
+                val_fraction=0.1,
             )
-            try:
-                train_idx_inner, val_idx = next(
-                    sss.split(np.arange(len(X_train)), y_train)
-                )
-            except ValueError:
+            dedupe_kw = {}
+            if self.training_window_deduplication:
+                dedupe_kw = {
+                    "independent_stride_only": True,
+                    "window_len": self.window_len,
+                    "seed": self.seed + fold_idx,
+                }
+            X_train_f_raw, y_train_f = self.concat_participant_windows(
+                inner_train_pids, participants, **dedupe_kw
+            )
+            X_val_raw, y_val = self.concat_participant_windows(
+                inner_val_pids, participants, **dedupe_kw
+            )
+            train_window_pids = self.window_participant_ids(
+                inner_train_pids, participants, **dedupe_kw
+            )
+            val_window_pids = self.window_participant_ids(
+                inner_val_pids, participants, **dedupe_kw
+            )
+
+            if len(X_train_f_raw) == 0 or len(X_val_raw) == 0:
                 logger.warning(
-                    f"Stratified val split failed for fold {fold_idx + 1} "
-                    f"(n={len(X_train)}); falling back to random split"
+                    f"Skipping DL fold {fold_idx + 1}: empty inner train/val after "
+                    f"participant split (train_pids={len(inner_train_pids)}, "
+                    f"val_pids={len(inner_val_pids)})"
                 )
-                rng = np.random.default_rng(self.seed + fold_idx)
-                val_idx = rng.choice(len(X_train), val_size, replace=False)
-                train_idx_inner = np.setdiff1d(np.arange(len(X_train)), val_idx)
-            X_val_raw, y_val = X_train[val_idx], y_train[val_idx]
-            X_train_f_raw, y_train_f = X_train[train_idx_inner], y_train[train_idx_inner]
+                continue
 
             # Fit normalization on inner-train only, then apply to val/test.
             X_train_norm, X_test_norm = self._normalize(X_train_f_raw, X_test_raw)
@@ -210,6 +478,24 @@ class DeepLearningPipeline:
                     best=f"{best_auc:.3f}",
                 )
 
+            if self._loso_tune_enabled():
+                fold_lr = self._tune_loso_fold_learning_rate(
+                    model_name,
+                    n_channels,
+                    n_classes,
+                    X_train_norm,
+                    y_train_f,
+                    X_val_norm,
+                    y_val,
+                    train_window_pids,
+                    val_window_pids,
+                    self.seed + fold_idx,
+                )
+            else:
+                fold_lr = base_lr
+            fold_lrs.append(fold_lr)
+
+            trainer = self._make_trainer(learning_rate=fold_lr)
             model = build_deep_model(model_name, n_channels, self.window_len, n_classes)
             model = trainer.train(
                 model,
@@ -217,6 +503,8 @@ class DeepLearningPipeline:
                 y_train_f,
                 X_val_norm,
                 y_val,
+                participant_ids_train=train_window_pids,
+                participant_ids_val=val_window_pids,
                 shuffle_seed=self.seed + fold_idx,
                 on_epoch=on_epoch,
             )
@@ -230,6 +518,7 @@ class DeepLearningPipeline:
                 }
 
             proba_windows = trainer.predict_proba(model, X_test_norm)
+            # Participant-level soft vote: mean window probabilities (ML-030).
             participant_proba = proba_windows.mean(axis=0)
 
             oof_y_true.append(y_test_label)
@@ -238,7 +527,7 @@ class DeepLearningPipeline:
 
             bar.update(1)
 
-            del model, X_train, X_test_raw, X_train_norm, X_test_norm, X_val_norm
+            del model, X_train_f_raw, X_val_raw, X_test_raw, X_train_norm, X_test_norm, X_val_norm
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
         y_true = np.array(oof_y_true)
@@ -249,7 +538,14 @@ class DeepLearningPipeline:
         y_proba = np.clip(y_proba, 0.0, 1.0)
         row_sums = y_proba.sum(axis=1, keepdims=True)
         invalid_rows = ~np.isfinite(row_sums) | (row_sums <= 0.0)
-        if np.any(invalid_rows):
+        n_invalid = int(invalid_rows.sum())
+        if n_invalid:
+            logger.warning(
+                "dl_%s: repaired %d/%d participant probability rows (nan/inf/non-normalized)",
+                model_name,
+                n_invalid,
+                len(y_proba),
+            )
             y_proba[invalid_rows.ravel()] = 1.0 / max(n_classes, 1)
             row_sums = y_proba.sum(axis=1, keepdims=True)
         y_proba = y_proba / np.clip(row_sums, 1e-12, None)
@@ -266,6 +562,28 @@ class DeepLearningPipeline:
             except ValueError:
                 payload["auc"] = float("nan")
         payload["participant_ids"] = oof_pids
+        fold_lrs_arr = np.asarray(fold_lrs, dtype=float)
+        payload["hyperparameter_protocol"] = (
+            "loso_inner_participant_optuna_lr"
+            if self._loso_tune_enabled()
+            else "fixed_global_config"
+        )
+        payload["learning_rate_base"] = base_lr
+        if len(fold_lrs_arr):
+            payload["learning_rate_tuned_median"] = float(np.median(fold_lrs_arr))
+            payload["learning_rate_tuned_std"] = (
+                float(np.std(fold_lrs_arr)) if len(fold_lrs_arr) > 1 else 0.0
+            )
+        else:
+            payload["learning_rate_tuned_median"] = base_lr
+            payload["learning_rate_tuned_std"] = 0.0
+        payload["window_overlap"] = self.overlap
+        payload["training_window_protocol"] = (
+            "independent_stride_blocks_per_trial"
+            if self.training_window_deduplication
+            else "all_overlapping_windows"
+        )
+        payload["inference_window_protocol"] = "all_overlapping_windows"
         return payload
 
     @staticmethod
@@ -351,6 +669,11 @@ class DeepLearningPipeline:
             rec = pv.loc[model]
             mdf.at[i, "p_delong_vs_best"] = float("nan")
             mdf.at[i, "p_delong_fmt"] = "n/a (multiclass)"
+            mdf.at[i, "p_bootstrap_delta_vs_best"] = rec.get("p_bootstrap_delta", float("nan"))
+            mdf.at[i, "p_bootstrap_delta_fmt"] = rec.get("p_bootstrap_delta_fmt", "")
+            mdf.at[i, "fdr_q_bootstrap_delta_vs_best"] = rec.get(
+                "fdr_q_bootstrap_delta", float("nan")
+            )
             mdf.at[i, "p_bootstrap_mwu_vs_best"] = rec.get("p_bootstrap_mwu", float("nan"))
             mdf.at[i, "auc_reference_model"] = rec.get("classical_reference", "")
         mdf.to_csv(metrics_path, index=False)
@@ -362,6 +685,7 @@ class DeepLearningPipeline:
                 if model not in pv.index:
                     continue
                 rec = pv.loc[model]
+                ddf.at[i, "p_bootstrap_delta_vs_best"] = rec.get("p_bootstrap_delta", float("nan"))
                 ddf.at[i, "p_bootstrap_mwu_vs_best"] = rec.get("p_bootstrap_mwu", float("nan"))
                 ddf.at[i, "classical_reference"] = rec.get("classical_reference", "")
             ddf.to_csv(dl_metrics_path, index=False)
@@ -423,6 +747,14 @@ class DeepLearningPipeline:
                     "evaluation_mode": "loso_dl",
                     "validation_strategy": "LOSO",
                     "participants": len(participants),
+                    "hyperparameter_protocol": result.get(
+                        "hyperparameter_protocol", "fixed_global_config"
+                    ),
+                    "learning_rate_base": result.get("learning_rate_base"),
+                    "learning_rate_tuned_median": result.get("learning_rate_tuned_median"),
+                    "window_overlap": result.get("window_overlap"),
+                    "training_window_protocol": result.get("training_window_protocol"),
+                    "inference_window_protocol": result.get("inference_window_protocol"),
                 })
                 y_true = np.asarray(result.get("y_true", []), dtype=int)
                 y_pred = np.asarray(result.get("y_pred", []), dtype=int)

@@ -49,6 +49,18 @@ CLINICAL_SCREENING_TOOLS: dict[str, Any] = {
 
 ARTIFACT_FILENAME = "clinical_threshold.json"
 
+DEFAULT_DECISION_THRESHOLD = 0.5
+THRESHOLD_STRATEGY_INNER_GROUP_OOF = "inner_group_oof"
+THRESHOLD_STRATEGY_INNER_GROUP_SOFT_VOTING_OOF = "inner_group_soft_voting_oof"
+THRESHOLD_STRATEGY_FIXED_INSUFFICIENT_GROUPS = "fixed_0.5_insufficient_inner_groups"
+THRESHOLD_STRATEGY_FIXED_OOF_UNAVAILABLE = "fixed_0.5_inner_oof_unavailable"
+FIXED_THRESHOLD_FALLBACK_STRATEGIES = frozenset(
+    {
+        THRESHOLD_STRATEGY_FIXED_INSUFFICIENT_GROUPS,
+        THRESHOLD_STRATEGY_FIXED_OOF_UNAVAILABLE,
+    }
+)
+
 
 def youden_threshold(y_true: np.ndarray, y_score: np.ndarray) -> float:
     """Youden J optimal threshold: argmax (TPR − FPR) on ROC."""
@@ -63,6 +75,34 @@ def youden_threshold(y_true: np.ndarray, y_score: np.ndarray) -> float:
     if not np.isfinite(threshold):
         return 0.5
     return max(0.0, min(1.0, threshold))
+
+
+def fixed_threshold_when_inner_cv_unavailable() -> tuple[float, str]:
+    """
+    ML-037: when inner StratifiedGroupKFold cannot run (n_groups < 3 or single class),
+    use a fixed 0.5 cutoff instead of tuning Youden on in-sample train predictions.
+    """
+    return DEFAULT_DECISION_THRESHOLD, THRESHOLD_STRATEGY_FIXED_INSUFFICIENT_GROUPS
+
+
+def threshold_from_inner_oof(
+    y_train: np.ndarray,
+    oof_scores: np.ndarray,
+    *,
+    n_splits: int,
+    success_strategy: str = THRESHOLD_STRATEGY_INNER_GROUP_OOF,
+) -> tuple[float, str]:
+    """
+    ML-037: pick Youden from inner grouped OOF, or fixed 0.5 when OOF is too sparse.
+    Never tune on in-sample train predictions.
+    """
+    y_train = np.asarray(y_train).astype(int)
+    oof_scores = np.asarray(oof_scores, dtype=float)
+    valid = np.isfinite(oof_scores)
+    min_valid = max(10, n_splits)
+    if int(valid.sum()) < min_valid or len(np.unique(y_train[valid])) < 2:
+        return DEFAULT_DECISION_THRESHOLD, THRESHOLD_STRATEGY_FIXED_OOF_UNAVAILABLE
+    return youden_threshold(y_train[valid], oof_scores[valid]), success_strategy
 
 
 def elevated_class_indices(config: dict) -> list[int]:

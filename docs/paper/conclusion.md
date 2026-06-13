@@ -1,8 +1,10 @@
 # Conclusion
 
-This work presents a reproducible end-to-end wearable IMU gait-screening pipeline for pathology-tier classification across eight clinical cohorts (260 participants; 1,356 trials). The pipeline combines supervised pathology-tier classification with a parallel unsupervised anomaly detection layer, providing both calibrated risk stratification and deviation-from-healthy flagging in a single inference call. Using participant-grouped evaluation, the tabular branch achieved strong multiclass discrimination (best macro one-vs-rest AUC 0.916 for random forest), while deep architectures showed competitive LOSO macro-F1 and accuracy.
+> **RES-002:** Refresh metrics via `docs/paper/results.md` after each pipeline rerun.
 
-A key practical result is that reduced sensor configurations can retain high performance: in sensor-ablation analysis, a two-sensor setup (head + right foot) reached AUC 0.9336, exceeding the full four-sensor configuration (AUC 0.9273). Explainability analyses consistently highlighted trunk-dynamics variability features, supporting a biomechanically plausible interpretation rather than purely opaque model behavior.
+## Summary
+
+This work presents a reproducible end-to-end wearable IMU gait-screening pipeline for pathology-tier classification across eight clinical cohorts (260 participants; 1,356 trials). The pipeline combines supervised pathology-tier classification with a parallel unsupervised anomaly detection layer, providing both calibrated risk stratification and deviation-from-healthy flagging in a single inference call. Headline LOSO AUC values are reported in `docs/paper/results.md` (best single model vs primary deployable ensemble may differ — RES-003).
 
 At the same time, results must be interpreted within study boundaries. Labels are cohort-level pathology categories rather than prospective participant-level fall outcomes; therefore, findings support pathology-tier gait screening research, not direct clinical fall prediction. Cross-cohort transfer instability and the lack of external prospective validation further reinforce this caution.
 

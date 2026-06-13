@@ -1,0 +1,16 @@
+# Inference-only pipeline deps for API/Docker (SEC-003 — no torch/optuna/shap/matplotlib).
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.11.0
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+lightgbm>=4.0.0
+pyarrow
+ahrs>=0.3.1
+PyWavelets>=1.4.0
+nolds>=0.6.2
+antropy>=0.1.6
+pyyaml>=6.0
+tqdm>=4.66.0
+joblib>=1.3.0
+loguru>=0.7.0

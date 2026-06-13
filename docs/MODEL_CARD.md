@@ -6,7 +6,7 @@ Hugging Face–style documentation for published `.pkl` artifacts. **Artifacts i
 
 | Field | Value |
 |-------|--------|
-| **Task** | Participant-level fall-risk classification (multiclass by default) + trial-level unsupervised anomaly screening |
+| **Task** | Participant-level pathology-tier / gait-risk **screening** (multiclass by default) — not verified incident-fall prediction; labels are cohort pathology tiers. Trial-level unsupervised anomaly screening is separate. |
 | **Inputs** | Patient-level feature vector (~≤20 selected features after RFECV) from 4-sensor IMU trials |
 | **Training data** | Voisard et al. Figshare cohort — 260 participants, 1356 trials (not bundled in repo) |
 | **CV** | Leave-one-subject-out, grouped by `participant_id` |
@@ -24,7 +24,9 @@ Upload these paths relative to the repository root of the Hub model repo:
 | `checkpoints/lightgbm.pkl` | Tuned LightGBM pipeline |
 | `checkpoints/random_forest.pkl` | Tuned Random Forest pipeline |
 | `checkpoints/svm.pkl` | Tuned RBF SVM pipeline |
+| `checkpoints/mlp.pkl` | Tuned MLP pipeline |
 | `checkpoints/ensemble.pkl` | Primary ensemble (soft voting or config default) |
+| `checkpoints/checkpoint_manifest.json` | SHA-256 + optional HMAC-SHA256 manifest (`require_manifest=True`; production requires `CHECKPOINT_HMAC_KEY`, SEC-009) |
 
 Optional: `checkpoints/ensemble_stacking.pkl` if stacking comparison was exported.
 
@@ -47,6 +49,8 @@ Optional: `checkpoints/ensemble_stacking.pkl` if stacking comparison was exporte
 | `data/features/patient_features.parquet` | Feature matrix used for training (regenerate locally preferred) |
 | `data/features/selected_features.json` | RFECV/SHAP feature list |
 | `data/features/trial_features.parquet` | Trial-level features |
+| `results/metrics/clinical_threshold.json` | Youden J cutoff artifact for API |
+| `anomaly_detection/checkpoint_manifest.json` | SHA-256 manifest for anomaly `.pkl` files |
 
 ## How to publish to Hugging Face
 
@@ -80,6 +84,7 @@ This project uses the public de-identified dataset [10.6084/m9.figshare.28806086
 - Screening text is intentionally soft (“may warrant further clinical assessment”); not a directive for treatment or intervention.
 - Checkpoints are valid only for the **feature schema and label policy** used at train time (see `configs/pipeline_config.yaml`, commit hash in release notes).
 - API inference uses **single-trial** projection; see `docs/inference_single_trial_limitation.md`.
+- Set `GAITGUARD_API_KEY` in production to require `X-API-Key` (or `Authorization: Bearer`) on `/predict`.
 - Not a medical device; screening / research use only.
 
 ## Training hyperparameters

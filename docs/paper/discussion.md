@@ -1,41 +1,43 @@
 # Discussion
 
+> **PUB-002:** Do not cite run-specific numbers until `python main.py` + `scripts/regenerate_paper_results.py`. All quantitative claims below must be rewritten from regenerated artifacts (`metrics.csv`, SHAP exports, `sensor_ablation.csv`, `split_protocol_comparison.csv`, `deep_learning_metrics.csv`).
+
 ## 1. Principal findings
 
-This study evaluated a reproducible wearable-IMU gait screening pipeline for pathology-tier classification across eight clinical cohorts. Under participant-grouped evaluation, tabular models achieved strong multiclass discrimination, with random forest reaching macro one-vs-rest AUC 0.916 and ensemble methods reaching AUC 0.911. Class-wise analysis showed the highest separability for neurological participants and comparatively lower performance for the orthopedic tier, consistent with the expected overlap between orthopedic gait adaptations and age-related variability.
+This study evaluated a reproducible wearable-IMU gait **screening** pipeline for **pathology-tier** classification across eight clinical cohorts — a proxy stratification task, not adjudicated incident-fall prediction (RES-001). Under participant-grouped LOSO evaluation with nested per-fold RFECV, tabular models are expected to show tier-dependent separability; headline macro OvR AUC values will be reported in `docs/paper/results.md` after regeneration (best single nested-Loso model vs primary deployable ensemble may differ — ML-032 / RES-003). Qualitative tier patterns (e.g., neurological vs orthopedic difficulty) should be confirmed from per-class metrics in the regenerated `metrics.csv`, not assumed here.
 
 ## 2. Interpretation of model behavior
 
-The explainability analyses indicate that discrimination is driven primarily by lower-back dynamic variability and range-related descriptors (e.g., AP range dispersion and ML jerk-derived features), with supportive contributions from head-to-trunk stability ratios. The top feature, `lb_range_ap_std`, can be interpreted clinically as the walk-to-walk inconsistency of trunk-level forward acceleration amplitude rather than as an opaque model token: higher values imply less repeatable propulsion/braking control across repeated trials. This pattern is biomechanically plausible because unstable trunk control and variable AP excursion are expected in neurologic and mixed high-risk gait phenotypes. Cohort-level SHAP summaries further suggest that the same feature families generalize across diagnostic groups, while effect magnitude differs by cohort composition.
+Explainability results will be drawn from regenerated LOSO SHAP exports after the pipeline rerun. Interpretation should focus on biomechanically plausible families (trunk dynamics, variability/range descriptors, head–trunk stability ratios) rather than citing specific feature names until `feature_ablation.md` and SHAP tables confirm rankings. Cohort-level SHAP summaries should be used to assess whether effect directions are consistent across diagnostic groups or driven by cohort composition.
 
 ## 3. Relation between classical and deep approaches
 
-In this run, deep models demonstrated competitive LOSO macro-F1/accuracy, with TCN performing strongest among deep architectures. However, exported deep-model AUC fields were not populated in the current metrics artifact, which limits direct AUC-ranked comparison against the tabular branch in this manuscript draft. Even with that constraint, the results support a practical conclusion: both representation strategies carry useful signal, and the tabular branch currently provides the clearest calibrated reporting path for publication-grade primary endpoints.
+Deep and tabular branches use aligned LOSO participant holdout but may differ in hyperparameter protocol (fixed global DL settings unless `loso_hyperparameter_tuning.enabled`; tabular per-fold Optuna — ML-042). After regeneration, compare macro OvR AUC from `deep_learning_metrics.csv` against nested tabular rows in `metrics.csv` (filtered by `feature_selection_protocol`). Do not cite a specific deep architecture (e.g., TCN) as “strongest” until the regenerated DL table supports it.
 
 ## 4. Sensor configuration implications
 
-Sensor-ablation findings suggest that high screening performance can be preserved with reduced hardware. The strongest practical result was that a two-sensor setup (head + right foot) achieved AUC 0.9336, outperforming the full four-sensor setup (AUC 0.9273). Two-sensor and even single-sensor setups therefore remained competitive relative to full instrumentation, which is important for deployment feasibility, participant burden, and acquisition cost. In particular, head-containing subsets and lower-back-only configurations retained most discriminative power, whereas foot-only combinations performed notably worse. This supports tiered deployment designs in which richer sensor sets are optional rather than mandatory.
+Sensor-efficiency claims must come from regenerated `sensor_ablation.csv` (LOSO + nested RFECV intersect). Until then, state only that the pipeline **evaluates** all sensor subsets and exports rankings to `docs/paper/results.md` — do not assert which subsets retain “most” discriminative power.
 
 ## 5. Cross-cohort transfer and external validity signal
 
-Leave-one-cohort-out transfer results highlight a central translational challenge: when the held-out cohort contains a single label class, AUC becomes undefined and conventional discrimination summaries are not informative. The fallback confidence metrics (mean true-class probability) reveal strong heterogeneity in transferability across cohorts, indicating that model certainty degrades when pathology distributions shift. This is an expected but important finding, reinforcing that internal LOSO robustness does not guarantee cross-cohort transport without targeted external adaptation or calibration.
+Leave-one-cohort-out (LOCO) transfer results highlight translational limits: held-out cohorts with single-class test composition yield undefined AUC; small train cohorts are flagged `unstable_small_n` (ML-044/ML-051). Regenerated `cross_cohort_transfer.csv` should be used for external-validity wording. Internal LOSO robustness does not imply cross-cohort transport without adaptation or calibration.
 
-## 5.1 Leakage-sensitivity interpretation
+## 5.1 Split-protocol sensitivity (ML-048)
 
-The grouped-vs-ungrouped comparison showed only small AUC differences in this dataset (maximum inflation +2.33% for LightGBM, near-zero average change across models, and negative deltas for random forest and MLP). This pattern is reassuring and supports the stability of reported grouped results, but it should not be overinterpreted as evidence of a large leakage artifact in this specific cohort composition.
+The grouped LOSO vs StratifiedKFold comparison (`split_protocol_comparison.csv`) estimates how much performance changes when the validation split is easier (more training subjects per fold), not duplicate-subject leakage at the participant matrix. After regeneration, report mean and maximum inflation from that table; do not cite historical percentages from prior manuscript drafts.
 
 ## 6. Reproducibility and reporting contribution
 
-A practical contribution of this work is the explicit reproducibility pathway: stage-structured execution, configuration-controlled preprocessing/modeling, deterministic seed controls, and one-command containerized reruns. For clinical-ML literature, these engineering details are not ancillary; they directly affect trust, auditability, and independent verification. By pairing performance reporting with artifact-level reproducibility, the pipeline addresses common barriers that prevent published IMU models from being replicated.
+A practical contribution is the explicit reproducibility pathway: stage-structured execution, YAML configuration, deterministic seeding (`PYTHONHASHSEED=42` before Python start), lockfile-pinned CI installs, and containerized reruns. For clinical-ML literature, these engineering details affect trust and independent verification.
 
 ## 7. Clinical interpretation boundary
 
-These findings support pathology-tier gait screening as a research-oriented stratification aid, not direct prospective fall prediction. Labels in this dataset represent cohort-level diagnostic categories rather than participant-level adjudicated future falls. Therefore, the reported metrics should be interpreted as internal evidence of discriminative screening capacity within this dataset context, and not as proof of bedside clinical efficacy.
+These findings support pathology-tier gait screening as a research-oriented stratification aid, **not** direct prospective fall prediction. Labels are cohort-level diagnostic categories, not participant-level adjudicated future falls. Reported metrics are internal discriminative evidence within this dataset context, not proof of bedside clinical efficacy.
 
 ## 8. Limitations and future directions
 
-Key limitations remain: retrospective single-dataset design, no prospective fall-outcome endpoint, no external multi-site validation, and single-trial API inference that does not fully reproduce multi-trial participant aggregation used during training. Future work should prioritize (i) prospective validation with incident fall outcomes, (ii) external cohort replication with frozen models, (iii) cohort-shift-aware calibration, and (iv) harmonized reporting of deep and tabular metrics on identical primary endpoints.
+Key limitations: retrospective single-dataset design, no prospective fall-outcome endpoint, no external multi-site validation, and single-trial API inference that does not fully reproduce multi-trial participant aggregation used during training. Future work: (i) prospective validation with incident falls, (ii) external cohort replication with frozen models, (iii) cohort-shift calibration, (iv) harmonized deep/tabular reporting on identical filtered endpoints.
 
 ## 9. Conclusion
 
-In summary, the presented pipeline demonstrates that participant-grouped, reproducible wearable-IMU modeling can achieve strong multiclass pathology-tier discrimination in a heterogeneous open clinical dataset. The combination of robust tabular performance, interpretable feature attribution, and sensor-efficiency evidence provides a credible foundation for next-stage prospective validation studies.
+The pipeline demonstrates participant-grouped, reproducible wearable-IMU modeling for multiclass pathology-tier screening on a heterogeneous open clinical dataset. Final conclusions on discrimination strength, interpretability, and sensor efficiency must be updated from regenerated artifacts before submission.

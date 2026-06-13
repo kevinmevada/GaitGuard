@@ -30,7 +30,11 @@ console = Console()
 from src.dataset.label_balance import balanced_scale_pos_weight
 from src.dataset.label_policy import is_binary_task, label_mode_description
 from src.evaluation.roc_auc_scoring import roc_auc_from_proba, roc_auc_scoring_name
-from src.features.feature_matrix import NON_FEATURE_COLS, load_patient_feature_matrix
+from src.features.feature_matrix import (
+    NON_FEATURE_COLS,
+    load_patient_feature_matrix,
+    nested_rfecv_column_indices,
+)
 from src.models.ensemble_builder import (
     build_ensemble_estimator,
     ensemble_model_name,
@@ -72,7 +76,18 @@ class ModelTrainer:
         class_weights = len(y) / (n_classes * counts)
         return class_weights[y]
 
+    @staticmethod
+    def _balanced_sample_weights(y: np.ndarray) -> np.ndarray:
+        """Inverse-frequency per-sample weights (sklearn 'balanced' style)."""
+        y = np.asarray(y).astype(int)
+        counts = np.bincount(y).astype(float)
+        counts = np.where(counts == 0, 1.0, counts)
+        class_weights = len(y) / (len(counts) * counts)
+        return class_weights[y]
+
     def _pipeline_fit_params(self, name: str, y: np.ndarray) -> dict[str, Any]:
+        if name == "mlp":
+            return {"clf__sample_weight": self._balanced_sample_weights(y)}
         if name != "xgboost":
             return {}
         weights = self._xgb_sample_weights(y, self.config)
@@ -93,17 +108,19 @@ class ModelTrainer:
         """Train base models and ensembles.
 
         Two-pass tuning per base model (intentional):
-          1. ``_nested_cv`` — outer StratifiedGroupKFold estimates generalisation
-             (``cv_auc`` / ``cv_std`` in model_comparison_cv.csv). Each outer fold
-             runs its own Optuna search on the outer-train split only.
-          2. ``_run_optuna`` on full data — selects hyperparameters for the saved
-             checkpoint (``deployed_params``). Its inner-CV score is ``tuning_cv_auc``.
+          1. ``_nested_cv`` — outer StratifiedGroupKFold with **per-outer-fold RFECV**
+             on the full feature matrix (unbiased ``cv_auc`` in model_comparison_cv.csv).
+          2. ``_run_optuna`` on globally selected deployment features — hyperparameters
+             for saved checkpoints match the API/production schema.
 
         ``cv_auc`` therefore describes nested-CV performance, not the exact params
         in the pickle; use ``tuning_cv_auc`` as a proxy for the deployed model's
-        in-sample tune score, or hold-out evaluation for deployment performance.
+        in-sample tune score, or ``deploy_loso_gap.csv`` for deploy-schema LOSO (ML-032).
         """
-        X, y, groups, _, patient_df = self._load_data()
+        X, y, groups, feat_cols_deploy, patient_df = self._load_data()
+        X_full, _, _, feat_cols_full, _ = load_patient_feature_matrix(
+            self.config, use_selected=False
+        )
         counts = dict(zip(*np.unique(y, return_counts=True)))
         logger.info(
             f"Data: {X.shape} | {label_mode_description(self.config)} | "
@@ -136,9 +153,10 @@ class ModelTrainer:
                 progress.update(task_id, description=f"Training model: {model_name}")
                 logger.info(f"Tuning {model_name}...")
 
-                cv_mean, cv_std = self._nested_cv(model_name, X, y, groups)
-                # Second pass: tune on all data so the checkpoint uses full-sample
-                # hyperparameters (may differ from any single nested-CV outer fold).
+                cv_mean, cv_std = self._nested_cv(
+                    model_name, X_full, y, groups, feat_cols_full
+                )
+                # Tune/deploy on globally selected features (deployment schema).
                 best_params, tuning_cv_auc = self._run_optuna(
                     model_name, X, y, groups, n_trials=self.n_trials, timeout=self.timeout
                 )
@@ -167,37 +185,29 @@ class ModelTrainer:
                     results.items(), key=lambda item: item[1]["cv_auc"], reverse=True
                 )
                 top_models = sorted_models[:top_k]
-                cv = StratifiedGroupKFold(
-                    n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
-                )
 
                 for method in ensemble_methods:
                     model_key = ensemble_model_name(method)
                     progress.update(
                         task_id, description=f"Training model: {model_key}"
                     )
+                    auc_mean, auc_std = self._nested_ensemble_cv(
+                        method,
+                        top_models,
+                        results,
+                        X_full,
+                        y,
+                        groups,
+                        feat_cols_full,
+                    )
+
+                    # Deploy on global selected features (production schema).
                     ensemble = build_ensemble_estimator(
                         top_models,
                         method,
                         cv_folds=self.cv_folds,
                         random_state=self.random_state,
                     )
-                    fit_params = (
-                        {"groups": groups} if method == "stacking" else None
-                    )
-                    _cv_fit_params = fit_params or {}
-                    scores = cross_val_score(
-                        ensemble,
-                        X,
-                        y,
-                        cv=cv,
-                        scoring=roc_auc_scoring_name(y, self.config),
-                        groups=groups,
-                        fit_params=_cv_fit_params,
-                    )
-                    auc_mean = float(np.mean(scores))
-                    auc_std = float(np.std(scores))
-
                     if method == "stacking":
                         ensemble.fit(X, y, groups=groups)
                     else:
@@ -210,10 +220,12 @@ class ModelTrainer:
                         "params": {
                             "ensemble_method": method,
                             "top_models": [name for name, _ in top_models],
+                            "feature_selection_protocol": "nested_rfecv_per_outer_fold",
                         },
                     }
                     logger.info(
-                        f"{model_key} ({method}) AUC = {auc_mean:.4f} ± {auc_std:.4f}"
+                        f"{model_key} ({method}) nested ensemble CV AUC = "
+                        f"{auc_mean:.4f} ± {auc_std:.4f} (deploy fit uses global RFECV mask)"
                     )
                     self._save_model(model_key, ensemble)
                     if model_key == primary_ensemble_checkpoint_name(self.config):
@@ -231,20 +243,25 @@ class ModelTrainer:
         logger.info(f"Feature matrix: {X.shape[1]} columns (selection applied if configured)")
         return X, y, groups, feat_cols, df
 
-    def _nested_cv(self, name: str, X, y, groups) -> tuple[float, float]:
-        """Nested CV: outer loop estimates generalisation, inner loop tunes.
-
-        Hyperparameters from each outer fold are discarded; ``run()`` performs a
-        separate full-data Optuna pass for the deployable checkpoint.  Returns
-        (outer_mean_auc, outer_std_auc) for unbiased model comparison only.
-        """
+    def _nested_cv(
+        self,
+        name: str,
+        X: np.ndarray,
+        y: np.ndarray,
+        groups: np.ndarray,
+        feat_cols: list[str],
+    ) -> tuple[float, float]:
+        """Nested CV with per-outer-fold RFECV on the outer-train split (ML-014)."""
         outer_cv = StratifiedGroupKFold(
             n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
         )
         outer_scores: list[float] = []
 
         for train_idx, val_idx in outer_cv.split(X, y, groups):
-            X_train, X_val = X[train_idx], X[val_idx]
+            col_idx = nested_rfecv_column_indices(
+                self.config, X, y, groups, feat_cols, train_idx
+            )
+            X_train, X_val = X[train_idx][:, col_idx], X[val_idx][:, col_idx]
             y_train, y_val = y[train_idx], y[val_idx]
             groups_train = groups[train_idx]
 
@@ -257,6 +274,72 @@ class ModelTrainer:
             self.fit_pipeline(name, pipeline, X_train, y_train)
             proba = pipeline.predict_proba(X_val)
             outer_scores.append(self._roc_auc_from_proba(y_val, proba))
+
+        return float(np.mean(outer_scores)), float(np.std(outer_scores))
+
+    def _nested_ensemble_cv(
+        self,
+        method: str,
+        top_models: list[tuple[str, dict]],
+        results: dict[str, dict],
+        X_full: np.ndarray,
+        y: np.ndarray,
+        groups: np.ndarray,
+        feat_cols_full: list[str],
+    ) -> tuple[float, float]:
+        """
+        Nested CV with per-outer-fold RFECV and Optuna for ensemble scoring (ML-023/ML-039).
+
+        Each outer fold re-tunes every base model on the outer-train split before fitting
+        the ensemble — matching ``_nested_cv`` and avoiding optimistic reuse of full-data
+        hyperparameters in ``model_comparison_cv.csv``.
+        """
+        del results  # retained for call-site compatibility; bases tuned per outer fold
+        outer_cv = StratifiedGroupKFold(
+            n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
+        )
+        cv_folds = int(
+            self.config.get("models", {}).get("ensemble", {}).get("stacking", {}).get(
+                "cv_folds", self.cv_folds
+            )
+        )
+        outer_scores: list[float] = []
+
+        for train_idx, val_idx in outer_cv.split(X_full, y, groups):
+            col_idx = nested_rfecv_column_indices(
+                self.config, X_full, y, groups, feat_cols_full, train_idx
+            )
+            X_tr = X_full[train_idx][:, col_idx]
+            X_val = X_full[val_idx][:, col_idx]
+            y_train = y[train_idx]
+            groups_train = groups[train_idx]
+
+            fold_bases: list[tuple[str, dict]] = []
+            for name, _ in top_models:
+                best_params, _ = self._run_optuna(
+                    name,
+                    X_tr,
+                    y_train,
+                    groups_train,
+                    n_trials=self.n_trials,
+                    timeout=self.timeout,
+                )
+                pipe = self._build_pipeline_from_params(name, best_params, y_train)
+                self.fit_pipeline(name, pipe, X_tr, y_train)
+                fold_bases.append((name, {"pipeline": pipe}))
+
+            ensemble = build_ensemble_estimator(
+                fold_bases,
+                method,
+                cv_folds=cv_folds,
+                random_state=self.random_state,
+            )
+            if method == "stacking":
+                ensemble.fit(X_tr, y_train, groups=groups_train)
+            else:
+                ensemble.fit(X_tr, y_train)
+            proba = ensemble.predict_proba(X_val)
+            outer_scores.append(self._roc_auc_from_proba(y[val_idx], proba))
 
         return float(np.mean(outer_scores)), float(np.std(outer_scores))
 
@@ -396,9 +479,9 @@ class ModelTrainer:
                 hidden_layer_sizes=(trial.suggest_int("units", 64, 256),),
                 alpha=trial.suggest_float("alpha", 1e-5, 1e-1, log=True),
                 learning_rate_init=trial.suggest_float("learning_rate_init", 1e-4, 1e-2, log=True),
-                early_stopping=True,
-                validation_fraction=0.1,
-                n_iter_no_change=15,
+                # No early_stopping: validation_fraction is not group-aware and leaks
+                # subjects when fit inside StratifiedGroupKFold / LOSO folds.
+                early_stopping=False,
                 max_iter=500,
                 random_state=self.random_state,
             )
@@ -438,7 +521,9 @@ class ModelTrainer:
             mlp_params = dict(params)
             if "units" in mlp_params:
                 mlp_params["hidden_layer_sizes"] = (mlp_params.pop("units"),)
-            return MLPClassifier(**mlp_params, early_stopping=True, validation_fraction=0.1, n_iter_no_change=15, max_iter=500)
+            mlp_params.setdefault("early_stopping", False)
+            mlp_params.setdefault("max_iter", 500)
+            return MLPClassifier(**mlp_params, random_state=self.random_state)
         raise ValueError(name)
 
     def _save_model(self, name, pipeline):
@@ -454,8 +539,10 @@ class ModelTrainer:
                 "tuning_cv_auc": value.get("tuning_cv_auc", float("nan")),
                 "deployed_params": json.dumps(value.get("params", {}), sort_keys=True),
                 "validation": "nested_stratified_group_kfold",
+                "feature_selection_protocol": "nested_rfecv_per_outer_fold",
+                "deploy_feature_selection": "global_selected_features_json",
                 "cv_auc_source": (
-                    "ensemble_cv"
+                    "nested_rfecv_ensemble_cv"
                     if isinstance(value.get("params"), dict)
                     and "ensemble_method" in value["params"]
                     else "nested_cv"

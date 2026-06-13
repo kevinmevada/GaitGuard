@@ -1,0 +1,4 @@
+# Dev/test dependencies (COD-002) — not required for train/eval/API inference.
+-r requirements.txt
+pytest>=7.4.0
+pytest-cov>=4.1.0

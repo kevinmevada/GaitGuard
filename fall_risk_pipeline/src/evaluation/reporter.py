@@ -152,7 +152,7 @@ class ReportGenerator:
         ethics_section = self._ethics_section()
         limitations_section = self._limitations_section()
         ensemble_section = self._ensemble_comparison_section()
-        leakage_section = self._leakage_comparison_section()
+        leakage_section = self._split_protocol_comparison_section()
         sensor_ablation_section = self._sensor_ablation_section()
         cross_cohort_section = self._cross_cohort_section()
         dl_section = self._deep_learning_comparison_section()
@@ -247,6 +247,10 @@ python main.py --config configs/pipeline_config.yaml
         path.write_text(report, encoding="utf-8")
         logger.info(f"Markdown report saved -> {path}")
 
+        from src.evaluation.paper_results_sync import sync_paper_results
+
+        sync_paper_results(self.config)
+
     def _regenerate_demographics(self) -> None:
         """(Re)generate Table 1 demographics from trial_metadata.csv."""
         try:
@@ -276,6 +280,9 @@ python main.py --config configs/pipeline_config.yaml
             "p_delong_vs_best" not in df.columns or not df["p_delong_vs_best"].notna().any()
         )
         need_bootstrap = (
+            "p_bootstrap_delta_vs_best" not in df.columns
+            or not df["p_bootstrap_delta_vs_best"].notna().any()
+        ) or (
             "p_bootstrap_mwu_vs_best" not in df.columns
             or not df["p_bootstrap_mwu_vs_best"].notna().any()
         )
@@ -303,8 +310,13 @@ python main.py --config configs/pipeline_config.yaml
             )
             n_boot = int(eval_cfg.get("delong_bootstrap_n", 1000))
             seed = int(eval_cfg.get("random_state", 42))
+            apply_fdr = eval_cfg.get("multiple_testing_correction", "fdr_bh") == "fdr_bh"
             pairwise_df, vs_ref_df = pairwise_auc_significance(
-                results, reference=ref, n_bootstrap=n_boot, random_state=seed
+                results,
+                reference=ref,
+                n_bootstrap=n_boot,
+                random_state=seed,
+                apply_fdr=apply_fdr,
             )
             if not pairwise_df.empty:
                 pairwise_df.to_csv(self.metrics_dir / "auc_pairwise_pvalues.csv", index=False)
@@ -314,11 +326,18 @@ python main.py --config configs/pipeline_config.yaml
                 for i, row in df.iterrows():
                     pvals = p_map.get(row["model"], {})
                     df.at[i, "p_delong_vs_best"] = pvals.get("p_delong_vs_reference", float("nan"))
+                    df.at[i, "p_bootstrap_delta_vs_best"] = pvals.get(
+                        "p_bootstrap_delta_vs_reference", float("nan")
+                    )
+                    df.at[i, "fdr_q_bootstrap_delta_vs_best"] = pvals.get(
+                        "fdr_q_bootstrap_delta_vs_reference", float("nan")
+                    )
                     df.at[i, "p_bootstrap_mwu_vs_best"] = pvals.get(
                         "p_bootstrap_mwu_vs_reference", float("nan")
                     )
                     df.at[i, "auc_reference_model"] = pvals.get("reference_model", ref)
                     df.at[i, "p_delong_fmt"] = pvals.get("p_delong_fmt", "")
+                    df.at[i, "p_bootstrap_delta_fmt"] = pvals.get("p_bootstrap_delta_fmt", "")
 
         if need_mcnemar:
             from src.evaluation.classification_significance import (
@@ -329,8 +348,9 @@ python main.py --config configs/pipeline_config.yaml
             if not ref:
                 ref = max(results, key=lambda n: results[n]["accuracy"])
             exact = bool(eval_cfg.get("mcnemar_exact", False))
+            apply_fdr = eval_cfg.get("multiple_testing_correction", "fdr_bh") == "fdr_bh"
             m_pairwise, m_vs_ref, m_folds = pairwise_classification_significance(
-                results, reference=ref, exact_mcnemar=exact
+                results, reference=ref, exact_mcnemar=exact, apply_fdr=apply_fdr
             )
             if not m_pairwise.empty:
                 m_pairwise.to_csv(self.metrics_dir / "mcnemar_pairwise_pvalues.csv", index=False)
@@ -342,6 +362,9 @@ python main.py --config configs/pipeline_config.yaml
                 for i, row in df.iterrows():
                     mvals = m_map.get(row["model"], {})
                     df.at[i, "p_mcnemar_vs_best"] = mvals.get("p_mcnemar_vs_reference", float("nan"))
+                    df.at[i, "fdr_q_mcnemar_vs_best"] = mvals.get(
+                        "fdr_q_mcnemar_vs_reference", float("nan")
+                    )
                     df.at[i, "p_mcnemar_fmt"] = mvals.get("p_mcnemar_fmt", "")
 
         df.to_csv(metrics_path, index=False)
@@ -555,13 +578,15 @@ python main.py --config configs/pipeline_config.yaml
             "protocol as the primary evaluator and feature ablation. Identifies the "
             "minimum sensor configuration for acceptable screening performance.",
             "",
-            "| Sensor Subset | # Sensors | # Features | AUC (mean) | AUC (std) |",
+            "| Sensor Subset | # Sensors | # Features | AUC (mean) | Bootstrap σ |",
             "|---|---:|---:|---:|---:|",
         ]
+        std_col = "auc_bootstrap_std" if "auc_bootstrap_std" in df.columns else "auc_std"
         for row in df.itertuples(index=False):
+            bootstrap_std = getattr(row, std_col, float("nan"))
             lines.append(
                 f"| {row.sensor_subset} | {row.n_sensors} | {row.n_features} | "
-                f"{row.auc_mean:.4f} | {row.auc_std:.4f} |"
+                f"{row.auc_mean:.4f} | {bootstrap_std:.4f} |"
             )
         best_overall = df.iloc[0]
         single_sensor = df[df["n_sensors"] == 1]
@@ -625,17 +650,21 @@ python main.py --config configs/pipeline_config.yaml
             )
         return "\n".join(lines)
 
-    def _leakage_comparison_section(self) -> str:
-        lc_path = self.metrics_dir / "leakage_comparison.csv"
+    def _split_protocol_comparison_section(self) -> str:
+        lc_path = self.metrics_dir / "split_protocol_comparison.csv"
+        if not lc_path.exists():
+            lc_path = self.metrics_dir / "leakage_comparison.csv"
         if not lc_path.exists():
             return "_Not available — run the evaluate stage to generate._"
 
         df = pd.read_csv(lc_path)
         lines = [
-            "Compares LOSO (grouped, no subject leakage) against standard "
-            "StratifiedKFold (ungrouped, permits subject leakage) to quantify "
-            "the optimistic bias introduced when the same participant appears "
-            "in both train and test sets.",
+            "## Split-Protocol Comparison",
+            "",
+            "Compares LOSO (grouped, one participant per row) against standard "
+            "StratifiedKFold (ungrouped splits). At participant granularity this "
+            "measures split-difficulty inflation, not duplicate-subject leakage (ML-048). "
+            "Both arms use matched per-fold nested RFECV when `nested_in_evaluation: true` (ML-036).",
             "",
             "| Model | AUC (Grouped LOSO) | AUC (Ungrouped KFold) | Inflation | Inflation % |",
             "|---|---:|---:|---:|---:|",
@@ -649,8 +678,16 @@ python main.py --config configs/pipeline_config.yaml
             )
         mean_infl = df["inflation_pct"].mean()
         lines.append("")
+        if "grouped_feature_protocol" in df.columns:
+            proto = df.iloc[0]
+            lines.append(
+                f"**Feature protocol (grouped):** `{proto['grouped_feature_protocol']}`; "
+                f"**ungrouped:** `{proto['ungrouped_feature_protocol']}` "
+                f"(protocol_matched={bool(proto.get('protocol_matched', True))})."
+            )
+            lines.append("")
         lines.append(
-            f"**Mean AUC inflation from subject leakage: {mean_infl:+.1f}%**"
+            f"**Mean split-protocol AUC inflation: {mean_infl:+.1f}%**"
         )
         return "\n".join(lines)
 

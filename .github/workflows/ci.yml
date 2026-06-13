@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  PYTHONHASHSEED: "42"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            fall_risk_pipeline/requirements-lock.txt
+            fall_risk_pipeline/requirements-dev-lock.txt
+            api/requirements-lock.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r fall_risk_pipeline/requirements-lock.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install -r fall_risk_pipeline/requirements-dev-lock.txt
+          pip install -r api/requirements-lock.txt
+
+      - name: Sync frontend static assets
+        run: python scripts/sync_front_end.py
+
+      - name: Assert api/static matches Front_end (STR-002)
+        run: git diff --exit-code -- api/static/
+
+      - name: Run pipeline unit tests
+        working-directory: fall_risk_pipeline
+        run: pytest tests/ -q --tb=short
+
+      - name: Run API unit tests
+        run: pytest api/tests/ -q --tb=short

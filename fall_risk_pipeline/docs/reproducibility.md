@@ -90,3 +90,9 @@ Then rerun affected stages (`eda` onward for plots; `train` onward for models an
 ## API / inference
 
 The FastAPI service (`api/main.py`) does not retrain models; it loads fixed checkpoints. Reproducibility of **training** is governed by this pipeline entrypoint only.
+
+## CI and Docker (`PYTHONHASHSEED`)
+
+GitHub Actions (`.github/workflows/ci.yml`), the training `Dockerfile`, and `Dockerfile.api` set **`PYTHONHASHSEED=42`**, matching `reproducibility.seed` in `pipeline_config.yaml`. Unit tests do not depend on hash iteration order, but aligning CI/Docker with the pipeline seed avoids environment drift.
+
+For bit-identical full pipeline reruns, still export `PYTHONHASHSEED=42` **before** starting Python (see above).
