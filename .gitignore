@@ -60,3 +60,6 @@ fall_risk_pipeline/results/checkpoints/*
 !fall_risk_pipeline/results/anomaly_detection/
 fall_risk_pipeline/results/anomaly_detection/*
 !fall_risk_pipeline/results/anomaly_detection/README.md
+!fall_risk_pipeline/results/metrics/
+fall_risk_pipeline/results/metrics/*
+!fall_risk_pipeline/results/metrics/README.md

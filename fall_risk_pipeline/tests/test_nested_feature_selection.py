@@ -1,6 +1,7 @@
 """Tests for nested (per-fold) feature selection helpers."""
 
 import numpy as np
+from pathlib import Path
 
 from src.evaluation.evaluator import Evaluator
 from src.features.feature_selector import FeatureSelector
@@ -85,3 +86,14 @@ def test_nested_fs_disabled_uses_identity_columns():
     ev = Evaluator(_base_config(nested_in_evaluation=False))
     X = np.arange(12, dtype=float).reshape(4, 3)
     assert np.array_equal(ev._X_for_fold(X, "s0"), X)
+
+
+def test_feature_selector_parallel_jobs_not_negative_one():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "features"
+        / "feature_selector.py"
+    ).read_text(encoding="utf-8")
+    assert "_resolve_parallel_jobs" in source
+    assert "n_jobs=-1" not in source.split("_compare_before_after")[1].split("def _rank_required")[0]

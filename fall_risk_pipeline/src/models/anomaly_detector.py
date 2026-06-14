@@ -176,13 +176,19 @@ class GaitAnomalyDetector:
     # Detection methods
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _fit_healthy_scaler(
+        X: np.ndarray, healthy_mask: np.ndarray
+    ) -> tuple[StandardScaler, np.ndarray]:
+        """Fit StandardScaler on healthy trials only; transform all rows."""
+        scaler = StandardScaler()
+        scaler.fit(X[healthy_mask])
+        return scaler, scaler.transform(X)
+
     def _isolation_forest_detection(
         self, X: np.ndarray, metadata: pd.DataFrame, healthy_mask: np.ndarray
     ) -> Dict[str, Any]:
-        # FIX: fit scaler on normal (healthy) samples only.
-        scaler = StandardScaler()
-        scaler.fit(X[healthy_mask])
-        X_scaled = scaler.transform(X)
+        scaler, X_scaled = self._fit_healthy_scaler(X, healthy_mask)
 
         iso_forest = IsolationForest(
             contamination=0.1,
@@ -211,9 +217,7 @@ class GaitAnomalyDetector:
     def _lof_detection(
         self, X: np.ndarray, metadata: pd.DataFrame, healthy_mask: np.ndarray
     ) -> Dict[str, Any]:
-        scaler = StandardScaler()
-        scaler.fit(X[healthy_mask])
-        X_scaled = scaler.transform(X)
+        scaler, X_scaled = self._fit_healthy_scaler(X, healthy_mask)
 
         lof = LocalOutlierFactor(
             n_neighbors=20,
@@ -242,9 +246,7 @@ class GaitAnomalyDetector:
     def _one_class_svm_detection(
         self, X: np.ndarray, metadata: pd.DataFrame, healthy_mask: np.ndarray
     ) -> Dict[str, Any]:
-        scaler = StandardScaler()
-        scaler.fit(X[healthy_mask])
-        X_scaled = scaler.transform(X)
+        scaler, X_scaled = self._fit_healthy_scaler(X, healthy_mask)
 
         svm = OneClassSVM(kernel="rbf", gamma="scale", nu=0.1)
         svm.fit(X_scaled[healthy_mask])

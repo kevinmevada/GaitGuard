@@ -48,6 +48,7 @@ from src.features.nonlinear_metrics import (
     dfa_alpha,
     largest_lyapunov_exponent,
     sample_entropy,
+    write_nonlinear_nan_report,
 )
 from src.features.patient_temporal_aggregation import (
     aggregate_trial_values,
@@ -112,6 +113,7 @@ class FeatureExtractor:
         self.config   = config
         self.proc_dir = Path(config["paths"]["processed_data"])
         self.out_dir  = Path(config["paths"]["features"])
+        self.metrics_dir = Path(config["paths"]["metrics"])
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.fs = config["dataset"]["sampling_rate"]
         pp = config.get("preprocessing", {})
@@ -153,6 +155,8 @@ class FeatureExtractor:
         trial_path = self.out_dir / "trial_features.parquet"
         trial_df.to_parquet(trial_path, index=False)
         logger.info(f"Trial features saved → {trial_path}  shape={trial_df.shape}")
+
+        write_nonlinear_nan_report(trial_df, self.metrics_dir)
 
         patient_df = self._aggregate_to_patient(trial_df)
         patient_path = self.out_dir / "patient_features.parquet"

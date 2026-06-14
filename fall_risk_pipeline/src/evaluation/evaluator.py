@@ -2022,6 +2022,77 @@ class Evaluator:
                 f"({len(unique_cohorts)} cohorts)"
             )
 
+    def _leakage_kfold_seed_repeats(self, model_name: str) -> int:
+        eval_cfg = self.config["models"]["evaluation"]
+        by_model = eval_cfg.get("leakage_kfold_seed_repeats_by_model") or {}
+        if model_name in by_model:
+            return max(int(by_model[model_name]), 1)
+        return max(int(eval_cfg.get("leakage_kfold_seed_repeats", 1)), 1)
+
+    @staticmethod
+    def _set_estimator_random_state(model, seed: int) -> None:
+        """Set ``random_state`` on the final pipeline step when supported (e.g. MLP)."""
+        from sklearn.pipeline import Pipeline
+
+        est = model.steps[-1][1] if isinstance(model, Pipeline) else model
+        if hasattr(est, "random_state"):
+            est.random_state = int(seed)
+
+    def _ungrouped_kfold_auc(
+        self,
+        name: str,
+        checkpoint,
+        X: np.ndarray,
+        y: np.ndarray,
+        groups: np.ndarray,
+        *,
+        n_folds: int,
+        seed: int,
+        binary_task: bool,
+        nested_fs: bool,
+        feat_cols: list[str] | None,
+    ) -> float | None:
+        from sklearn.model_selection import StratifiedKFold
+        import sklearn.base as skbase
+
+        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        all_true, all_prob = [], []
+
+        for train_idx, test_idx in skf.split(X, y):
+            if len(np.unique(y[train_idx])) < 2:
+                continue
+            if nested_fs and feat_cols:
+                col_idx = nested_rfecv_column_indices(
+                    self.config, X, y, groups, feat_cols, train_idx
+                )
+                X_train = X[train_idx][:, col_idx]
+                X_test = X[test_idx][:, col_idx]
+            else:
+                X_train = X[train_idx]
+                X_test = X[test_idx]
+
+            fold_model = skbase.clone(checkpoint)
+            self._set_estimator_random_state(fold_model, seed)
+            self._fit_fold_model(name, fold_model, X_train, y[train_idx])
+
+            if binary_task:
+                proba = fold_model.predict_proba(X_test)[:, 1]
+                all_prob.extend(proba.tolist())
+            else:
+                proba = fold_model.predict_proba(X_test)
+                all_prob.append(proba)
+            all_true.extend(y[test_idx].tolist())
+
+        if not all_true:
+            return None
+
+        y_true = np.array(all_true)
+        if binary_task:
+            y_prob = np.array(all_prob)
+            return float(roc_auc_score(y_true, y_prob))
+        y_prob = np.vstack(all_prob)
+        return float(roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro"))
+
     def _leakage_comparison(
         self, X: np.ndarray, y: np.ndarray, groups: np.ndarray,
         grouped_results: dict[str, dict],
@@ -2038,12 +2109,8 @@ class Evaluator:
             logger.info("Leakage comparison disabled in config — skipping.")
             return
 
-        from sklearn.model_selection import StratifiedKFold
-        import sklearn.base as skbase
-
         n_folds = eval_cfg.get("leakage_kfold_splits", 10)
         rs = eval_cfg["random_state"]
-        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=rs)
         binary_task = is_binary_task(y, self.config)
         nested_fs = self._nested_fs_enabled()
         feat_cols = self._feat_cols
@@ -2062,44 +2129,31 @@ class Evaluator:
             if checkpoint is None:
                 continue
 
-            all_true, all_prob = [], []
-            for train_idx, test_idx in skf.split(X, y):
-                if len(np.unique(y[train_idx])) < 2:
-                    continue
-                if nested_fs and feat_cols:
-                    col_idx = nested_rfecv_column_indices(
-                        self.config, X, y, groups, feat_cols, train_idx
-                    )
-                    X_train = X[train_idx][:, col_idx]
-                    X_test = X[test_idx][:, col_idx]
-                else:
-                    X_train = X[train_idx]
-                    X_test = X[test_idx]
+            n_repeats = self._leakage_kfold_seed_repeats(name)
+            repeat_aucs: list[float] = []
+            for rep in range(n_repeats):
+                auc = self._ungrouped_kfold_auc(
+                    name,
+                    checkpoint,
+                    X,
+                    y,
+                    groups,
+                    n_folds=n_folds,
+                    seed=int(rs) + rep,
+                    binary_task=binary_task,
+                    nested_fs=nested_fs,
+                    feat_cols=feat_cols,
+                )
+                if auc is not None:
+                    repeat_aucs.append(auc)
 
-                fold_model = skbase.clone(checkpoint)
-                self._fit_fold_model(name, fold_model, X_train, y[train_idx])
-
-                if binary_task:
-                    proba = fold_model.predict_proba(X_test)[:, 1]
-                    all_prob.extend(proba.tolist())
-                else:
-                    proba = fold_model.predict_proba(X_test)
-                    all_prob.append(proba)
-                all_true.extend(y[test_idx].tolist())
-
-            if not all_true:
+            if not repeat_aucs:
                 continue
 
-            y_true = np.array(all_true)
-            if binary_task:
-                y_prob = np.array(all_prob)
-                ungrouped_auc = float(roc_auc_score(y_true, y_prob))
-            else:
-                y_prob = np.vstack(all_prob)
-                ungrouped_auc = float(
-                    roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro")
-                )
-
+            ungrouped_auc = float(np.mean(repeat_aucs))
+            ungrouped_std = (
+                float(np.std(repeat_aucs)) if len(repeat_aucs) > 1 else float("nan")
+            )
             grouped_auc = float(grouped_results[name]["auc"])
             inflation = ungrouped_auc - grouped_auc
 
@@ -2107,6 +2161,8 @@ class Evaluator:
                 "model": name,
                 "auc_grouped_loso": grouped_auc,
                 "auc_ungrouped_kfold": ungrouped_auc,
+                "auc_ungrouped_kfold_std": ungrouped_std,
+                "ungrouped_kfold_seed_repeats": n_repeats,
                 "auc_inflation": inflation,
                 "inflation_pct": float(inflation / (grouped_auc + 1e-10) * 100),
                 "grouped_strategy": "LOSO",
@@ -2116,10 +2172,17 @@ class Evaluator:
                 "protocol_matched": True,
                 "n_participants": len(np.unique(groups)),
             })
+            repeat_note = (
+                f" mean±std over {n_repeats} KFold seeds"
+                if n_repeats > 1
+                else ""
+            )
             logger.info(
                 f"  Leakage check {name}: "
-                f"grouped={grouped_auc:.4f} ungrouped={ungrouped_auc:.4f} "
-                f"inflation={inflation:+.4f} ({inflation / (grouped_auc + 1e-10) * 100:+.1f}%) "
+                f"grouped={grouped_auc:.4f} ungrouped={ungrouped_auc:.4f}"
+                f"{f'±{ungrouped_std:.4f}' if n_repeats > 1 else ''} "
+                f"inflation={inflation:+.4f} ({inflation / (grouped_auc + 1e-10) * 100:+.1f}%)"
+                f"{repeat_note} "
                 f"[FS: {grouped_feature_protocol} vs {ungrouped_feature_protocol}]"
             )
 
@@ -2127,6 +2190,7 @@ class Evaluator:
             df = pd.DataFrame(rows)
             out = self.metrics_dir / "split_protocol_comparison.csv"
             df.to_csv(out, index=False)
+            df.to_csv(self.metrics_dir / "leakage_comparison.csv", index=False)
             logger.info(f"Split-protocol comparison saved → {out}")
 
     def _save_ensemble_comparison(self, ensemble_results: dict[str, dict]) -> None:
