@@ -9,6 +9,7 @@ References:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,7 @@ from loguru import logger
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import RFECV
 from sklearn.impute import SimpleImputer
+from sklearn.inspection import permutation_importance
 from sklearn.model_selection import StratifiedGroupKFold, cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -29,16 +31,63 @@ from src.evaluation.shap_multiclass import (
     per_class_mean_abs_importance,
     split_shap_by_class,
 )
-
-
-def _rfe_pipeline_importance(estimator: Pipeline) -> np.ndarray:
-    """Expose fitted RF importances for RFECV when estimator is imputer→scaler→clf."""
-    return np.asarray(estimator.named_steps["clf"].feature_importances_)
 from src.features.feature_matrix import (
     SELECTED_FEATURES_FILE,
     get_numeric_feature_columns,
     load_patient_feature_matrix,
 )
+
+
+class PermutationImportanceRandomForest(RandomForestClassifier):
+    """
+    Random Forest that stores permutation importances for RFECV RFE ranking.
+
+    RFECV's ``importance_getter`` only receives the fitted estimator (not X/y),
+    so permutation scores are computed at the end of ``fit`` and exposed via
+    ``_permutation_importances_``. Permutation importance is far less biased
+    than Gini/MDI when p >> n (Strobl et al., 2007).
+    """
+
+    def __init__(
+        self,
+        *,
+        n_estimators: int = 120,
+        max_depth: int = 6,
+        class_weight: str | dict | None = "balanced",
+        random_state: int = 0,
+        n_jobs: int = 1,
+        permutation_n_repeats: int = 5,
+    ):
+        super().__init__(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            class_weight=class_weight,
+            random_state=random_state,
+            n_jobs=n_jobs,
+        )
+        self.permutation_n_repeats = permutation_n_repeats
+
+    def fit(self, X, y, sample_weight=None):
+        super().fit(X, y, sample_weight=sample_weight)
+        result = permutation_importance(
+            self,
+            X,
+            y,
+            n_repeats=self.permutation_n_repeats,
+            random_state=self.random_state,
+            n_jobs=1,
+        )
+        self._permutation_importances_ = result.importances_mean
+        return self
+
+
+def _rfe_pipeline_importance(estimator: Pipeline) -> np.ndarray:
+    """Permutation (RFECV) or Gini importances from imputer→scaler→clf pipeline."""
+    clf = estimator.named_steps["clf"]
+    if hasattr(clf, "_permutation_importances_"):
+        return np.asarray(clf._permutation_importances_)
+    return np.asarray(clf.feature_importances_)
+
 
 CITATIONS = {
     "lasso": (
@@ -68,10 +117,19 @@ class FeatureSelector:
         self.cv_folds = int(fscfg.get("cv_folds", config["models"]["tuning"]["cv_folds"]))
         self.random_state = int(config["models"]["evaluation"]["random_state"])
         self.compare_before_after = bool(fscfg.get("compare_before_after", True))
+        self.parallel_jobs = self._resolve_parallel_jobs(fscfg)
+        self.nested_n_jobs = max(int(fscfg.get("nested_n_jobs", 1)), 1)
 
         self.feat_dir = Path(config["paths"]["features"])
         self.metrics_dir = Path(config["paths"]["metrics"])
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _resolve_parallel_jobs(fscfg: dict) -> int:
+        """Explicit job count for global RFECV (avoid sklearn ``n_jobs=-1`` oversubscription)."""
+        if fscfg.get("n_jobs") is not None:
+            return max(int(fscfg["n_jobs"]), 1)
+        return max((os.cpu_count() or 1) - 1, 1)
 
     def run(self) -> dict:
         if not self.enabled:
@@ -83,14 +141,16 @@ class FeatureSelector:
         )
         n_participants = len(df)
         n_features_before = len(feat_cols)
-        p_n_before = n_participants / max(n_features_before, 1)
+        p_n_before = n_features_before / max(n_participants, 1)
 
         logger.info(
             f"Feature selection input: n={n_participants}, p={n_features_before}, "
-            f"P/N={p_n_before:.2f}"
+            f"P/N={p_n_before:.2f} (features per participant)"
         )
 
-        rfecv_features, rfecv_detail = self._select_rfecv(X, y, groups, feat_cols)
+        rfecv_features, rfecv_detail = self._select_rfecv(
+            X, y, groups, feat_cols, n_jobs=self.parallel_jobs
+        )
         shap_features, shap_detail = self._select_shap(X, y, feat_cols, groups=groups)
 
         if self.primary_method == "shap":
@@ -116,7 +176,7 @@ class FeatureSelector:
             )
         )
         n_features_after = len(selected)
-        p_n_after = n_participants / max(n_features_after, 1)
+        p_n_after = n_features_after / max(n_participants, 1)
 
         comparison_rows = []
         if self.compare_before_after:
@@ -165,20 +225,44 @@ class FeatureSelector:
         )
         return payload
 
+    def _random_forest_classifier(self) -> RandomForestClassifier:
+        return RandomForestClassifier(
+            n_estimators=120,
+            max_depth=6,
+            class_weight="balanced",
+            random_state=self.random_state,
+            n_jobs=1,
+        )
+
     def _selection_pipeline(self) -> Pipeline:
         return Pipeline([
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
-            (
-                "clf",
-                RandomForestClassifier(
-                    n_estimators=120,
-                    max_depth=6,
-                    class_weight="balanced",
-                    random_state=self.random_state,
-                    n_jobs=1,
-                ),
-            ),
+            ("clf", self._random_forest_classifier()),
+        ])
+
+    def _rfecv_pipeline(self) -> Pipeline:
+        """RFECV pipeline: permutation importances drive RFE elimination (p >> n safe)."""
+        fscfg = self.config.get("feature_selection", {})
+        method = str(fscfg.get("rfecv_importance_method", "permutation")).lower()
+        if method == "gini":
+            clf: RandomForestClassifier | PermutationImportanceRandomForest = (
+                self._random_forest_classifier()
+            )
+        else:
+            n_repeats = int(fscfg.get("rfecv_permutation_n_repeats", 5))
+            clf = PermutationImportanceRandomForest(
+                n_estimators=120,
+                max_depth=6,
+                class_weight="balanced",
+                random_state=self.random_state,
+                n_jobs=1,
+                permutation_n_repeats=n_repeats,
+            )
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+            ("clf", clf),
         ])
 
     def select_feature_names(
@@ -188,7 +272,7 @@ class FeatureSelector:
         groups: np.ndarray,
         feat_cols: list[str],
         *,
-        n_jobs: int = 1,
+        n_jobs: int | None = None,
     ) -> list[str]:
         """
         Group-aware RFECV (+ optional required-feature enforcement) on ``X``.
@@ -196,6 +280,8 @@ class FeatureSelector:
         Call on LOSO **train folds only** during evaluation to avoid leaking
         held-out subjects into the feature mask.
         """
+        if n_jobs is None:
+            n_jobs = self.nested_n_jobs
         rfecv_features, _ = self._select_rfecv(
             X, y, groups, feat_cols, n_jobs=n_jobs
         )
@@ -227,13 +313,16 @@ class FeatureSelector:
         groups: np.ndarray,
         feat_cols: list[str],
         *,
-        n_jobs: int = -1,
+        n_jobs: int | None = None,
     ) -> tuple[list[str], dict]:
+        if n_jobs is None:
+            n_jobs = self.parallel_jobs
         cv = StratifiedGroupKFold(
             n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
         )
         # Match training pipeline: impute → scale → RF (ML-005).
-        estimator = self._selection_pipeline()
+        # Permutation importances (not Gini) drive RFE ranking under p >> n.
+        estimator = self._rfecv_pipeline()
         selector = RFECV(
             estimator=estimator,
             step=0.05,
@@ -261,12 +350,16 @@ class FeatureSelector:
             )
 
         selected = [feat_cols[i] for i in support_idx]
+        fscfg = self.config.get("feature_selection", {})
         detail = {
             "cv_best_score": float(selector.cv_results_["mean_test_score"].max()),
             "n_features_cv_optimal": n_cv_optimal,
             "n_features_exported": len(selected),
             "capped_to_max_features": capped,
             "max_features_cap": self.max_features,
+            "importance_method": str(
+                fscfg.get("rfecv_importance_method", "permutation")
+            ).lower(),
         }
         return selected, detail
 
@@ -493,7 +586,7 @@ class FeatureSelector:
                 cv=cv,
                 groups=groups,
                 scoring=roc_auc_scoring_name(y, self.config),
-                n_jobs=-1,
+                n_jobs=self.parallel_jobs,
             )
             rows.append({
                 "stage": label,
@@ -533,12 +626,16 @@ class FeatureSelector:
             f"- Features before selection (p): **{payload['n_features_before']}**",
             f"- Features exported for training: **{payload['n_features_after']}**",
             f"- Configured `max_features` cap: **{payload['max_features']}**",
-            f"- P/N ratio before: **{payload['p_n_ratio_before']:.2f}**",
-            f"- P/N ratio after: **{payload['p_n_ratio_after']:.2f}**",
+            f"- P/N ratio before (p/N): **{payload['p_n_ratio_before']:.2f}**",
+            f"- P/N ratio after (p/N): **{payload['p_n_ratio_after']:.2f}**",
             "",
-            "An ensemble of four nonlinear models on high-dimensional patient-level features (mean/std/range/trend) with "
-            "N=260 is severely underpowered (P/N ≈ 3.25). We therefore apply grouped "
-            "feature selection before final training.",
+            (
+                f"Patient-level features aggregate each trial biomarker as mean/std/range/trend, "
+                f"yielding p={payload['n_features_before']} columns for N={payload['n_participants']} "
+                f"participants (P/N \u2248 {payload['p_n_ratio_before']:.2f}). "
+                f"With p \u226b N, grouped feature selection is applied before final training "
+                f"to reduce P/N to \u2248 {payload['p_n_ratio_after']:.2f}."
+            ),
             "",
             "## Methods",
             "",
@@ -546,7 +643,9 @@ class FeatureSelector:
             "",
             "Recursive Feature Elimination with subject-grouped cross-validation (RFECV), "
             "following the RFE framework of Guyon & Elisseeff (2002). The selector uses "
-            "StratifiedGroupKFold so no participant appears in both train and validation.",
+            "StratifiedGroupKFold so no participant appears in both train and validation. "
+            "RFE elimination ranks features by **permutation importance** (not Gini/MDI) "
+            "to avoid high-variance bias when p >> n.",
             "",
             f"- RFECV grouped-CV optimal feature count: "
             f"**{payload['rfecv_detail'].get('n_features_cv_optimal', 'n/a')}**",
@@ -559,7 +658,7 @@ class FeatureSelector:
                 "> **Cap applied:** RFECV cross-validation favoured "
                 f"{payload['rfecv_detail'].get('n_features_cv_optimal', 'n/a')} features, "
                 f"but `max_features={payload['max_features']}` deliberately limits the export "
-                "to the top-ranked features (regularization for P/N). "
+                "to the top-ranked features (dimensionality cap to lower P/N). "
                 "Do **not** report this as 'RFECV selected "
                 f"{payload['n_features_after']} features' — report primary method as "
                 f"**{payload['primary_method']}**.",

@@ -47,6 +47,8 @@ These constraints are **acceptable for a methods-focused *Sensors* paper** when 
 
 11. **Anomaly detection** — Unsupervised flags mark deviation from healthy training references; they are not validated predictors of falls or adverse events.
 
+12. **MLP split-protocol comparison** — The LOSO vs StratifiedKFold audit (`split_protocol_comparison.csv`) can show **negative** ungrouped inflation for `mlp` because `MLPClassifier` has no group-aware early stopping (`max_iter=500`, fixed init) and high fold-to-fold variance. The pipeline averages ungrouped KFold AUC over five seeds for MLP (`leakage_kfold_seed_repeats_by_model.mlp`). **Do not** use the MLP row alone to challenge the positive inflation pattern for tree/SVM models; cite tree/SVM/ensemble rows for split-protocol leakage sensitivity.
+
 ---
 
 ## Path to prospective validation (future work)

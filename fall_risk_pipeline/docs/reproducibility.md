@@ -72,6 +72,12 @@ With CUDA and `reproducibility.deterministic_torch: true`, cuDNN runs in determi
 
 For publication, record: git commit, `pipeline_config.yaml`, `PYTHONHASHSEED`, library versions (`pip freeze`), and whether the full pipeline or individual stages were run.
 
+After `report`, compare `results/metrics/PIPELINE_VERSION.json` against your checkout:
+
+- `git.commit` should match `git rev-parse HEAD` (and `dirty` should be `false` for frozen submissions).
+- `config_sha256` / `config_file_sha256` detect config drift relative to the run that produced `metrics.csv`.
+- `feature_selection.rfecv_importance_method` and `primary_endpoint` summarize settings that strongly affect reported AUCs.
+
 ## Changing the seed
 
 Edit both in `configs/pipeline_config.yaml`:

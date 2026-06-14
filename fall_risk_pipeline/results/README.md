@@ -6,7 +6,7 @@ This directory holds **generated** metrics, figures, checkpoints, and reports. C
 
 | Path | Produced by |
 |------|-------------|
-| `metrics/` | `evaluate`, `train_deep`, `ablation`, `sensor_ablation`, `cross_cohort`, `predict`, `anomaly` |
+| `metrics/` | `evaluate`, `train_deep`, `ablation`, `sensor_ablation`, `cross_cohort`, `predict`, `anomaly`, `report` (see `metrics/README.md`) |
 | `figures/eda/` | `eda` |
 | `figures/models/` | `evaluate`, `train_deep` |
 | `figures/shap/` | `evaluate` |
@@ -28,5 +28,7 @@ Or download published artifacts:
 ```bash
 python ../scripts/download_models.py
 ```
+
+**Before citing metrics in a manuscript**, verify `results/metrics/PIPELINE_VERSION.json` matches your git commit and `configs/pipeline_config.yaml` (written at the start of `report`).
 
 API inference expects checkpoints under `results/checkpoints/` (see `api/.env.example`).

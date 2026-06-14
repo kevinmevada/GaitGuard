@@ -199,12 +199,18 @@ feature_selection:
   max_features: 20
   min_features: 5
   primary_method: "rfecv"   # rfecv | shap | intersection (exported as rfecv_capped when max_features < RFECV CV optimum)
+  # RFECV RFE ranking: permutation (default) avoids Gini bias when p>>n; gini = legacy/debug only.
+  rfecv_importance_method: permutation
+  rfecv_permutation_n_repeats: 5
   # Force-keep nonlinear dynamics; rank by mean |SHAP| before cap (ML-040).
   required_feature_substrings: ["sampen", "dfa"]
   max_required_features: 4    # cap forced nonlinear slots; raise only if SHAP audit shows gain
   nested_in_ablation: true   # LOSO ablations intersect per-fold RFECV mask (ML-025)
   compare_before_after: true
   cv_folds: 5
+  # Global RFECV/compare_before_after parallelism (default: cpu_count - 1; not sklearn -1).
+  # nested_n_jobs: 1 for per-LOSO-fold selection (avoid nested fork bombs).
+  nested_n_jobs: 1
 
 # Models (tabular only)
 models:
@@ -234,6 +240,9 @@ models:
     nested_timeout_per_model: 300
     leakage_comparison: true      # LOSO vs KFold split-protocol audit (ML-048; split_protocol_comparison.csv)
     leakage_kfold_splits: 10
+    leakage_kfold_seed_repeats: 1  # ungrouped KFold AUC seed repeats (1 = single split)
+    leakage_kfold_seed_repeats_by_model:
+      mlp: 5                       # MEDIUM-02: average MLP over seeds (non-convex / no early stopping)
     # Paired AUC significance (DeLong + bootstrap MWU/Wilcoxon) for Table 1
     auc_pairwise_tests: true
     auc_reference_model: null   # null => highest-AUC model (usually ensemble)

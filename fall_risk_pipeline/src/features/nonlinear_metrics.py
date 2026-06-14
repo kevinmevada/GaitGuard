@@ -9,6 +9,7 @@ Synthetic validation: ``validate_nonlinear_metrics()`` (see tests).
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -18,6 +19,38 @@ from src.features.delay_embedding import (
     estimate_embedding_dimension_fnn,
     estimate_tau_ami,
 )
+
+# Trial-level columns produced by FeatureExtractor._trunk_dynamics / transmission.
+NONLINEAR_TRIAL_FEATURE_COLS = (
+    "lb_sampen",
+    "lb_dfa",
+    "head_sampen",
+    "head_dfa",
+    "lb_lyapunov",
+    "head_lyapunov",
+    "lb_apen",
+    "head_apen",
+    "head_lb_dfa_ratio",
+    "head_lb_lyapunov_ratio",
+)
+
+_NONLINEAR_FAILURE_WARNINGS: set[tuple[str, str]] = set()
+
+
+def _warn_computation_failure(metric: str, exc: Exception, *, context: str = "") -> None:
+    """Log computation failures at WARNING (once per metric × exception type)."""
+    key = (metric, type(exc).__name__)
+    if key in _NONLINEAR_FAILURE_WARNINGS:
+        return
+    _NONLINEAR_FAILURE_WARNINGS.add(key)
+    suffix = f" ({context})" if context else ""
+    logger.warning(
+        "{} failed [{}]: {}{}",
+        metric,
+        type(exc).__name__,
+        exc,
+        suffix,
+    )
 
 
 def _prepare_signal(signal: np.ndarray, min_length: int) -> np.ndarray | None:
@@ -63,7 +96,7 @@ def largest_lyapunov_exponent(signal: np.ndarray, cfg: dict | None = None) -> fl
                 "nolds not installed; using capped Rosenstein fallback for Lyapunov"
             )
         except Exception as exc:
-            logger.debug(f"lyap_r failed (m={m}, tau={tau}): {exc}")
+            _warn_computation_failure("lyap_r", exc, context=f"m={m}, tau={tau}")
 
     return _lyapunov_rosenstein_fallback(x, m=m, tau=tau, cfg=cfg)
 
@@ -123,7 +156,7 @@ def approximate_entropy(signal: np.ndarray, cfg: dict | None = None) -> float:
     try:
         return float(ant.app_entropy(x, order=order, metric=metric, tolerance=tolerance))
     except Exception as exc:
-        logger.debug(f"app_entropy failed: {exc}")
+        _warn_computation_failure("app_entropy", exc)
         return float("nan")
 
 
@@ -158,7 +191,7 @@ def sample_entropy(signal: np.ndarray, cfg: dict | None = None) -> float:
     try:
         return float(ant.sample_entropy(x, order=order, metric=metric, tolerance=tolerance))
     except Exception as exc:
-        logger.debug(f"sample_entropy failed: {exc}")
+        _warn_computation_failure("sample_entropy", exc)
         return float("nan")
 
 
@@ -191,8 +224,85 @@ def dfa_alpha(signal: np.ndarray, cfg: dict | None = None) -> float:
         return float(nolds.dfa(x, nvals=None, overlap=True, order=1,
                                fit_exp="RANSAC" if cfg.get("ransac", False) else "poly"))
     except Exception as exc:
-        logger.debug(f"dfa failed: {exc}")
+        _warn_computation_failure("dfa", exc)
         return float("nan")
+
+
+def write_nonlinear_nan_report(trial_df, metrics_dir) -> None:
+    """
+    Summarize trial-level NaN rates for nonlinear metrics (HIGH-01 telemetry).
+
+    Writes ``results/metrics/nonlinear_nan_report.csv`` and logs overall /
+    per-cohort rates so silent imputation bias can be audited before modeling.
+    """
+    import pandas as pd
+
+    metrics_dir = Path(metrics_dir)
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    cols = [c for c in NONLINEAR_TRIAL_FEATURE_COLS if c in trial_df.columns]
+    if not cols:
+        logger.warning(
+            "Nonlinear NaN report skipped: none of {} present in trial features",
+            list(NONLINEAR_TRIAL_FEATURE_COLS),
+        )
+        return
+
+    n_trials = len(trial_df)
+    rows: list[dict[str, Any]] = []
+
+    for col in cols:
+        n_nan = int(trial_df[col].isna().sum())
+        rows.append({
+            "scope": "overall",
+            "cohort": "",
+            "feature": col,
+            "nan_rate": float(n_nan / n_trials) if n_trials else float("nan"),
+            "n_trials": n_trials,
+            "n_nan": n_nan,
+        })
+
+    if "cohort" in trial_df.columns:
+        for cohort, grp in trial_df.groupby("cohort", dropna=False):
+            cohort_label = "" if pd.isna(cohort) else str(cohort)
+            cohort_n = len(grp)
+            for col in cols:
+                n_nan = int(grp[col].isna().sum())
+                rows.append({
+                    "scope": "cohort",
+                    "cohort": cohort_label,
+                    "feature": col,
+                    "nan_rate": float(n_nan / cohort_n) if cohort_n else float("nan"),
+                    "n_trials": cohort_n,
+                    "n_nan": n_nan,
+                })
+
+    report_df = pd.DataFrame(rows)
+    out_path = metrics_dir / "nonlinear_nan_report.csv"
+    report_df.to_csv(out_path, index=False)
+
+    overall = (
+        report_df.loc[report_df["scope"] == "overall"]
+        .set_index("feature")["nan_rate"]
+        .sort_values(ascending=False)
+    )
+    logger.info(
+        "Nonlinear feature NaN rates (trial-level, n={}):\n{}",
+        n_trials,
+        overall.to_string(float_format=lambda x: f"{x:.4f}"),
+    )
+
+    cohort_rows = report_df.loc[report_df["scope"] == "cohort"]
+    if not cohort_rows.empty:
+        by_cohort = cohort_rows.pivot(
+            index="cohort", columns="feature", values="nan_rate"
+        )
+        logger.info(
+            "Nonlinear feature NaN rates by cohort:\n{}",
+            by_cohort.to_string(float_format=lambda x: f"{x:.4f}"),
+        )
+
+    logger.info("Nonlinear NaN report saved → {}", out_path)
 
 
 def _synthetic_signals(n: int = 4000, fs: float = 100.0, seed: int = 42) -> dict[str, np.ndarray]:

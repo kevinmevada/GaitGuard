@@ -10,6 +10,8 @@ from pathlib import Path
 import pandas as pd
 from loguru import logger
 
+from src.utils.pipeline_version import write_pipeline_version
+
 
 LATEX_TEMPLATE = r"""
 \begin{table}[!t]
@@ -36,6 +38,9 @@ class ReportGenerator:
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
 
     def run(self):
+        version_path = write_pipeline_version(self.metrics_dir, self.config)
+        logger.info("Wrote pipeline provenance: {}", version_path.name)
+
         self._regenerate_demographics()
         self._ensure_significance_pvalues()
 
@@ -664,20 +669,33 @@ python main.py --config configs/pipeline_config.yaml
             "Compares LOSO (grouped, one participant per row) against standard "
             "StratifiedKFold (ungrouped splits). At participant granularity this "
             "measures split-difficulty inflation, not duplicate-subject leakage (ML-048). "
-            "Both arms use matched per-fold nested RFECV when `nested_in_evaluation: true` (ML-036).",
+            "Both arms use matched per-fold nested RFECV when `nested_in_evaluation: true` (ML-036). "
+            "MLP ungrouped AUC is averaged over multiple KFold seeds (see `ungrouped_kfold_seed_repeats`).",
             "",
             "| Model | AUC (Grouped LOSO) | AUC (Ungrouped KFold) | Inflation | Inflation % |",
             "|---|---:|---:|---:|---:|",
         ]
         for row in df.itertuples(index=False):
+            ungrouped = f"{row.auc_ungrouped_kfold:.4f}"
+            repeats = int(getattr(row, "ungrouped_kfold_seed_repeats", 1) or 1)
+            std = getattr(row, "auc_ungrouped_kfold_std", float("nan"))
+            if repeats > 1 and pd.notna(std):
+                ungrouped = f"{ungrouped} ± {std:.4f} (n={repeats})"
             lines.append(
                 f"| {row.model} | {row.auc_grouped_loso:.4f} | "
-                f"{row.auc_ungrouped_kfold:.4f} | "
+                f"{ungrouped} | "
                 f"{row.auc_inflation:+.4f} | "
                 f"{row.inflation_pct:+.1f}% |"
             )
-        mean_infl = df["inflation_pct"].mean()
+        stable = df.loc[df["model"] != "mlp"] if "mlp" in df["model"].values else df
+        mean_infl = stable["inflation_pct"].mean()
         lines.append("")
+        if "mlp" in df["model"].values:
+            lines.append(
+                "> **Note (MEDIUM-02):** MLP can show negative inflation due to "
+                "non-convex optimization variance; mean below excludes MLP."
+            )
+            lines.append("")
         if "grouped_feature_protocol" in df.columns:
             proto = df.iloc[0]
             lines.append(

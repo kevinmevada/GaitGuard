@@ -69,6 +69,55 @@ def test_evaluator_runs_mcnemar_for_multiclass():
     assert "Skipping DeLong/McNemar (not yet implemented for multiclass)" not in source
 
 
+def test_feature_selection_report_uses_computed_p_n_ratio():
+    source = (PIPELINE_ROOT / "src" / "features" / "feature_selector.py").read_text(
+        encoding="utf-8"
+    )
+    assert "3.25" not in source
+    assert "p_n_before = n_features_before / max(n_participants, 1)" in source
+    assert "payload['p_n_ratio_before']" in source
+    assert "payload['n_participants']" in source
+
+    from src.features.feature_selector import FeatureSelector
+
+    selector = FeatureSelector(
+        {
+            "paths": {"features": "data/features", "metrics": "results/metrics"},
+            "models": {
+                "tuning": {"cv_folds": 5},
+                "evaluation": {"random_state": 42},
+            },
+            "feature_selection": {"max_features": 20},
+        }
+    )
+    payload = {
+        "n_participants": 260,
+        "n_features_before": 464,
+        "n_features_after": 20,
+        "p_n_ratio_before": 1.785,
+        "p_n_ratio_after": 0.077,
+        "max_features": 20,
+        "primary_method": "rfecv_capped",
+        "rfecv_capped_to_max_features": True,
+        "forced_required_features": [],
+        "dropped_required_features": [],
+        "rfecv_detail": {"n_features_cv_optimal": 45},
+        "rfecv_features": ["f1"],
+        "features": ["f1"],
+        "comparison": [],
+    }
+    selector._write_report_md(payload)
+    report = (Path("results/metrics") / "feature_selection_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert "P/N ratio before (p/N): **1.78**" in report
+    assert "P/N ratio after (p/N): **0.08**" in report
+    assert "P/N \u2248 1.78" in report
+    assert "reduce P/N to \u2248 0.08" in report
+    assert "3.25" not in report
+    assert "0.56" not in report
+
+
 def test_feature_selection_comparison_flags():
     source = (PIPELINE_ROOT / "src" / "features" / "feature_selector.py").read_text(
         encoding="utf-8"
@@ -88,6 +137,14 @@ def test_requirements_dev_split():
     for unused in ("plotly", "tabulate", "jinja2", "optuna-dashboard"):
         assert unused not in main
         assert unused not in dev
+
+
+def test_anomaly_detector_uses_shared_healthy_scaler():
+    source = (PIPELINE_ROOT / "src" / "models" / "anomaly_detector.py").read_text(
+        encoding="utf-8"
+    )
+    assert "_fit_healthy_scaler" in source
+    assert source.count("self._fit_healthy_scaler(X, healthy_mask)") >= 3
 
 
 def test_lockfile_generator_exists():

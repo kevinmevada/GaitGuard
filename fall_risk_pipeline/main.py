@@ -60,6 +60,9 @@ def load_config(path: str) -> dict:
         if not isinstance(config, dict):
             raise ValueError("Invalid config format")
 
+        config["_pipeline_meta"] = {
+            "config_path": str(Path(path).resolve()),
+        }
         return config
     except Exception as exc:
         console.print(f"[red]Config load failed: {exc}[/red]")

@@ -17,6 +17,24 @@ def test_leakage_comparison_uses_nested_rfecv_on_ungrouped_folds():
     assert "ungrouped_feature_protocol" in source
     assert "protocol_matched" in source
     assert "X[train_idx][:, col_idx]" in source
+    assert "_ungrouped_kfold_auc" in source
+    assert "leakage_kfold_seed_repeats_by_model" in source or "_leakage_kfold_seed_repeats" in source
+
+
+def test_pipeline_config_averages_mlp_leakage_over_seeds():
+    import yaml
+
+    cfg = yaml.safe_load(
+        (PIPELINE_ROOT / "configs" / "pipeline_config.yaml").read_text(encoding="utf-8")
+    )
+    by_model = cfg["models"]["evaluation"].get("leakage_kfold_seed_repeats_by_model", {})
+    assert int(by_model.get("mlp", 1)) >= 5
+
+
+def test_limitations_documents_mlp_split_protocol_noise():
+    text = (REPO_ROOT / "docs" / "limitations.md").read_text(encoding="utf-8")
+    assert "MLP split-protocol comparison" in text
+    assert "split_protocol_comparison.csv" in text
 
 
 def test_reporter_documents_protocol_matching():

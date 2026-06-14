@@ -14,6 +14,7 @@ import json
 import logging
 import asyncio
 import os
+import re
 import secrets
 import sys
 import time
@@ -780,19 +781,21 @@ def require_allowed_upload_name(filename: str) -> str:
     return base
 
 
+# IMU CSV column headers (validated before rename). API responses are JSON, not HTML.
+_VALID_CSV_COLUMN_NAME = re.compile(r"^[A-Za-z0-9_.\- ]{1,64}$")
+
+
 def validate_csv_content(df: pd.DataFrame, sensor_name: str) -> None:
     if df.empty:
         raise HTTPException(status_code=400, detail=f"{sensor_name} CSV file is empty.")
 
-    suspicious_patterns = ["<script", "javascript:", "onerror", "onload", "eval("]
     for col in df.columns:
-        col_str = str(col).lower()
-        for pattern in suspicious_patterns:
-            if pattern in col_str:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid column name detected in {sensor_name} file.",
-                )
+        col_str = str(col).strip()
+        if not col_str or _VALID_CSV_COLUMN_NAME.fullmatch(col_str) is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid column name detected in {sensor_name} file.",
+            )
 
     if len(df.columns) > 100:
         raise HTTPException(
