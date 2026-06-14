@@ -54,6 +54,45 @@ def test_participant_val_split_reproducible():
     assert a == b
 
 
+def test_inner_val_split_seed_helper():
+    assert DeepLearningPipeline._inner_val_split_seed(42, 0) == 42
+    assert DeepLearningPipeline._inner_val_split_seed(42, 1) == 42 + 31337
+    assert DeepLearningPipeline._inner_val_split_seed(42, 5) == 42 + 5 * 31337
+
+
+def test_loso_inner_val_participants_more_diverse_with_spread_seed():
+    """Simulate LOSO: nearby folds share almost the same train set; spread seeds reduce overlap."""
+    n_pids = 60
+    labels = {f"p{i:03d}": i % 8 for i in range(n_pids)}
+    pids = sorted(labels.keys())
+    base_seed = 42
+
+    def _inner_val_counts(seed_fn):
+        counts = {pid: 0 for pid in pids}
+        for fold_idx, test_pid in enumerate(pids):
+            train_pids = [pid for pid in pids if pid != test_pid]
+            split_seed = seed_fn(base_seed, fold_idx)
+            _, inner_val = DeepLearningPipeline.split_inner_train_val_participants(
+                train_pids, labels, seed=split_seed, val_fraction=0.1
+            )
+            for pid in inner_val:
+                counts[pid] += 1
+        return np.array(list(counts.values()), dtype=float)
+
+    additive_counts = _inner_val_counts(lambda base, fold: base + fold)
+    spread_counts = _inner_val_counts(DeepLearningPipeline._inner_val_split_seed)
+
+    def coefficient_of_variation(values: np.ndarray) -> float:
+        mean = float(values.mean())
+        if mean == 0:
+            return 0.0
+        return float(values.std() / mean)
+
+    assert coefficient_of_variation(spread_counts) < coefficient_of_variation(
+        additive_counts
+    )
+
+
 def test_concat_participant_windows_keeps_participant_boundaries():
     labels = {"a": 0, "b": 1, "c": 2}
     participants = _participants_from_labels(labels, windows_per_pid=4)

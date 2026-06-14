@@ -86,6 +86,16 @@ def fit_method_scores(
     )
 
 
+def score_fitted_method(
+    model: Any,
+    scaler: Any,
+    X_query: np.ndarray,
+) -> np.ndarray:
+    """Score ``X_query`` with a fitted one-class model + scaler (no refit)."""
+    Xq = scaler.transform(X_query)
+    return np.asarray(-model.decision_function(Xq), dtype=float)
+
+
 def ensemble_scores(
     method_score_map: dict[str, np.ndarray],
     *,

@@ -56,6 +56,7 @@ class SignalProcessor:
         floor = pp.get("heel_strike_prominence_floor")
         self.hs_prominence_floor = float(floor) if floor is not None else None
         self.hs_min_interval_s = float(pp.get("heel_strike_min_interval_s", 0.5))
+        self.max_nan_fraction = float(pp.get("max_nan_fraction_before_filter", 0.05))
         self._trial_cohort: dict[str, str] = {}
 
         if self.madgwick_enabled:
@@ -148,7 +149,13 @@ class SignalProcessor:
         if df.empty:
             return df
 
+        if df.empty:
+            return df
+
         df = self._safe_filter(df)
+        if df.empty:
+            return df
+
         df = self._compute_resultant(df)
 
         if self.madgwick_enabled and sensor_position in self.madgwick_sensors:
@@ -172,9 +179,31 @@ class SignalProcessor:
 
         return df
 
+    @staticmethod
+    def _non_finite_fraction(df: pd.DataFrame) -> float:
+        numeric = df.select_dtypes(include=[np.number])
+        if numeric.empty:
+            return 0.0
+        values = numeric.to_numpy(dtype=float)
+        return float(np.mean(~np.isfinite(values)))
+
     def _safe_filter(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        df = df.interpolate().bfill().ffill()
+        nan_frac = self._non_finite_fraction(df)
+        if nan_frac > self.max_nan_fraction:
+            logger.warning(
+                "Discarding sensor segment: {:.1%} non-finite values (>{:.0%} threshold)",
+                nan_frac,
+                self.max_nan_fraction,
+            )
+            return pd.DataFrame()
+
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if len(numeric_cols):
+            df[numeric_cols] = df[numeric_cols].interpolate(
+                method="linear",
+                limit_direction="both",
+            )
 
         if len(df) < (self.order * 3):
             return df

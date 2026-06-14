@@ -156,6 +156,12 @@ def test_ci_pythonhashseed_matches_pipeline():
     assert 'PYTHONHASHSEED: "42"' in ci
 
 
+def test_ci_python_matrix_includes_310_311_312():
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    for version in ("3.10", "3.11", "3.12"):
+        assert version in ci
+
+
 def test_api_static_mount_and_async_predict():
     source = (REPO_ROOT / "api" / "main.py").read_text(encoding="utf-8")
     assert "StaticFiles" in source

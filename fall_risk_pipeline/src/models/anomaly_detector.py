@@ -42,6 +42,18 @@ from src.utils.reproducibility import get_pipeline_seed
 
 console = Console()
 
+INSAMPLE_ARTIFACT_BANNER = (
+    "# IN-SAMPLE: not suitable for reporting. "
+    "Use results/metrics/anomaly_metrics.csv (LOSO OOF).\n"
+)
+INSAMPLE_JSON_DISCLAIMER = {
+    "_disclaimer": (
+        "IN-SAMPLE exploratory output from GaitAnomalyDetector.run(). "
+        "Do not cite AUC/sensitivity/specificity from this file. "
+        "Primary metrics: results/metrics/anomaly_metrics.csv."
+    ),
+}
+
 
 def _normalise(scores: np.ndarray) -> np.ndarray:
     """Min-max normalise an anomaly score vector to [0, 1]."""
@@ -75,7 +87,13 @@ class GaitAnomalyDetector:
     # ------------------------------------------------------------------
 
     def run(self) -> Dict[str, Any]:
-        logger.info("Starting anomaly detection analysis...")
+        logger.info(
+            "Starting anomaly detection (exploratory in-sample bulk run + LOSO evaluation)..."
+        )
+        logger.warning(
+            "Bulk anomaly outputs are IN-SAMPLE (Healthy train subjects rescored). "
+            "Report only anomaly_metrics.csv from LOSO evaluation for manuscript metrics."
+        )
 
         X, metadata, feature_cols = self._load_data()
         self.trial_feature_columns = feature_cols
@@ -443,12 +461,20 @@ class GaitAnomalyDetector:
             results_df = metadata.copy()
             results_df[f"{method_name}_anomaly_score"] = method_result["anomaly_scores"]
             results_df[f"{method_name}_is_anomaly"]    = method_result["anomaly_binary"]
-            results_df.to_csv(
-                self.results_dir / f"{method_name}_results.csv", index=False
+            out_path = (
+                self.results_dir / f"anomaly_exploratory_insample_{method_name}_results.csv"
             )
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(INSAMPLE_ARTIFACT_BANNER)
+                results_df.to_csv(fh, index=False)
 
-        with open(self.results_dir / "cohort_analysis.json", "w") as f:
-            json.dump(cohort_analysis, f, indent=2)
+        cohort_payload = {**INSAMPLE_JSON_DISCLAIMER, "by_method": cohort_analysis}
+        with open(
+            self.results_dir / "anomaly_exploratory_insample_cohort_analysis.json",
+            "w",
+            encoding="utf-8",
+        ) as f:
+            json.dump(cohort_payload, f, indent=2)
 
         for method_name, model in self.models.items():
             save_checkpoint(
@@ -511,6 +537,10 @@ class GaitAnomalyDetector:
             "total_trials": int(len(next(iter(results.values()))["anomaly_binary"])),
             "methods": list(results.keys()),
             "method_performance": {},
+            "reporting_note": (
+                "Bulk run metrics are in-sample only. "
+                "Use loso_metrics / anomaly_metrics.csv for publication."
+            ),
         }
 
         for method_name, method_result in results.items():

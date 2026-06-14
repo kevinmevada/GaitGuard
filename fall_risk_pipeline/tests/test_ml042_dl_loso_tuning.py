@@ -165,6 +165,20 @@ def test_loso_evaluate_skips_tune_when_disabled():
     assert result["learning_rate_tuned_median"] == 0.001
 
 
+def test_pipeline_config_enables_loso_dl_tuning():
+    import yaml
+
+    cfg = yaml.safe_load(
+        (REPO_ROOT / "fall_risk_pipeline" / "configs" / "pipeline_config.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    tune = cfg["deep_learning"]["loso_hyperparameter_tuning"]
+    assert tune["enabled"] is True
+    assert int(tune["n_trials"]) >= 5
+    assert int(tune["search_epochs"]) >= 12
+
+
 def test_methods_document_dl_hyperparameter_protocol():
     text = METHODS_PATH.read_text(encoding="utf-8")
     assert "ML-042" in text or "hyperparameter_protocol" in text

@@ -26,12 +26,12 @@ Evaluation reports **macro one-vs-rest AUC**, **macro F1**, and **per-class prec
 
 ## Binary modes (optional)
 
-Set `label_mode: binary` only with an explicit clinical rule:
+Set `label_mode: binary` only with an explicit clinical rule. **Default when binary is enabled:** `binary_strategy: threshold_ge_2` (neurological-only high risk).
 
 | `binary_strategy` | `high_risk_threshold` | Positive cohorts |
 |-------------------|----------------------|------------------|
-| `threshold_ge_1` | 1 | All non-Healthy (legacy; heterogeneous) |
-| `threshold_ge_2` | 2 | PD, CVA, CIPN, RIL only |
+| `threshold_ge_2` | 2 | PD, CVA, CIPN, RIL only (**primary** when reporting binary metrics) |
+| `threshold_ge_1` | 1 | All non-Healthy (**sensitivity only** — merges HipOA ~28.5% with PD ~67.3%; do not report as fall-risk prediction) |
 
 `threshold_ge_2` separates orthopedic from neurological tiers and aligns better with pathology-specific fall-risk literature (Lord SR, Ward JA, Williams P, Anstey KJ. *J Am Geriatr Soc.* 1993;41(11):1226-1234; Allen NE, Schwarzel AK, Canning CG. *Mov Disord.* 2013;28(11):1474-1480).
 
@@ -46,8 +46,8 @@ Reference fall probabilities come from the Voisard et al. cohort design (see `CO
 ```yaml
 dataset:
   label_mode: multiclass          # or binary
-  high_risk_threshold: 1          # used when label_mode: binary
-  binary_strategy: threshold_ge_1 # or threshold_ge_2
+  high_risk_threshold: 2          # used when label_mode: binary (default: neurological-only)
+  binary_strategy: threshold_ge_2 # primary; use threshold_ge_1 only for sensitivity
 ```
 
 Re-run `ingest` (and downstream stages) after changing label policy so `trial_metadata.csv` and feature parquets reflect the new targets.

@@ -154,7 +154,7 @@ class CrossCohortTransfer:
         self.dpi = int(config.get("reporting", {}).get("figure_dpi", 300))
         self.fmt = config.get("reporting", {}).get("figure_format", "pdf")
         self.cohort_auc_min_n = int(
-            config.get("models", {}).get("evaluation", {}).get("cohort_auc_min_n", 15)
+            config.get("models", {}).get("evaluation", {}).get("cohort_auc_min_n", 25)
         )
 
     def run(self) -> pd.DataFrame:

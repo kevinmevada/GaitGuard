@@ -27,7 +27,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.utils.va
 warnings.filterwarnings("ignore", module="lightgbm")
 console = Console()
 
-from src.dataset.label_balance import balanced_scale_pos_weight
+from src.features.feature_missingness import warn_high_missingness_features
 from src.dataset.label_policy import is_binary_task, label_mode_description
 from src.evaluation.roc_auc_scoring import roc_auc_from_proba, roc_auc_scoring_name
 from src.features.feature_matrix import (
@@ -97,6 +97,14 @@ class ModelTrainer:
 
     def fit_pipeline(self, name: str, pipeline: Pipeline, X, y, **extra: Any) -> Pipeline:
         """Fit a sklearn pipeline; inject XGBoost multiclass sample weights when needed."""
+        feat_names = extra.pop("feat_names", None)
+        if isinstance(feat_names, str):
+            feat_names = None
+        warn_high_missingness_features(
+            np.asarray(X),
+            list(feat_names) if feat_names else None,
+            context=f"{name} training",
+        )
         fit_params = {**self._pipeline_fit_params(name, y), **extra}
         if fit_params:
             pipeline.fit(X, y, **fit_params)
@@ -345,6 +353,9 @@ class ModelTrainer:
 
     def _run_optuna(self, name: str, X, y, groups, n_trials: int, timeout: int) -> tuple[dict, float]:
         """Inner Optuna tuning loop confined to the provided (X, y, groups) split."""
+        warn_high_missingness_features(
+            np.asarray(X), context=f"{name} optuna tuning set"
+        )
         cv = StratifiedGroupKFold(
             n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
         )

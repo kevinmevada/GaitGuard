@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+import yaml
 
 from src.evaluation.classification_significance import (
     MCNEMAR_EXPLORATORY_SUFFIX,
     MCNEMAR_INTERPRETATION_MULTICLASS,
     format_mcnemar_pvalue_display,
+    mcnemar_pvalue,
     pairwise_classification_significance,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _multiclass_results() -> dict:
@@ -31,6 +37,24 @@ def _multiclass_results() -> dict:
             "label_mode": "multiclass",
         },
     }
+
+
+def test_pipeline_config_enables_exact_mcnemar():
+    cfg = yaml.safe_load(
+        (REPO_ROOT / "fall_risk_pipeline" / "configs" / "pipeline_config.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert cfg["models"]["evaluation"]["mcnemar_exact"] is True
+
+
+def test_exact_mcnemar_differs_from_chi_squared_for_small_discordant_n():
+    y = np.array([0, 0, 1, 1, 0, 1, 0, 1])
+    pred_a = np.array([0, 1, 1, 1, 0, 0, 0, 1])
+    pred_b = np.array([0, 0, 1, 0, 0, 1, 1, 1])
+    p_chi, _, _ = mcnemar_pvalue(y, pred_a, pred_b, exact=False)
+    p_exact, _, _ = mcnemar_pvalue(y, pred_a, pred_b, exact=True)
+    assert p_chi != p_exact
 
 
 def test_format_mcnemar_pvalue_display_exploratory_suffix():

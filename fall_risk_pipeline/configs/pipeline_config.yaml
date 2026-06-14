@@ -38,10 +38,11 @@ dataset:
   # Primary training target: 3-class pathology tiers (see docs/label_binning.md).
   label_mode: "multiclass"
   # Binary sensitivity only (label_mode: binary): high-risk if multiclass tier >= threshold.
-  # threshold_ge_1 merges orthopedic + neurological (clinically heterogeneous).
-  # threshold_ge_2 = neurological-only high risk (multiclass tier >= 2).
-  high_risk_threshold: 1
-  binary_strategy: "threshold_ge_1"
+  # Primary binary rule (MED-002): neurological-only high risk (multiclass tier >= 2).
+  high_risk_threshold: 2
+  binary_strategy: "threshold_ge_2"
+  # Sensitivity analysis only — threshold_ge_1 / high_risk_threshold: 1 merges PD (67.3%)
+  # with HipOA (28.5%) fall probability; do NOT report as 'fall risk prediction'.
   report_class_distribution: true
 
   laterality_flags:
@@ -65,6 +66,7 @@ preprocessing:
   heel_strike_peak_percentile_by_cohort: {}  # optional per-cohort overrides, e.g. PD: 75
   heel_strike_prominence_floor: null  # optional absolute prominence floor (m/s²) after percentile filter
   heel_strike_min_interval_s: 0.5  # min spacing between strikes (was 0.3 s @ 100 Hz)
+  max_nan_fraction_before_filter: 0.05  # LOW-002: discard trial sensors above this NaN rate
 
   gait_event_validation:
     tolerance_ms: 50               # ± window for TP matching vs ground-truth heel strikes
@@ -202,7 +204,9 @@ feature_selection:
   # RFECV RFE ranking: permutation (default) avoids Gini bias when p>>n; gini = legacy/debug only.
   rfecv_importance_method: permutation
   rfecv_permutation_n_repeats: 5
-  # Force-keep nonlinear dynamics; rank by mean |SHAP| before cap (ML-040).
+  # Force-keep nonlinear dynamics; rank by mean |SHAP| before cap (ML-040 / MED-005).
+  # Sensitivity: re-run select_features + evaluate with required_feature_substrings: []
+  # and compare LOSO AUC / SHAP to this default; see required_feature_shap_audit.csv.
   required_feature_substrings: ["sampen", "dfa"]
   max_required_features: 4    # cap forced nonlinear slots; raise only if SHAP audit shows gain
   nested_in_ablation: true   # LOSO ablations intersect per-fold RFECV mask (ML-025)
@@ -240,9 +244,9 @@ models:
     nested_timeout_per_model: 300
     leakage_comparison: true      # LOSO vs KFold split-protocol audit (ML-048; split_protocol_comparison.csv)
     leakage_kfold_splits: 10
-    leakage_kfold_seed_repeats: 1  # ungrouped KFold AUC seed repeats (1 = single split)
+    leakage_kfold_seed_repeats: 5  # MED-001: average ungrouped KFold AUC over seeds (stable inflation)
     leakage_kfold_seed_repeats_by_model:
-      mlp: 5                       # MEDIUM-02: average MLP over seeds (non-convex / no early stopping)
+      mlp: 5                       # explicit (matches global); non-convex / no early stopping
     # Paired AUC significance (DeLong + bootstrap MWU/Wilcoxon) for Table 1
     auc_pairwise_tests: true
     auc_reference_model: null   # null => highest-AUC model (usually ensemble)
@@ -252,12 +256,12 @@ models:
     # Paired classification significance (McNemar on LOSO OOF predictions)
     mcnemar_tests: true
     mcnemar_reference_model: null   # null => same as auc_reference_model or highest accuracy
-    mcnemar_exact: false            # exact binomial McNemar when n_discordant is small
+    mcnemar_exact: true             # exact binomial McNemar (valid for small discordant n; HIGH-004)
     # Classification threshold: Youden J fit on each LOSO train fold, applied to test fold
     threshold_strategy: train_fold_youden   # primary (unbiased)
     report_threshold_comparison: true       # also save 0.5 vs eval-Youden (optimistic) metrics
     auc_ci_bootstrap_n: 2000               # subject-level bootstrap for binary AUC CIs (MET-002)
-    cohort_auc_min_n: 15                   # flag cohort/subgroup AUC as unstable below this n (ML-011); AUC suppressed when unstable (ML-044)
+    cohort_auc_min_n: 25                   # MED-003: suppress unstable cohort AUC below n=25 (ML-044)
 
   ensemble:
     enabled: true
@@ -284,9 +288,9 @@ deep_learning:
   learning_rate: 0.001
   early_stopping_patience: 12
   device: "auto"                 # "auto" → CUDA if available, else CPU
-  # ML-042: optional per-LOSO-fold lr search on inner participant val (tabular uses Optuna per fold)
+  # ML-042: per-LOSO-fold lr search on inner participant val (aligned with tabular Optuna/fold)
   loso_hyperparameter_tuning:
-    enabled: false               # set true for protocol-aligned DL tuning (slower)
+    enabled: true                # HIGH-001: protocol-aligned vs tabular per-fold tuning (slower)
     n_trials: 5
     timeout_seconds: 120
     search_epochs: 12            # short budget for lr search only
@@ -321,7 +325,7 @@ explainability:
   # loso_aggregate: SHAP on every LOSO held-out fold, concatenate for global importance
   # full_checkpoint: TreeExplainer on full-data checkpoint (background = training subsample)
   shap_strategy: loso_aggregate
-  n_shap_samples: 200        # cap on total OOF rows explained (subsamples folds if needed)
+  n_shap_samples: 260        # MED-008: cover all participants (N=260); cohort-stratified subsample if capped lower
   shap_background_samples: 100
   top_features_plot: 20
 

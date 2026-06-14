@@ -74,7 +74,7 @@ To control dimensionality and improve generalization, feature selection was appl
 - Secondary ranking: SHAP-based importance pruning
 - Export cap: <=20 selected features (configurable)
 
-To preserve mechanistically relevant nonlinear dynamics in final training, required feature-family retention rules were enforced for specified substrings (including `sampen` and `dfa`) when configured. When the family exceeds `max_required_features`, candidates are ranked by mean |SHAP| before the cap is applied (`required_feature_shap_audit.csv`). Final manuscript numbers should only claim retained nonlinear families after rerun-generated model metrics and SHAP outputs confirm their propagation into trained checkpoints and evaluation exports.
+To preserve mechanistically relevant nonlinear dynamics in final training, up to **four** nonlinear dynamics features (`sampen` / `dfa` family) were retained regardless of RFECV rank to ensure mechanistic coverage (MED-005 / ML-040). When the family exceeds `max_required_features`, candidates are ranked by mean |SHAP| before the cap is applied; mean |SHAP| values for forced vs dropped candidates are reported in `required_feature_shap_audit.csv`. **Sensitivity check:** re-run with `required_feature_substrings: []` and compare LOSO AUC — if forced features reduce performance, interpret mechanistic claims cautiously; if neutral or beneficial, the constraint is data-supported.
 
 ## 7. Tabular models and ensemble
 
@@ -98,9 +98,9 @@ The deep branch benchmarked five architectures:
 - CNN-1D
 - BiLSTM with attention
 
-Deep evaluation used leave-one-subject-out (LOSO) design with per-subject holdout. Each LOSO train fold held out ~10% of remaining participants for inner validation (participant-level split; no window leakage). Mixed precision (AMP) was enabled on CUDA when available. Probability outputs were numerically stabilized before metric computation (finite-value guard, clipping, and row normalization) to ensure valid multiclass AUC evaluation.
+Deep evaluation used leave-one-subject-out (LOSO) design with per-subject holdout. Each LOSO train fold held out ~10% of remaining participants for inner validation (stratified participant-level split; no window leakage). Inner-val participant draws use a fold-scoped RNG seed (`base_seed + fold_idx × 31337`) so early-stopping validation does not repeatedly anchor on the same subjects across nearby folds (HIGH-002). Mixed precision (AMP) was enabled on CUDA when available. Probability outputs were numerically stabilized before metric computation (finite-value guard, clipping, and row normalization) to ensure valid multiclass AUC evaluation.
 
-Hyperparameter protocol (ML-042): tabular models re-tune with Optuna on each LOSO train fold. Deep models use fixed global settings from `pipeline_config.yaml` (`learning_rate`, `batch_size`, `max_epochs`, early stopping) unless `deep_learning.loso_hyperparameter_tuning.enabled` is set; when enabled, learning rate is searched per LOSO fold via Optuna on the inner participant validation split (short-epoch search budget, then full training with the selected rate). Exported `deep_learning_metrics.csv` includes `hyperparameter_protocol` (`fixed_global_config` vs `loso_inner_participant_optuna_lr`).
+Hyperparameter protocol (ML-042 / HIGH-001): tabular models re-tune with Optuna on each LOSO train fold (10 trials per fold by default). Deep models run an analogous **per-LOSO-fold learning-rate search**: Optuna (`n_trials: 5`, `search_epochs: 12`) on the inner participant validation split held out from the outer LOSO train fold, then full training with the selected rate and global `max_epochs` / early stopping. Set `deep_learning.loso_hyperparameter_tuning.enabled: false` only for fast/debug runs (introduces asymmetry vs tabular). Exported `deep_learning_metrics.csv` includes `hyperparameter_protocol` (`fixed_global_config` vs `loso_inner_participant_optuna_lr`).
 
 Window overlap protocol (ML-043): trials are sliced with 50% overlap (`overlap: 0.5`) to increase held-out participant coverage for participant-level soft voting at inference. Overlapping windows are highly correlated; by default, inner train/validation use `training_window_deduplication: true`, retaining at most one window per non-overlapping stride block per trial. Participant-balanced CE weights and participant-level validation AUC / soft-vote aggregation further reduce window-level pseudo-replication. Metrics export `window_overlap`, `training_window_protocol`, and `inference_window_protocol`.
 
@@ -135,17 +135,23 @@ For discrete operating-point metrics, thresholds were derived from training data
 
 Paired model-comparison procedures included:
 
-- **Binary label mode:** DeLong-style paired AUC testing and McNemar testing on paired categorical predictions.
-- **Multiclass label mode (primary):** Bootstrap paired macro-OVR AUC differences with Benjamini–Hochberg FDR correction; DeLong is not applied to multiclass OvR scores. McNemar tests use argmax OOF class predictions (correct-vs-wrong discordant pairs).
+- **Binary label mode:** DeLong-style paired AUC testing and McNemar testing on paired categorical predictions (exact binomial McNemar via `mcnemar_exact: true`; chi-squared approximation is invalid when discordant pairs ≪ 25 — HIGH-004).
+- **Multiclass label mode (primary):** Bootstrap paired macro-OVR AUC differences with Benjamini–Hochberg FDR correction; DeLong is not applied to multiclass OvR scores. McNemar tests use argmax OOF class predictions (correct-vs-wrong discordant pairs; exact binomial test, exploratory).
 
 All tests use aligned out-of-fold predictions to maintain pairing validity.
 
 ## 10. Explainability and robustness analyses
 
+Participant composition (per-cohort *n*, age mean ± SD, sex ratio) is reported in **Table 1** (`table1_demographics.csv` / `.md` / `.tex`), generated from `trial_metadata.csv` at ingest/report time (MED-003).
+
+For held-out cohorts with single-class test composition, AUC was marked undefined and accompanied by fallback confidence-oriented reporting fields. Cohort subgroup rows in `metrics_by_cohort.csv` with `n < cohort_auc_min_n` (default **25**) export `auc_status: unstable_small_n` and leave AUC / AUC CI / AUC-PR blank (NaN) so small-n point estimates are not cited as stable (ML-044 / MED-003). *Footnote for cohort AUC tables: cohorts with n < 25 participants — AUC suppressed due to insufficient sample size for stable estimation.*
+
 Explainability:
 
 - SHAP-based global feature importance from LOSO/out-of-fold aggregation
 - Per-model and cohort-aware importance exports
+
+Exploratory data analysis (EDA) figures include a participant-level t-SNE embedding. Features were standardized with `StandardScaler` fit on **all** participants before t-SNE (visualization only; not used in model training). The figure caption and `tsne_caption.txt` note that all supervised evaluation uses per-fold normalization (MED-004).
 
 Robustness:
 
@@ -154,8 +160,6 @@ Robustness:
 - Cross-cohort transfer evaluation (train on N-1 cohorts, test on held-out cohort)
 
 Protocol disclosure: feature and sensor ablations use **leave-one-subject-out (LOSO)** with **per-fold nested RFECV** intersected with each scenario column mask (`nested_in_ablation: true`). Primary Table 2 tabular LOSO uses the same nested RFECV protocol on the full feature matrix. Ablation AUCs rank feature/sensor subsets within that shared protocol but remain exploratory (different column sets per scenario).
-
-For held-out cohorts with single-class test composition, AUC was marked undefined and accompanied by fallback confidence-oriented reporting fields. Cohort subgroup rows in `metrics_by_cohort.csv` with `n < cohort_auc_min_n` (default 15) export `auc_status: unstable_small_n` and leave AUC / AUC CI / AUC-PR blank (NaN) so small-n point estimates are not cited as stable (ML-044).
 
 ## 11. Anomaly screening (primary endpoint)
 

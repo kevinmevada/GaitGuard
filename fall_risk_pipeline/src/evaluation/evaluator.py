@@ -18,6 +18,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import shap
 from joblib import Parallel, delayed
 from loguru import logger
@@ -36,6 +37,7 @@ from sklearn.model_selection import StratifiedGroupKFold
 from tqdm import tqdm
 
 from src.dataset.label_policy import (
+    MULTICLASS_NAMES,
     get_dataset_label_config,
     is_binary_task,
     label_mode_description,
@@ -72,6 +74,7 @@ from src.evaluation.shap_multiclass import (
     per_class_mean_abs_importance,
     split_shap_by_class,
 )
+from src.evaluation.shap_sampling import stratified_shap_subject_order
 from src.features.feature_matrix import (
     load_patient_feature_matrix,
     nested_rfecv_column_indices,
@@ -114,7 +117,7 @@ class Evaluator:
         self.nested_trials  = int(eval_cfg.get("nested_n_trials",  min(3, self.trainer.n_trials)))
         self.nested_timeout = int(eval_cfg.get("nested_timeout_per_model", min(60, self.trainer.timeout)))
         self.auc_ci_bootstrap_n = int(eval_cfg.get("auc_ci_bootstrap_n", 2000))
-        self.cohort_auc_min_n = int(eval_cfg.get("cohort_auc_min_n", 15))
+        self.cohort_auc_min_n = int(eval_cfg.get("cohort_auc_min_n", 25))
 
         self._feat_cols: list[str] = []
         self._fold_col_idx: dict[str, np.ndarray] = {}
@@ -1520,11 +1523,43 @@ class Evaluator:
 
     def _plot_confusion_matrices(self, results):
         for name, res in results.items():
-            fig, ax = plt.subplots()
-            cm = res["confusion_matrix"]
-            ax.imshow(cm, cmap="Blues")
-            ax.set_title(name)
+            cm = np.asarray(res["confusion_matrix"])
+            is_mc = is_multiclass_metric_result(res)
+            class_names = self._confusion_matrix_tick_labels(cm.shape[0], multiclass=is_mc)
+            cm_norm = self._row_normalized_confusion_matrix(cm)
+
+            fig, ax = plt.subplots(figsize=(5, 4))
+            sns.heatmap(
+                cm_norm,
+                annot=True,
+                fmt=".2f",
+                cmap="Blues",
+                xticklabels=class_names,
+                yticklabels=class_names,
+                ax=ax,
+                vmin=0,
+                vmax=1,
+                cbar_kws={"label": "Row-normalized rate"},
+            )
+            ax.set_xlabel("Predicted")
+            ax.set_ylabel("Actual")
+            ax.set_title(f"{name} — normalized confusion matrix (LOSO OOF)")
+            fig.tight_layout()
             self._save(fig, f"cm_{name}")
+
+    @staticmethod
+    def _row_normalized_confusion_matrix(cm: np.ndarray) -> np.ndarray:
+        cm = np.asarray(cm, dtype=float)
+        row_sums = cm.sum(axis=1, keepdims=True)
+        return np.divide(cm, np.maximum(row_sums, 1.0))
+
+    @staticmethod
+    def _confusion_matrix_tick_labels(n_cls: int, *, multiclass: bool) -> list[str]:
+        if multiclass:
+            return [MULTICLASS_NAMES.get(i, str(i)) for i in range(n_cls)]
+        if n_cls == 2:
+            return ["Low risk", "High risk"]
+        return [str(i) for i in range(n_cls)]
 
     @staticmethod
     def _expected_calibration_error(
@@ -1717,7 +1752,20 @@ class Evaluator:
 
         unique_subjects = np.unique(groups)
         exp_cfg = self.config["explainability"]
-        max_oof = int(exp_cfg.get("n_shap_samples", 200))
+        max_oof = int(exp_cfg.get("n_shap_samples", 260))
+        subject_order = stratified_shap_subject_order(
+            groups,
+            max_oof,
+            cohorts=cohorts,
+            seed=self.seed,
+        )
+        if len(subject_order) < len(unique_subjects):
+            logger.info(
+                "SHAP {}: explaining {}/{} participants (cohort-stratified cap)",
+                name,
+                len(subject_order),
+                len(unique_subjects),
+            )
 
         fold_shap_blocks: list[np.ndarray] = []
         fold_shap_raw_blocks: list[np.ndarray] = []
@@ -1726,7 +1774,7 @@ class Evaluator:
         n_explained = 0
 
         for subj in tqdm(
-            unique_subjects,
+            subject_order,
             desc=f"  SHAP {name} LOSO",
             leave=False,
             colour="green",

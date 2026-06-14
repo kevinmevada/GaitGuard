@@ -41,11 +41,11 @@ python main.py --stage all
 | Stage | Stochastic? | Seed source |
 |-------|-------------|-------------|
 | `ingest`, `validate_gait_events`, `preprocess` | No | Deterministic transforms (`signal_processor` uses filters/peaks only) |
-| `eda` | Yes (row sample, t-SNE) | `get_pipeline_seed(config)` on `EDAAnalyzer` |
+| `eda` | Yes (row sample, t-SNE) | `get_pipeline_seed(config)` on `EDAAnalyzer`; t-SNE uses full-dataset `StandardScaler` (caption on figure — MED-004) |
 | `features`, `select_features` | Mostly no | Feature selection CV uses `evaluation.random_state` |
 | `train`, `evaluate`, `predict`, `report` | Yes | `evaluation.random_state`; Optuna `TPESampler(seed=…)` |
 | `anomaly` | Yes (Isolation Forest) | `get_pipeline_seed(config)` |
-| `deep_learning` (if enabled) | Yes | Global torch seed + `DataLoader(..., generator=…)` in `DeepModelTrainer` |
+| `deep_learning` (if enabled) | Yes | Per-LOSO-fold Optuna LR search when `loso_hyperparameter_tuning.enabled` (default true); global torch seed + `DataLoader(..., generator=…)` |
 
 ## Recommended full run
 

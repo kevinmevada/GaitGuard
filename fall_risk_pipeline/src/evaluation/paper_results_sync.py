@@ -46,7 +46,7 @@ MISSING_ARTIFACTS_STUB = """# Results
 | Analysis | Validation protocol |
 |----------|---------------------|
 | Primary tabular LOSO | Leave-one-subject-out + nested RFECV per train fold (`feature_selection_protocol: nested_rfecv_per_loso_fold`) |
-| Primary deep LOSO | Leave-one-subject-out; fixed global DL hyperparams unless `loso_hyperparameter_tuning.enabled` (ML-042) |
+| Primary deep LOSO | Leave-one-subject-out; per-fold Optuna LR search when `loso_hyperparameter_tuning.enabled` (ML-042) |
 | Train `model_comparison_cv.csv` | Nested StratifiedGroupKFold + per-outer-fold RFECV |
 | Feature ablation | LOSO (`feature_ablation.py`) |
 | Sensor ablation | LOSO (`sensor_ablation.py`) |

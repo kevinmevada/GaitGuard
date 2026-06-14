@@ -18,7 +18,7 @@
 | Analysis | Validation protocol |
 |----------|---------------------|
 | Primary tabular LOSO | Leave-one-subject-out + nested RFECV per train fold |
-| Primary deep LOSO | Leave-one-subject-out; fixed global DL hyperparams unless `loso_hyperparameter_tuning.enabled` |
+| Primary deep LOSO | Leave-one-subject-out; per-fold Optuna LR search (`loso_hyperparameter_tuning.enabled`, ML-042) |
 | Train `model_comparison_cv.csv` | Nested StratifiedGroupKFold + per-outer-fold RFECV |
 | Feature ablation | LOSO (`feature_ablation.py`) |
 | Sensor ablation | LOSO (`sensor_ablation.py`) |

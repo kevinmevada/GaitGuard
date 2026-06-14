@@ -11,7 +11,14 @@ def test_makefile_uses_lockfiles_and_hash_seed():
     makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
     assert "requirements-lock.txt" in makefile
     assert "PYTHONHASHSEED" in makefile
+    assert "PYTHONHASHSEED=$(PYTHONHASHSEED) python main.py" in makefile
     assert "fall_risk_pipeline/requirements.txt" not in makefile
+
+
+def test_api_static_readme_documents_sync():
+    text = (REPO_ROOT / "api" / "static" / "README.md").read_text(encoding="utf-8")
+    assert "sync_front_end.py" in text
+    assert "do not edit directly" in text.lower()
 
 
 def test_dockerfile_uses_lockfiles():

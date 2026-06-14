@@ -52,8 +52,8 @@ def get_dataset_label_config(config: dict) -> dict:
     ds = config.get("dataset", {})
     return {
         "label_mode": str(ds.get("label_mode", "multiclass")).lower(),
-        "high_risk_threshold": int(ds.get("high_risk_threshold", 1)),
-        "binary_strategy": str(ds.get("binary_strategy", "threshold_ge_1")),
+        "high_risk_threshold": int(ds.get("high_risk_threshold", 2)),
+        "binary_strategy": str(ds.get("binary_strategy", "threshold_ge_2")),
         "cohort_labels": ds.get("cohort_labels", COHORT_LABEL_MAP),
     }
 

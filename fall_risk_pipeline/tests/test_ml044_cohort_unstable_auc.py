@@ -30,7 +30,7 @@ def evaluator(tmp_path) -> Evaluator:
             "evaluation": {
                 "random_state": 42,
                 "strategy": "nested_group_cv",
-                "cohort_auc_min_n": 15,
+                "cohort_auc_min_n": 25,
             },
             "run": ["xgboost"],
             "ensemble": {"top_k": 1, "methods": []},
@@ -69,7 +69,7 @@ def test_unstable_small_n_cohort_masks_auc(evaluator: Evaluator):
 
 
 def test_stable_cohort_keeps_numeric_auc(evaluator: Evaluator):
-    rows = evaluator._cohort_metric_rows("xgboost", _binary_cohort_result(n=20))
+    rows = evaluator._cohort_metric_rows("xgboost", _binary_cohort_result(n=30))
     assert len(rows) == 1
     row = rows[0]
     assert row["auc_status"] == "stable"

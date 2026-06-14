@@ -9,7 +9,9 @@ cd fall_risk_pipeline
 python main.py --stage anomaly
 ```
 
-Outputs include fitted models under this directory and summary metrics in `results/metrics/`.
+Outputs include fitted models under this directory (for API deploy) and **LOSO** summary metrics in `results/metrics/anomaly_metrics.csv`.
+
+Exploratory **in-sample** bulk CSVs (`anomaly_exploratory_insample_*.csv`) are for debugging only — not suitable for manuscript reporting.
 
 ## Download
 

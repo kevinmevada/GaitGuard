@@ -36,6 +36,9 @@ from src.models.deep_models import (
 from src.utils.progress import progress_bar, stderr_is_tty
 from src.utils.reproducibility import get_pipeline_seed, set_global_seed
 
+# Spread inner-val RNG seeds across LOSO fold indices (HIGH-002).
+_INNER_VAL_SEED_STRIDE = 31337
+
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
@@ -152,6 +155,11 @@ class DeepLearningPipeline:
             f"{n_channels} channels, window_len={self.window_len}, overlap={self.overlap}"
         )
         return participants, n_channels or 0
+
+    @staticmethod
+    def _inner_val_split_seed(base_seed: int, fold_idx: int) -> int:
+        """Derive a fold-specific seed that diversifies inner-val participant draws."""
+        return int(base_seed) + int(fold_idx) * _INNER_VAL_SEED_STRIDE
 
     @staticmethod
     def split_inner_train_val_participants(
@@ -421,7 +429,7 @@ class DeepLearningPipeline:
             inner_train_pids, inner_val_pids = self.split_inner_train_val_participants(
                 train_pids,
                 participant_labels,
-                seed=self.seed + fold_idx,
+                seed=self._inner_val_split_seed(self.seed, fold_idx),
                 val_fraction=0.1,
             )
             dedupe_kw = {}

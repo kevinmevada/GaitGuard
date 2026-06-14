@@ -36,6 +36,7 @@ from src.features.feature_matrix import (
     get_numeric_feature_columns,
     load_patient_feature_matrix,
 )
+from src.features.feature_missingness import write_feature_missingness_report
 
 
 class PermutationImportanceRandomForest(RandomForestClassifier):
@@ -148,6 +149,15 @@ class FeatureSelector:
             f"P/N={p_n_before:.2f} (features per participant)"
         )
 
+        missingness_df = write_feature_missingness_report(
+            X, feat_cols, self.metrics_dir
+        )
+        high_missing = (
+            missingness_df.loc[missingness_df["exceeds_threshold"], "feature"].tolist()
+            if not missingness_df.empty
+            else []
+        )
+
         rfecv_features, rfecv_detail = self._select_rfecv(
             X, y, groups, feat_cols, n_jobs=self.parallel_jobs
         )
@@ -205,6 +215,8 @@ class FeatureSelector:
             "shap_detail": shap_detail,
             "citations": CITATIONS,
             "comparison": comparison_rows,
+            "high_missingness_features": high_missing,
+            "feature_missingness_report": "feature_missingness_report.csv",
         }
 
         out_path = self.feat_dir / SELECTED_FEATURES_FILE
@@ -213,6 +225,7 @@ class FeatureSelector:
 
         self._write_comparison_csv(comparison_rows)
         self._write_required_shap_audit_csv(required_shap_audit)
+        self._write_missingness_section_md(missingness_df)
         self._write_report_md(payload)
 
         meta_cols = [c for c in df.columns if c not in get_numeric_feature_columns(df)]
@@ -616,6 +629,29 @@ class FeatureSelector:
             index=False,
         )
 
+    def _write_missingness_section_md(self, df: pd.DataFrame) -> None:
+        if df.empty:
+            return
+        lines = [
+            "## Feature missingness (MED-006)",
+            "",
+            "Non-finite rate per feature before selection (`feature_missingness_report.csv`). "
+            "Features with >15% missing may produce unstable median imputation across LOSO folds.",
+            "",
+            "| Feature | Missing % | Flagged |",
+            "|---|---:|:---:|",
+        ]
+        for row in df.head(15).itertuples(index=False):
+            flag = "yes" if row.exceeds_threshold else ""
+            lines.append(
+                f"| {row.feature} | {row.missing_pct:.1f} | {flag} |"
+            )
+        if len(df) > 15:
+            lines.append(f"| … | ({len(df) - 15} more in CSV) | |")
+        lines.append("")
+        path = self.metrics_dir / "feature_missingness_summary.md"
+        path.write_text("\n".join(lines), encoding="utf-8")
+
     def _write_report_md(self, payload: dict) -> None:
         lines = [
             "# Feature Selection Report",
@@ -675,6 +711,8 @@ class FeatureSelector:
                 "- Candidates are ranked by mean |SHAP| before the cap is applied.",
                 "- Review `required_feature_shap_audit.csv` after rerun to compare "
                 "forced vs dropped nonlinear features.",
+                "- **Sensitivity (MED-005):** re-run with `required_feature_substrings: []` "
+                "and compare LOSO AUC / SHAP ranks to this default.",
             ])
 
         lines.extend([

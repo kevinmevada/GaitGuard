@@ -27,13 +27,16 @@ def test_pipeline_config_averages_mlp_leakage_over_seeds():
     cfg = yaml.safe_load(
         (PIPELINE_ROOT / "configs" / "pipeline_config.yaml").read_text(encoding="utf-8")
     )
-    by_model = cfg["models"]["evaluation"].get("leakage_kfold_seed_repeats_by_model", {})
+    eval_cfg = cfg["models"]["evaluation"]
+    assert int(eval_cfg.get("leakage_kfold_seed_repeats", 1)) >= 5
+    by_model = eval_cfg.get("leakage_kfold_seed_repeats_by_model", {})
     assert int(by_model.get("mlp", 1)) >= 5
 
 
-def test_limitations_documents_mlp_split_protocol_noise():
+def test_limitations_documents_split_protocol_seed_averaging():
     text = (REPO_ROOT / "docs" / "limitations.md").read_text(encoding="utf-8")
-    assert "MLP split-protocol comparison" in text
+    assert "Split-protocol comparison" in text
+    assert "leakage_kfold_seed_repeats" in text
     assert "split_protocol_comparison.csv" in text
 
 
