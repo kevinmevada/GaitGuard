@@ -15,11 +15,11 @@ Output:
 
 LEAKAGE POLICY
 --------------
-The columns listed in METADATA_ONLY_COLS (cohort, risk_label, fall_probability,
-laterality_biased) are label-derived and must never appear in the feature
-matrix used for model training. They are carried through the pipeline as
-bookkeeping columns only and are explicitly excluded from numeric feature
-aggregation in _aggregate_to_patient.
+Label-derived target proxies (fall_probability, laterality_biased) live only in
+``trial_metadata.csv`` and are never written to feature parquets. Bookkeeping
+columns cohort, risk_label, and multiclass_label remain in patient parquets for
+CV grouping and target lookup but are excluded from model features via
+``NON_FEATURE_COLS`` / ``get_numeric_feature_columns``.
 """
 
 from __future__ import annotations
@@ -49,6 +49,10 @@ from src.features.nonlinear_metrics import (
     largest_lyapunov_exponent,
     sample_entropy,
     write_nonlinear_nan_report,
+)
+from src.features.feature_matrix import (
+    assert_no_target_proxies_in_feature_frame,
+    drop_target_proxies_from_feature_frame,
 )
 from src.features.patient_temporal_aggregation import (
     aggregate_trial_values,
@@ -151,6 +155,8 @@ class FeatureExtractor:
             return
 
         trial_df = pd.DataFrame(rows)
+        trial_df = drop_target_proxies_from_feature_frame(trial_df)
+        assert_no_target_proxies_in_feature_frame(trial_df, context="trial_features.parquet")
 
         trial_path = self.out_dir / "trial_features.parquet"
         trial_df.to_parquet(trial_path, index=False)
@@ -159,6 +165,10 @@ class FeatureExtractor:
         write_nonlinear_nan_report(trial_df, self.metrics_dir)
 
         patient_df = self._aggregate_to_patient(trial_df)
+        patient_df = drop_target_proxies_from_feature_frame(patient_df)
+        assert_no_target_proxies_in_feature_frame(
+            patient_df, context="patient_features.parquet"
+        )
         patient_path = self.out_dir / "patient_features.parquet"
         patient_df.to_parquet(patient_path, index=False)
         logger.info(f"Patient features saved → {patient_path}  shape={patient_df.shape}")
@@ -182,8 +192,6 @@ class FeatureExtractor:
             "cohort": metadata.get("cohort"),
             "risk_label": metadata.get("risk_label", 0),
             "multiclass_label": metadata.get("multiclass_label"),
-            "fall_probability": metadata.get("fall_probability"),
-            "laterality_biased": metadata.get("laterality_biased", False),
         }
         if feats["multiclass_label"] is None and feats.get("cohort") is not None:
             feats["multiclass_label"] = multiclass_label_from_cohort(str(feats["cohort"]))
@@ -233,15 +241,14 @@ class FeatureExtractor:
             "trial_id":       trial_id,
             "session":        row.get("session"),
             "participant_id": row["participant_id"],
-            # Metadata-only — label-derived, excluded from feature aggregation:
+            # Metadata-only — excluded from numeric aggregation and target proxies
+            # (fall_probability, laterality_biased) stay in trial_metadata.csv only.
             "cohort":            row["cohort"],
             "risk_label":        row["risk_label"],
             "multiclass_label":  row.get(
                 "multiclass_label",
                 multiclass_label_from_cohort(str(row["cohort"])),
             ),
-            "fall_probability":  row.get("fall_probability"),
-            "laterality_biased": row.get("laterality_biased", False),
         }
 
         lb = signals.get("lower_back")
@@ -627,11 +634,10 @@ class FeatureExtractor:
         Statistics per feature (configurable): mean, std, range (max-min across
         trials), trend (OLS slope vs ordered trial index within session).
 
-        FIX: previously fall_probability, laterality_biased, and cohort were
-        included as numeric feature columns, leaking label information into the
-        feature matrix. Now _META_COLS is explicitly excluded from aggregation
-        so the output contains only genuine signal-derived features plus the
-        bookkeeping columns needed for CV grouping and label lookup.
+        FIX: fall_probability and laterality_biased are not written to feature
+        parquets (HIGH-003). _META_COLS is excluded from aggregation so the
+        output contains only signal-derived features plus bookkeeping columns
+        for CV grouping and label lookup.
         """
         agg_cfg = self._patient_agg_cfg
         feat_cols = [
@@ -652,8 +658,6 @@ class FeatureExtractor:
                     if "multiclass_label" in grp.columns
                     else grp["risk_label"].iloc[0]
                 ),
-                "fall_probability":  grp["fall_probability"].iloc[0],
-                "laterality_biased": grp["laterality_biased"].iloc[0],
                 "n_trials":          len(grp),
             }
 

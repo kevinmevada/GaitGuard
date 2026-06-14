@@ -39,15 +39,25 @@ These constraints are **acceptable for a methods-focused *Sensors* paper** when 
 
 7. **Generalization** — Sensor type, placement, walking protocol, and cohort mix may not match other populations. External validation is required before operational use.
 
-8. **Forced nonlinear feature slots** — Up to four `sampen`/`dfa` family features may be retained regardless of RFECV rank (ranked by mean |SHAP| when capped). This preserves mechanistic coverage but can displace stronger linear predictors; review `required_feature_shap_audit.csv` after rerun before raising `max_required_features`.
+8. **Forced nonlinear feature slots (MED-005)** — Up to four `sampen`/`dfa` family features may be retained regardless of RFECV rank (ranked by mean |SHAP| when capped). This preserves mechanistic coverage but can displace stronger linear predictors. Compare against `required_feature_substrings: []` in a sensitivity re-run; review `required_feature_shap_audit.csv` before raising `max_required_features`.
 
-9. **Deep learning hyperparameters** — Tabular models re-tune with Optuna on each LOSO train fold; deep models use fixed global settings unless `deep_learning.loso_hyperparameter_tuning.enabled` is set (see `docs/paper/methods.md`, ML-042).
+9. **EDA t-SNE scaling (MED-004)** — The t-SNE figure standardizes features on **all** participants (`StandardScaler` fit on the full matrix). This is visualization-only and does not enter model training; the figure caption and `tsne_caption.txt` state that evaluation uses per-fold normalization.
 
-10. **Deep learning window overlap** — Held-out participant inference uses overlapping windows for soft voting; inner train/validation deduplicate to one window per stride block per trial by default (`training_window_deduplication`, ML-043).
+10. **Deep learning hyperparameters** — Tabular models re-tune with Optuna on each LOSO train fold (full hyperparameter search). Deep models run a **per-LOSO-fold learning-rate search** (`loso_hyperparameter_tuning.enabled: true`, 5 Optuna trials × 12 short epochs on the inner participant validation split) before full training with `max_epochs` / early stopping from config (ML-042 / HIGH-001). Architecture and batch size remain global; only learning rate varies per fold.
 
-11. **Anomaly detection** — Unsupervised flags mark deviation from healthy training references; they are not validated predictors of falls or adverse events.
+11. **Deep learning window overlap** — Held-out participant inference uses overlapping windows for soft voting; inner train/validation deduplicate to one window per stride block per trial by default (`training_window_deduplication`, ML-043).
 
-12. **MLP split-protocol comparison** — The LOSO vs StratifiedKFold audit (`split_protocol_comparison.csv`) can show **negative** ungrouped inflation for `mlp` because `MLPClassifier` has no group-aware early stopping (`max_iter=500`, fixed init) and high fold-to-fold variance. The pipeline averages ungrouped KFold AUC over five seeds for MLP (`leakage_kfold_seed_repeats_by_model.mlp`). **Do not** use the MLP row alone to challenge the positive inflation pattern for tree/SVM models; cite tree/SVM/ensemble rows for split-protocol leakage sensitivity.
+12. **Anomaly detection** — Unsupervised flags mark deviation from healthy training references; they are not validated predictors of falls or adverse events.
+
+13. **Split-protocol comparison (ML-048 / MED-001)** — The LOSO vs StratifiedKFold audit (`split_protocol_comparison.csv`) averages ungrouped StratifiedKFold AUC over **five** random seeds for all models (`leakage_kfold_seed_repeats: 5`). The `mlp` row can still show **negative** inflation because `MLPClassifier` has no group-aware early stopping (`max_iter=500`, fixed init) and high fold-to-fold variance. **Do not** use the MLP row alone to challenge the positive inflation pattern for tree/SVM/ensemble models.
+
+14. **Anomaly bulk-run artifacts** — Files under `results/anomaly_detection/anomaly_exploratory_insample_*` score Healthy training subjects in-sample. **Report only** `results/metrics/anomaly_metrics.csv` (LOSO OOF). Classification metrics there use Youden thresholds fit on each LOSO **train** fold, not on held-out OOF scores (CRIT-001).
+
+15. **Feature parquet schema** — `fall_probability` and `laterality_biased` are cohort metadata stored in `trial_metadata.csv` only; they are **not** written to `trial_features.parquet` or `patient_features.parquet` (HIGH-003). Downstream notebooks must not assume label proxies exist in feature files. Re-run `extract_features` (or `sanitize_feature_parquet_artifacts`) after upgrading from older artifacts.
+
+16. **Median imputation & missingness (MED-006)** — `SimpleImputer(strategy="median")` is fit per training fold (no leakage). Features with >15% non-finite values are flagged in `feature_missingness_report.csv` and logged at training time; high missingness (e.g. Lyapunov/SampEn on short trials) can make fold-wise medians unstable.
+
+17. **SHAP sample cap (MED-008)** — Global SHAP uses LOSO held-out rows with `n_shap_samples: 260` and cohort-proportional participant selection when capped below N so late-ID cohorts are not systematically excluded.
 
 ---
 

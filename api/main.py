@@ -262,9 +262,10 @@ def resolve_cors_origins(value: str | None) -> tuple[list[str], bool]:
         )
         return list(_DEFAULT_LOCAL_CORS_ORIGINS), False
     if not origins:
-        logger.info(
-            "CORS_ORIGINS unset; cross-origin access limited to localhost dev hosts. "
-            "Set CORS_ORIGINS to your deployed frontend URL(s) before going live."
+        logger.warning(
+            "CORS_ORIGINS is not set — all cross-origin browser requests WILL BE REJECTED "
+            "from non-localhost frontends. Set CORS_ORIGINS=https://your-frontend-url "
+            "before deploying."
         )
         return list(_DEFAULT_LOCAL_CORS_ORIGINS), False
     deploy_env = os.getenv("ENVIRONMENT", os.getenv("ENV", "development")).lower()
@@ -276,6 +277,11 @@ def resolve_cors_origins(value: str | None) -> tuple[list[str], bool]:
 
 
 cors_origins, allow_all_origins = resolve_cors_origins(os.getenv("CORS_ORIGINS"))
+if cors_origins == list(_DEFAULT_LOCAL_CORS_ORIGINS):
+    logger.warning(
+        "CORS_ORIGINS is not set — all cross-origin browser requests WILL BE REJECTED. "
+        "Set CORS_ORIGINS=https://your-frontend-url before deploying."
+    )
 
 CONFIG_PATH = Path(os.getenv("CONFIG_PATH", PIPELINE_ROOT / "configs" / "pipeline_config.yaml"))
 MODEL_DIR = Path(os.getenv("MODEL_DIR", PIPELINE_ROOT / "results" / "checkpoints"))
@@ -713,6 +719,10 @@ def load_resources() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if cors_origins == list(_DEFAULT_LOCAL_CORS_ORIGINS):
+        logger.warning(
+            "Startup: CORS limited to localhost — set CORS_ORIGINS for production frontends."
+        )
     load_resources()
     yield
 

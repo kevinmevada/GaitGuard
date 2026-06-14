@@ -39,6 +39,12 @@ RISK_LABELS = {0: "Low risk", 1: "High risk"}
 # Seed for any stochastic operations (sampling, t-SNE) so figures are reproducible.
 _RANDOM_STATE = 42
 
+# MED-004: full-dataset StandardScaler is visualization-only (not used in training).
+TSNE_CAPTION = (
+    "t-SNE embedding computed on full-dataset-standardized features (visualization only; "
+    "all model training and evaluation use per-fold normalization)."
+)
+
 
 class EDAAnalyzer:
 
@@ -90,8 +96,21 @@ class EDAAnalyzer:
             return None
         return pd.read_csv(path)
 
-    def _save(self, fig: plt.Figure, name: str) -> None:
+    def _save(self, fig: plt.Figure, name: str, *, caption: str | None = None) -> None:
         """Save figure, avoiding duplicate writes when fmt == 'png'."""
+        if caption:
+            fig.text(
+                0.5,
+                0.01,
+                caption,
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                wrap=True,
+                transform=fig.transFigure,
+            )
+            fig.subplots_adjust(bottom=0.14)
+
         fig.tight_layout()
 
         # FIX: deduplicate extensions so we never write the same file twice.
@@ -101,6 +120,8 @@ class EDAAnalyzer:
 
         plt.close(fig)
         self.generated_graphs.append(name)
+        if caption:
+            (self.out_dir / f"{name}_caption.txt").write_text(caption + "\n", encoding="utf-8")
 
     def save_all_graphs(self) -> None:
         """Figures already saved via _save(); nothing more to do."""
@@ -323,7 +344,7 @@ class EDAAnalyzer:
         ax.set_xlabel("t-SNE 1")
         ax.set_ylabel("t-SNE 2")
 
-        self._save(fig, "tsne")
+        self._save(fig, "tsne", caption=TSNE_CAPTION)
 
     # ─────────────────────────────────────────
 

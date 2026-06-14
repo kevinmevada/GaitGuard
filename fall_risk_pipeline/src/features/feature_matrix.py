@@ -21,7 +21,46 @@ NON_FEATURE_COLS = {
     "n_trials",
 }
 
+# Cohort-level constants that must never be persisted in feature parquets (HIGH-003).
+TARGET_PROXY_COLS = frozenset({"fall_probability", "laterality_biased"})
+
 SELECTED_FEATURES_FILE = "selected_features.json"
+
+
+def drop_target_proxies_from_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove label-proxy columns before writing or analyzing feature parquets."""
+    drop = [c for c in TARGET_PROXY_COLS if c in df.columns]
+    if not drop:
+        return df
+    return df.drop(columns=drop)
+
+
+def assert_no_target_proxies_in_feature_frame(
+    df: pd.DataFrame,
+    *,
+    context: str = "feature frame",
+) -> None:
+    present = sorted(TARGET_PROXY_COLS & set(df.columns))
+    if present:
+        raise AssertionError(
+            f"Target proxy column(s) in {context}: {present}. "
+            "Store fall_probability and laterality_biased in trial_metadata.csv only."
+        )
+
+
+def sanitize_feature_parquet_artifacts(feat_dir: Path) -> list[str]:
+    """Drop target-proxy columns from on-disk feature parquets (migration helper)."""
+    updated: list[str] = []
+    for name in ("trial_features.parquet", "patient_features.parquet"):
+        path = feat_dir / name
+        if not path.exists():
+            continue
+        df = pd.read_parquet(path)
+        cleaned = drop_target_proxies_from_feature_frame(df)
+        if list(cleaned.columns) != list(df.columns):
+            cleaned.to_parquet(path, index=False)
+            updated.append(name)
+    return updated
 
 
 def get_numeric_feature_columns(df: pd.DataFrame) -> list[str]:
@@ -63,6 +102,7 @@ def load_patient_feature_matrix(
     feat_dir = feat_dir or Path(config["paths"]["features"])
     path = feat_dir / "patient_features.parquet"
     df = pd.read_parquet(path)
+    assert_no_target_proxies_in_feature_frame(df, context=str(path))
 
     feat_cols = get_numeric_feature_columns(df)
     if use_selected:

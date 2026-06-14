@@ -160,6 +160,7 @@ class ReportGenerator:
         leakage_section = self._split_protocol_comparison_section()
         sensor_ablation_section = self._sensor_ablation_section()
         cross_cohort_section = self._cross_cohort_section()
+        cohort_auc_section = self._cohort_subgroup_auc_section()
         dl_section = self._deep_learning_comparison_section()
         class_section = self._append_class_distribution_section()
         inference_section = self._deployment_inference_section()
@@ -175,6 +176,7 @@ Generated: {timestamp}
 
 {demographics_section}
 {class_section}
+{cohort_auc_section}
 {feature_section}
 {ablation_section}
 {clinical_threshold_section}
@@ -655,6 +657,56 @@ python main.py --config configs/pipeline_config.yaml
             )
         return "\n".join(lines)
 
+    def _cohort_auc_suppression_footnote(self) -> str:
+        min_n = int(
+            self.config.get("models", {})
+            .get("evaluation", {})
+            .get("cohort_auc_min_n", 25)
+        )
+        return (
+            f"*Cohorts with n < {min_n} participants: AUC suppressed due to "
+            "insufficient sample size for stable estimation (MED-003 / ML-044).*"
+        )
+
+    def _cohort_subgroup_auc_section(self) -> str:
+        path = self.metrics_dir / "metrics_by_cohort.csv"
+        if not path.exists():
+            return ""
+        df = pd.read_csv(path)
+        if df.empty:
+            return ""
+
+        ref_model = str(df["model"].iloc[0])
+        if "model" in df.columns and len(df["model"].unique()) > 1:
+            metrics_path = self.metrics_dir / "metrics.csv"
+            if metrics_path.exists():
+                mdf = pd.read_csv(metrics_path)
+                if not mdf.empty:
+                    ref_model = str(mdf.iloc[0]["model"])
+
+        sub = df[df["model"] == ref_model] if "model" in df.columns else df
+        if sub.empty:
+            sub = df
+
+        lines = [
+            "## Cohort Subgroup Performance (LOSO OOF)",
+            "",
+            f"Reference model: `{ref_model}`. Exported from `metrics_by_cohort.csv`.",
+            "",
+            "| Cohort | n | AUC | AUC status | F1 | Accuracy |",
+            "|---|---:|---:|---|---:|---:|",
+        ]
+        for row in sub.itertuples(index=False):
+            auc_val = getattr(row, "auc", float("nan"))
+            auc_str = f"{auc_val:.4f}" if pd.notna(auc_val) else "—"
+            status = str(getattr(row, "auc_status", "stable"))
+            lines.append(
+                f"| {row.cohort} | {int(row.n)} | {auc_str} | {status} | "
+                f"{float(row.f1):.3f} | {float(row.accuracy):.3f} |"
+            )
+        lines.extend(["", self._cohort_auc_suppression_footnote(), ""])
+        return "\n".join(lines)
+
     def _split_protocol_comparison_section(self) -> str:
         lc_path = self.metrics_dir / "split_protocol_comparison.csv"
         if not lc_path.exists():
@@ -670,7 +722,7 @@ python main.py --config configs/pipeline_config.yaml
             "StratifiedKFold (ungrouped splits). At participant granularity this "
             "measures split-difficulty inflation, not duplicate-subject leakage (ML-048). "
             "Both arms use matched per-fold nested RFECV when `nested_in_evaluation: true` (ML-036). "
-            "MLP ungrouped AUC is averaged over multiple KFold seeds (see `ungrouped_kfold_seed_repeats`).",
+            "Ungrouped KFold AUC is averaged over multiple seeds per model (see `ungrouped_kfold_seed_repeats`; default 5, MED-001).",
             "",
             "| Model | AUC (Grouped LOSO) | AUC (Ungrouped KFold) | Inflation | Inflation % |",
             "|---|---:|---:|---:|---:|",

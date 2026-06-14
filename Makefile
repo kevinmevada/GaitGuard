@@ -25,10 +25,10 @@ install:
 	pip install -r api/requirements-lock.txt
 
 pipeline:
-	cd fall_risk_pipeline && python main.py --config $(CONFIG)
+	cd fall_risk_pipeline && PYTHONHASHSEED=$(PYTHONHASHSEED) python main.py --config $(CONFIG)
 
 stage:
-	cd fall_risk_pipeline && python main.py --config $(CONFIG) --stage $(STAGE)
+	cd fall_risk_pipeline && PYTHONHASHSEED=$(PYTHONHASHSEED) python main.py --config $(CONFIG) --stage $(STAGE)
 
 api:
 	cd api && python -m uvicorn main:app --host 0.0.0.0 --port 8001

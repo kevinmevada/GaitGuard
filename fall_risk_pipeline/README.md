@@ -96,9 +96,12 @@ make docker-stage STAGE=evaluate
 Checkpoints and anomaly `.pkl` files are **not** in git. Train locally (`train`, `anomaly` stages) or use `../scripts/download_models.py` with a Hugging Face repo — see `results/checkpoints/README.md` and `../docs/MODEL_CARD.md`.
 
 ## Usage
+
+Set `PYTHONHASHSEED=42` **before** starting Python for stable hash iteration (see [docs/reproducibility.md](docs/reproducibility.md)). PowerShell: `$env:PYTHONHASHSEED = "42"`.
+
 ```bash
 # Full pipeline end-to-end (all 15 stages)
-python main.py --config configs/pipeline_config.yaml
+PYTHONHASHSEED=42 python main.py --config configs/pipeline_config.yaml
 
 # Individual stages
 python main.py --stage ingest

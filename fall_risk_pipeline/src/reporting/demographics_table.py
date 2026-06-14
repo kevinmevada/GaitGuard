@@ -227,8 +227,9 @@ def demographics_to_markdown(table: pd.DataFrame) -> str:
     lines = [
         "# Table 1 — Demographics by cohort",
         "",
-        "Participant-level summary from `trial_metadata.csv` "
-        "(one row per `participant_id`; trials counted separately).",
+        "Participant-level summary from `trial_metadata.csv` (one row per `participant_id`; "
+        "trials counted separately). **Include this table in the methods section** so "
+        "reviewers can verify per-cohort *n*, age, and sex composition (MED-003).",
         "",
         "| Cohort | *n* (participants) | Trials | Age (years) | Sex (F/M) | Laterality |",
         "|---|---:|---:|---|---|---|",

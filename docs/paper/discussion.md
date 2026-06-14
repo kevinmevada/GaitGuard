@@ -12,7 +12,7 @@ Explainability results will be drawn from regenerated LOSO SHAP exports after th
 
 ## 3. Relation between classical and deep approaches
 
-Deep and tabular branches use aligned LOSO participant holdout but may differ in hyperparameter protocol (fixed global DL settings unless `loso_hyperparameter_tuning.enabled`; tabular per-fold Optuna — ML-042). After regeneration, compare macro OvR AUC from `deep_learning_metrics.csv` against nested tabular rows in `metrics.csv` (filtered by `feature_selection_protocol`). Do not cite a specific deep architecture (e.g., TCN) as “strongest” until the regenerated DL table supports it.
+Deep and tabular branches use aligned LOSO participant holdout. Both re-tune on each outer train fold: tabular via full Optuna search; deep via per-fold learning-rate Optuna on the inner participant validation split (`loso_hyperparameter_tuning.enabled: true`, ML-042 / HIGH-001). After regeneration, compare macro OvR AUC from `deep_learning_metrics.csv` against nested tabular rows in `metrics.csv` (filtered by `feature_selection_protocol`). Do not cite a specific deep architecture (e.g., TCN) as “strongest” until the regenerated DL table supports it.
 
 ## 4. Sensor configuration implications
 

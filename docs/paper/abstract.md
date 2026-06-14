@@ -40,7 +40,7 @@ cd fall_risk_pipeline && python main.py
 python ../scripts/regenerate_paper_results.py
 ```
 
-Optional sensitivity sentence (binary neurological high-risk only, `label_mode: binary`, `binary_strategy: threshold_ge_2`): report a second AUC from the same table if reviewers request a dichotomous endpoint.
+Optional binary sensitivity (`label_mode: binary`, `binary_strategy: threshold_ge_1`): report only as a **sensitivity analysis** — merges orthopedic and neurological tiers; primary binary rule is `threshold_ge_2` (neurological-only high risk).
 
 ---
 
@@ -50,7 +50,7 @@ Optional sensitivity sentence (binary neurological high-risk only, `label_mode: 
 |---------|---------------------|
 | **Introduction / background** | Fall epidemiology; IMU gait in aging and neuro/orthopedic disease; cite dataset (Figshare 10.6084/m9.figshare.28806086). |
 | **Gap** | Subject leakage, trial vs patient features, label heterogeneity, lack of open reproducible LOSO benchmarks on this cohort. |
-| **Methods** | N = 260, 1,356 trials, 8 cohorts, 4 IMUs, 100 Hz; preprocessing (Madgwick, gait events); temporal/spectral/wavelet/trunk/orientation/asymmetry features; RFECV cap ≤20; nested LOSO tabular eval; fixed global DL HP unless `loso_hyperparameter_tuning.enabled`; ensemble top-k soft voting; macro-OVR AUC, macro F1, per-class metrics; **Youden J** on train folds (binary); multiclass paired comparisons via bootstrap macro-OVR deltas + BH-FDR (DeLong binary-only). |
+| **Methods** | N = 260, 1,356 trials, 8 cohorts, 4 IMUs, 100 Hz; preprocessing (Madgwick, gait events); temporal/spectral/wavelet/trunk/orientation/asymmetry features; RFECV cap ≤20; nested LOSO tabular eval; per-fold DL LR Optuna (`loso_hyperparameter_tuning.enabled`); ensemble top-k soft voting; macro-OVR AUC, macro F1, per-class metrics; **Youden J** on train folds (binary); multiclass paired comparisons via bootstrap macro-OVR deltas + BH-FDR (DeLong binary-only). |
 | **Results** | Table 1 demographics; primary LOSO AUC from `docs/paper/results.md` (auto-generated); calibration; SHAP top features; **feature ablation** (LOSO); anomaly vote rates by cohort; gait-event validation error (ms). |
 | **Discussion / conclusion** | Screening vs diagnosis; single-trial API limitation; **limitations** (research prototype, no clinical decision support). |
 | **Limitations** | **Retrospective**, **single dataset**, **no prospective follow-up**, **no ground-truth fall outcomes** (cohort labels only); internal LOSO only; path to prospective validation — `docs/limitations.md`, `docs/paper/limitations.md`. |

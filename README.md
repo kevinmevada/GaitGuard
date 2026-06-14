@@ -403,8 +403,12 @@ Classification `.pkl` files and anomaly models under `fall_risk_pipeline/results
 
 ```bash
 cd fall_risk_pipeline
-python main.py --config configs/pipeline_config.yaml
+PYTHONHASHSEED=42 python main.py --config configs/pipeline_config.yaml
 ```
+
+PowerShell: `$env:PYTHONHASHSEED = "42"; python main.py --config configs/pipeline_config.yaml`
+
+Or use `make pipeline` from the repo root (Makefile sets `PYTHONHASHSEED=42` before Python starts).
 
 ### Option 1b: Run with Makefile (local or Docker)
 
