@@ -49,8 +49,8 @@ def test_anomaly_loso_uses_train_fold_youden_not_oof(tmp_path):
     source = (PIPELINE_ROOT / "src" / "evaluation" / "anomaly_loso_evaluator.py").read_text(
         encoding="utf-8"
     )
-    assert "youden_threshold(y_train, sq_train)" in source
-    assert "loso_train_fold_youden" in source
+    assert "fit_anomaly_threshold" in source
+    assert "loso_healthy_train_percentile" in source or "threshold_source" in source
     score_block = source.split("def _score_block", 1)[1].split("\ndef run_anomaly", 1)[0]
     assert "youden_threshold(yt, ys)" not in score_block
 
@@ -64,7 +64,7 @@ def test_anomaly_loso_uses_train_fold_youden_not_oof(tmp_path):
 
     metrics_df = run_anomaly_loso_evaluation(config)
     ens = metrics_df.loc[metrics_df["method"] == "ensemble"].iloc[0]
-    assert ens["threshold_source"] == "loso_train_fold_youden"
+    assert ens["threshold_source"] == "loso_healthy_train_percentile"
     assert ens["n_threshold_folds"] >= 1
     assert pd.notna(ens["threshold_youden"])
 
@@ -73,7 +73,7 @@ def test_anomaly_loso_uses_train_fold_youden_not_oof(tmp_path):
     assert oof["ensemble_pred_train_youden"].notna().sum() > 0
 
     thresh_json = (metrics_dir / "anomaly_threshold.json").read_text(encoding="utf-8")
-    assert "loso_train_fold_youden_mean" in thresh_json
+    assert "loso_healthy_train_percentile" in thresh_json
 
 
 def test_score_fitted_method_matches_dual_fit():
@@ -103,6 +103,7 @@ def test_bulk_anomaly_outputs_labeled_insample(tmp_path, monkeypatch):
     config = {
         "paths": {
             "features": str(feat_dir),
+            "processed_data": str(tmp_path / "data" / "processed"),
             "results": str(tmp_path / "results"),
             "metrics": str(tmp_path / "results" / "metrics"),
         },
@@ -113,6 +114,10 @@ def test_bulk_anomaly_outputs_labeled_insample(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "src.models.anomaly_detector.GaitAnomalyDetector._visualize_results",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "src.evaluation.daphnet_fog_evaluator.run_daphnet_sealed_fog_eval",
         lambda *args, **kwargs: None,
     )
 

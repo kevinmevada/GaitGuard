@@ -1,35 +1,54 @@
-# Spatial gait features — not extracted
+# Spatial gait features — Phase 1 IMU integration
 
-## What the pipeline computes instead
+## What the pipeline computes
 
-`feature_extractor.py` derives **temporal** and **bilateral asymmetry** quantities from foot IMU heel-strike / toe-off events and trunk/head signals. It does **not** estimate absolute step length, gait speed, or step width.
+`phase1_spatiotemporal.py` (wired in `feature_extractor.py` when **left_foot** and **right_foot** are present) derives literature-aligned spatiotemporal and variability metrics from heel-strike / toe-off events and swing-phase foot acceleration.
 
-| Available (trial level) | Source |
-|-------------------------|--------|
-| Stride time mean / std / CV | Foot `heel_strike_*` intervals |
-| Cadence, step count | Heel-strike rate |
-| Stance phase ratio | Heel strike → toe off |
-| Stride-time asymmetry (mean / std) | Left vs right stride statistics |
-| RMS acceleration asymmetry | Left vs right foot resultant |
+| Feature | Method | Literature |
+|---------|--------|------------|
+| Stride duration (s) | Same-foot HS → HS interval | Trabassi, Moon, Voisard |
+| Step duration (s) | Alternating L/R HS intervals | Voisard, Sadeghsalehi |
+| Stance / swing (%) | HS→TO / TO→next HS as % of stride | Trabassi, Schlachetzki |
+| Step / stride length (m) | Double integration of swing-phase acc + endpoint drift correction | Moon, Li, Voisard |
+| Gait velocity (m/s) | step_length / swing duration | Yona, Trabassi |
+| CV% | (SD/Mean)×100; rolling mean over stride windows | Moon, Trabassi |
+| Symmetry index (SI%) | \|L−R\| / (0.5×(L+R)) × 100 | Voisard, Schlachetzki |
 
-## Why step length and gait speed are omitted
+Legacy column names (`stride_time_mean`, `stance_phase_ratio`, `stride_time_cv` as a fraction) are still emitted for backward-compatible ablations.
 
-Absolute **step length** and **gait speed** need either:
+## DAPHNET / LB-only trials
 
-- Known anthropometric calibration or external distance reference, or  
-- Double integration of acceleration / magnetometer-based displacement (high drift without additional sensors or constraints).
+DAPHNET trials mapped to **lower_back only** do not have foot sensors. Phase 1 foot-based features are **not computed** for those trials (spatial/temporal foot columns remain absent or NaN at patient aggregation).
 
-The Figshare cohort provides 100 Hz IMU on head, lower back, and feet — **no ground-truth step length** in trial metadata. Reporting uncalibrated spatial metrics would be misleading for a clinical paper.
+## Calibration caveats (Methods / Limitations)
 
-## Config and README
+Absolute step length and gait speed from IMU double integration are **uncalibrated** — no ground-truth stride length in the Figshare metadata. Drift correction (linear velocity detrend between swing endpoints) reduces but does not remove integration bias.
 
-`pipeline_config.yaml` keeps `spatial: []` with a comment pointing here. Do not cite step length or gait speed in methods unless you add a validated estimator and re-run `features`.
+Recommended wording:
 
-## Suggested paper wording (Methods / Limitations)
+> Step length and gait velocity were estimated from swing-phase foot accelerometer double integration with endpoint drift correction (ZUPT at heel strike). These spatial proxies are reported for screening comparability with prior IMU gait studies (Moon 2020; Trabassi 2022) and should not be interpreted as laboratory-grade kinematics without external validation.
 
-> Spatial parameters (step length, gait speed, step width) were not derived from IMU alone. Trial features consisted of temporal gait-cycle metrics (stride time, cadence, stance ratio), trunk and spectral dynamics, orientation-based postural measures, and bilateral asymmetry indices computed from foot-mounted accelerometers.
+## Config
+
+`pipeline_config.yaml`:
+
+```yaml
+features:
+  phase1_spatiotemporal:
+    enabled: true
+    rolling_cv_window_strides: 5
+    enable_spatial_integration: true
+    integration_axis: acc_resultant   # or acc_x if AP-aligned
+  spatial:
+    - step_length_m
+    - stride_length_m
+    - gait_velocity_m_s
+```
+
+Set `enable_spatial_integration: false` to emit timing/variability/SI only (no length or velocity).
 
 ## Optional future work
 
-If height or leg length is added to `trial_metadata.csv`, a coarse speed proxy could be implemented as  
-`gait_speed ≈ step_length_prior × cadence` with explicit uncertainty — not enabled in the current pipeline.
+- Anthropometric priors (height, leg length) for scale calibration  
+- Magnetometer- or UWB-assisted drift correction  
+- Pace-conditioned velocity (slow / self-selected / fast) when trial metadata includes speed condition

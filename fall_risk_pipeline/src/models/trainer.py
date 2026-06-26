@@ -29,6 +29,7 @@ console = Console()
 
 from src.features.feature_missingness import warn_high_missingness_features
 from src.dataset.label_policy import is_binary_task, label_mode_description
+from src.dataset.subject_split import ensure_subject_split_manifest
 from src.evaluation.roc_auc_scoring import roc_auc_from_proba, roc_auc_scoring_name
 from src.features.feature_matrix import (
     NON_FEATURE_COLS,
@@ -126,6 +127,7 @@ class ModelTrainer:
         in-sample tune score, or ``deploy_loso_gap.csv`` for deploy-schema LOSO (ML-032).
         """
         X, y, groups, feat_cols_deploy, patient_df = self._load_data()
+        ensure_subject_split_manifest(self.config, self.metrics_dir)
         X_full, _, _, feat_cols_full, _ = load_patient_feature_matrix(
             self.config, use_selected=False
         )

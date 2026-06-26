@@ -25,7 +25,6 @@ jobs:
           cache-dependency-path: |
             fall_risk_pipeline/requirements-lock.txt
             fall_risk_pipeline/requirements-dev-lock.txt
-            api/requirements-lock.txt
 
       - name: Install dependencies
         run: |
@@ -33,17 +32,11 @@ jobs:
           pip install -r fall_risk_pipeline/requirements-lock.txt \
             --extra-index-url https://download.pytorch.org/whl/cpu
           pip install -r fall_risk_pipeline/requirements-dev-lock.txt
-          pip install -r api/requirements-lock.txt
-
-      - name: Sync frontend static assets
-        run: python scripts/sync_front_end.py
-
-      - name: Assert api/static matches Front_end (STR-002)
-        run: git diff --exit-code -- api/static/
 
       - name: Run pipeline unit tests
         working-directory: fall_risk_pipeline
         run: pytest tests/ -q --tb=short
 
       - name: Run API unit tests
-        run: pytest api/tests/ -q --tb=short
+        working-directory: api
+        run: pytest tests/ -q --tb=short

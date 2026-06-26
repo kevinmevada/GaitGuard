@@ -1,0 +1,8 @@
+#!/bin/sh
+# Strip Cursor attribution before commit message editor / agent finalize (prepare-commit-msg hook).
+MSG_FILE="$1"
+[ -f "$MSG_FILE" ] || exit 0
+tmp="${MSG_FILE}.tmp"
+grep -viE '^(co-authored-by:.*cursor|made-with:.*cursor)' "$MSG_FILE" > "$tmp" || true
+mv "$tmp" "$MSG_FILE"
+exit 0

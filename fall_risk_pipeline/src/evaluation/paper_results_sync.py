@@ -17,7 +17,9 @@ from loguru import logger
 
 from src.evaluation.primary_endpoint import (
     ENDPOINT_ANOMALY_ENSEMBLE,
+    ENDPOINT_BILSTM_AE_ENSEMBLE,
     PROTOCOL_ANOMALY_LOSO,
+    PROTOCOL_BILSTM_AE_LOSO,
     PROTOCOL_DEPLOY_GLOBAL,
     PROTOCOL_NESTED_RFECV,
 )
@@ -153,6 +155,52 @@ def _anomaly_primary_section(metrics_dir: Path) -> str:
     return "\n".join(lines)
 
 
+def _bilstm_ae_primary_section(metrics_dir: Path) -> str:
+    path = metrics_dir / "bilstm_ae_anomaly_metrics.csv"
+    if not path.is_file():
+        return (
+            "## 2. Primary BiLSTM-AE 3-method ensemble (LOSO OOF)\n\n"
+            "_`bilstm_ae_anomaly_metrics.csv` not found — run `python main.py --stage anomaly`._\n"
+        )
+    df = pd.read_csv(path)
+    lines = [
+        "## 2. Primary BiLSTM-AE 3-method ensemble (LOSO OOF)",
+        "",
+        "Healthy-reference BiLSTM autoencoder (HE+LB+LF+RF) with latent Isolation Forest "
+        "and One-Class SVM — strict leave-one-subject-out "
+        f"(`feature_selection_protocol: {PROTOCOL_BILSTM_AE_LOSO}`). "
+        "Pseudo ground truth: non-Healthy trial = positive.",
+        "",
+        "| Method | ROC-AUC | PR-AUC | Sensitivity | Specificity |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for row in df.sort_values("auc", ascending=False, na_position="last").itertuples(index=False):
+        auc_pr = getattr(row, "auc_pr", float("nan"))
+        auc_pr_str = f"{float(auc_pr):.4f}" if pd.notna(auc_pr) else "N/A"
+        lines.append(
+            f"| {row.method} | {float(row.auc):.4f} | {auc_pr_str} | "
+            f"{float(row.sensitivity):.4f} | {float(row.specificity):.4f} |"
+        )
+    ens = df[df["method"] == ENDPOINT_BILSTM_AE_ENSEMBLE]
+    gain_path = metrics_dir / "bilstm_ae_ensemble_gain.json"
+    if not ens.empty:
+        r = ens.iloc[0]
+        lines.extend([
+            "",
+            f"**Primary endpoint (`{ENDPOINT_BILSTM_AE_ENSEMBLE}`):** ensemble ROC-AUC "
+            f"{float(r['auc']):.4f}.",
+        ])
+        if gain_path.is_file():
+            import json
+
+            gain = json.loads(gain_path.read_text(encoding="utf-8"))
+            g = gain.get("gain_vs_best_single")
+            if g is not None:
+                lines.append(f" Ensemble gain vs best single method: {float(g):+.4f} AUC.")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _supervised_secondary_section(df: pd.DataFrame) -> str:
     lines = [
         "## 2b. Secondary supervised pathology-tier performance (tabular models)",
@@ -208,6 +256,93 @@ def _deep_learning_section(metrics_dir: Path) -> str:
             f"| {row.model} | {auc_str} | {float(row.f1):.4f} | {float(row.accuracy):.4f} |"
         )
     return "\n".join(lines) + "\n"
+
+
+def _classical_baseline_section(metrics_dir: Path) -> str:
+    path = metrics_dir / "classical_baseline_metrics.md"
+    if not path.is_file():
+        return (
+            "## 3. Classical baselines (competitor paradigm 1)\n\n"
+            "_`classical_baseline_metrics.md` not found — run "
+            "`python main.py --stage classical_baselines`._\n"
+        )
+    body = path.read_text(encoding="utf-8")
+    return body.replace(
+        "# Classical baselines — competitor paradigm 1",
+        "## 3. Classical baselines (competitor paradigm 1)",
+        1,
+    )
+
+
+def _dl_baseline_section(metrics_dir: Path) -> str:
+    path = metrics_dir / "dl_competitor_matrix.md"
+    if not path.is_file():
+        return (
+            "## 4. Deep learning baselines (competitor paradigm 2)\n\n"
+            "_`dl_competitor_matrix.md` not found — run `python main.py --stage dl_baselines`._\n"
+        )
+    body = path.read_text(encoding="utf-8")
+    return body.replace("# DL competitor matrix", "## 4. DL competitor matrix", 1)
+
+
+def _novelty_comparison_section(metrics_dir: Path) -> str:
+    path = metrics_dir / "novelty_comparison_table.md"
+    if not path.is_file():
+        return (
+            "## 2. Methodological novelty (Section 2)\n\n"
+            "_Run `python main.py --stage novelty_table`._\n"
+        )
+    body = path.read_text(encoding="utf-8")
+    return body.replace(
+        "# Table 1 — Methodological novelty vs competitor literature (Section 2)",
+        "## 2. Methodological novelty vs competitor literature",
+        1,
+    )
+
+
+def _per_cohort_loso_section(metrics_dir: Path) -> str:
+    path = metrics_dir / "per_cohort_loso_results.md"
+    if not path.is_file():
+        return (
+            "## Per-cohort LOSO results (detailed)\n\n"
+            "_Run `python main.py --stage per_cohort_loso` after the anomaly (BiLSTM-AE LOSO) stage._\n"
+        )
+    body = path.read_text(encoding="utf-8")
+    return body.replace(
+        "# Per-cohort LOSO results — pathology-tier screening (detailed)",
+        "## Per-cohort LOSO results — pathology-tier screening (detailed)",
+        1,
+    )
+
+
+def _fall_risk_spearman_section(metrics_dir: Path) -> str:
+    path = metrics_dir / "fall_risk_spearman_correlation.md"
+    if not path.is_file():
+        return (
+            "## Fall-risk clinical validation (Spearman correlation)\n\n"
+            "_Run `python main.py --stage fall_risk_spearman` after the anomaly (BiLSTM-AE LOSO) stage._\n"
+        )
+    body = path.read_text(encoding="utf-8")
+    return body.replace(
+        "# Fall-risk clinical validation — Spearman correlation",
+        "## Fall-risk clinical validation — Spearman correlation",
+        1,
+    )
+
+
+def _competitor_discriminative_section(metrics_dir: Path) -> str:
+    path = metrics_dir / "competitor_discriminative_metrics.md"
+    if not path.is_file():
+        return (
+            "## 5. Core discriminative metrics (full competitor matrix)\n\n"
+            "_Run `python main.py --stage competitor_metrics` after classical/dl/anomaly stages._\n"
+        )
+    body = path.read_text(encoding="utf-8")
+    return body.replace(
+        "# Core discriminative metrics — competitor matrix",
+        "## 5. Core discriminative metrics (full competitor matrix)",
+        1,
+    )
 
 
 def _deploy_loso_gap_section(metrics_dir: Path) -> str:
@@ -274,17 +409,27 @@ def build_paper_results_md(config: dict, reporter) -> str:
         "`fall_risk_pipeline/results/metrics/table1_demographics.md`.",
         "",
     ]
+    parts.append(_novelty_comparison_section(metrics_dir))
 
     ep_path = metrics_dir / "primary_endpoint.json"
     primary_is_anomaly = False
+    primary_is_bilstm_ae = False
     if ep_path.is_file():
         import json
 
         reg = json.loads(ep_path.read_text(encoding="utf-8"))
         pe = reg.get("primary_endpoint", ENDPOINT_ANOMALY_ENSEMBLE)
         primary_is_anomaly = pe == ENDPOINT_ANOMALY_ENSEMBLE
+        primary_is_bilstm_ae = pe == ENDPOINT_BILSTM_AE_ENSEMBLE
 
-    if primary_is_anomaly:
+    if primary_is_bilstm_ae:
+        parts.extend([
+            _bilstm_ae_primary_section(metrics_dir),
+            _per_cohort_loso_section(metrics_dir),
+            _fall_risk_spearman_section(metrics_dir),
+            _supervised_secondary_section(df),
+        ])
+    elif primary_is_anomaly:
         parts.extend([
             _anomaly_primary_section(metrics_dir),
             _supervised_secondary_section(df),
@@ -305,6 +450,9 @@ def build_paper_results_md(config: dict, reporter) -> str:
         ])
 
     parts.append(_deploy_loso_gap_section(metrics_dir))
+    parts.append(_classical_baseline_section(metrics_dir))
+    parts.append(_dl_baseline_section(metrics_dir))
+    parts.append(_competitor_discriminative_section(metrics_dir))
     parts.extend([
         "## 4. Class-wise behavior",
         "",
@@ -321,7 +469,12 @@ def build_paper_results_md(config: dict, reporter) -> str:
     )
 
     sensor = reporter._sensor_ablation_section()
-    parts.append(sensor if sensor else "## 8. Sensor ablation\n\n_(sensor_ablation.csv not found)_\n")
+    if sensor:
+        parts.append(sensor.replace("## BiLSTM-AE sensor ablation", "## 8. BiLSTM-AE sensor ablation", 1).replace(
+            "## Sensor Position Ablation", "## 8. Sensor position ablation", 1
+        ))
+    else:
+        parts.append("## 8. Sensor ablation\n\n_(sensor ablation artifacts not found)_\n")
 
     cross = reporter._cross_cohort_section()
     parts.append(cross if cross else "## 9. Cross-cohort transfer\n\n_(cross_cohort_transfer.csv not found)_\n")
@@ -348,6 +501,9 @@ def sync_abstract_metrics(df: pd.DataFrame, metrics_dir: Path | None = None) -> 
     primary_ep = ENDPOINT_ANOMALY_ENSEMBLE
     anomaly_auc = float("nan")
     anomaly_pr = float("nan")
+    mcc = float("nan")
+    f1w = float("nan")
+    kappa = float("nan")
     if metrics_dir is not None:
         ep_path = metrics_dir / "primary_endpoint.json"
         if ep_path.is_file():
@@ -356,7 +512,18 @@ def sync_abstract_metrics(df: pd.DataFrame, metrics_dir: Path | None = None) -> 
             reg = json.loads(ep_path.read_text(encoding="utf-8"))
             primary_ep = reg.get("primary_endpoint", ENDPOINT_ANOMALY_ENSEMBLE)
         anomaly_path = metrics_dir / "anomaly_metrics.csv"
-        if anomaly_path.is_file():
+        bilstm_path = metrics_dir / "bilstm_ae_anomaly_metrics.csv"
+        if bilstm_path.is_file() and primary_ep == ENDPOINT_BILSTM_AE_ENSEMBLE:
+            adf = pd.read_csv(bilstm_path)
+            ens = adf[adf["method"] == ENDPOINT_BILSTM_AE_ENSEMBLE]
+            if not ens.empty:
+                r = ens.iloc[0]
+                anomaly_auc = float(r["auc"])
+                anomaly_pr = float(r.get("auc_pr", float("nan")))
+                mcc = float(r.get("mcc", float("nan")))
+                f1w = float(r.get("f1_weighted", r.get("f1", float("nan"))))
+                kappa = float(r.get("cohen_kappa", float("nan")))
+        elif anomaly_path.is_file():
             adf = pd.read_csv(anomaly_path)
             ens = adf[adf["method"] == "ensemble"]
             if not ens.empty:
@@ -388,7 +555,46 @@ def sync_abstract_metrics(df: pd.DataFrame, metrics_dir: Path | None = None) -> 
 
     best_auc_str = f"{float(best['auc']):.4f} ({best['model']})" if best is not None else "N/A"
 
-    if primary_ep == ENDPOINT_ANOMALY_ENSEMBLE:
+    summary_path = metrics_dir / "competitor_discriminative_summary.json" if metrics_dir else None
+    mcc_threshold = 0.7
+    abstract_headline = "auroc_primary"
+    if summary_path and summary_path.is_file():
+        import json
+
+        summ = json.loads(summary_path.read_text(encoding="utf-8"))
+        mcc_threshold = float(summ.get("mcc_abstract_lead_threshold", 0.7))
+        abstract_headline = str(summ.get("abstract_headline", "auroc_primary"))
+
+    if primary_ep == ENDPOINT_BILSTM_AE_ENSEMBLE:
+        headline_note = (
+            "_Headline: lead with **MCC** (rigor against class-imbalance gaming); cite AUROC as threshold-independent support._"
+            if abstract_headline == "mcc_primary" and pd.notna(mcc)
+            else "_Headline: report **AUROC** as threshold-independent headline; cite **MCC** and Cohen κ for rigor._"
+        )
+        block = f"""## Metrics fill-in
+
+_Auto-updated from pipeline artifacts — do not edit manually._
+
+| Metric | Value |
+|--------|-------|
+| Primary BiLSTM-AE MCC (LOSO OOF) | {mcc:.4f} |
+| Primary BiLSTM-AE AUROC (LOSO OOF) | {anomaly_auc:.4f} |
+| Primary BiLSTM-AE F1 weighted | {f1w:.4f} |
+| Primary BiLSTM-AE Cohen κ | {kappa:.4f} |
+| Primary BiLSTM-AE PR-AUC | {anomaly_pr:.4f} |
+| Secondary deployable ensemble macro OvR AUC | {deploy_auc:.4f} ({deploy_model}) |
+| Best supervised single-model LOSO macro OvR AUC | {best_auc_str} |
+
+{headline_note}
+
+Regenerate after each pipeline run:
+
+```bash
+cd fall_risk_pipeline && python main.py
+python ../scripts/regenerate_paper_results.py
+```
+"""
+    elif primary_ep == ENDPOINT_ANOMALY_ENSEMBLE:
         block = f"""## Metrics fill-in
 
 _Auto-updated from pipeline artifacts — do not edit manually._
@@ -456,9 +662,21 @@ def sync_paper_results(config: dict) -> Path:
 
     df = pd.read_csv(metrics_path)
     metrics_dir = Path(config["paths"]["metrics"])
+    from src.evaluation.novelty_table_evaluator import run_novelty_comparison_table
+
+    run_novelty_comparison_table(config)
+    from src.evaluation.per_cohort_loso_evaluator import run_per_cohort_loso_results
+
+    try:
+        run_per_cohort_loso_results(config)
+    except FileNotFoundError:
+        logger.warning("Per-cohort LOSO skipped — BiLSTM-AE OOF scores not found")
     content = build_paper_results_md(config, reporter)
     PAPER_RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
     PAPER_RESULTS_PATH.write_text(content, encoding="utf-8")
+    from src.evaluation.competitor_matrix_aggregator import run_competitor_discriminative_matrix
+
+    run_competitor_discriminative_matrix(config)
     sync_abstract_metrics(df, metrics_dir=metrics_dir)
     logger.info("PUB-001: synced paper results -> {}", PAPER_RESULTS_PATH)
     return PAPER_RESULTS_PATH

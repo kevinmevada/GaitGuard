@@ -63,7 +63,7 @@ def test_app_predict_route_registered():
 
 
 def test_frontend_uses_app_predict_without_client_api_key():
-    js = (Path(__file__).resolve().parents[2] / "Front_end" / "main.js").read_text(
+    js = (Path(__file__).resolve().parents[1] / "static" / "main.js").read_text(
         encoding="utf-8"
     )
     assert "predictPathForBase" in js

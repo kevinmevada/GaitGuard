@@ -11,19 +11,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PIPELINE_ROOT = REPO_ROOT / "fall_risk_pipeline"
 
 
-def test_dockerfile_copies_sync_front_end_script():
+def test_dockerfile_api_serves_static_ui():
     dockerfile = (REPO_ROOT / "Dockerfile.api").read_text(encoding="utf-8")
-    assert "COPY scripts/sync_front_end.py" in dockerfile
-    sync_line = [ln for ln in dockerfile.splitlines() if "sync_front_end.py" in ln and "RUN" not in ln]
-    run_line = [ln for ln in dockerfile.splitlines() if "RUN" in ln and "sync_front_end.py" in ln]
-    assert sync_line, "sync_front_end.py must be COPY'd into the image"
-    assert run_line, "sync_front_end.py must run during build"
+    assert "COPY api /app/api" in dockerfile
+    assert "sync_front_end" not in dockerfile
 
 
-def test_api_requirements_include_pipeline_import_deps():
-    req = (REPO_ROOT / "api" / "requirements.txt").read_text(encoding="utf-8").lower()
+def test_pipeline_requirements_include_api_and_download_deps():
+    req = (REPO_ROOT / "fall_risk_pipeline" / "requirements.txt").read_text(encoding="utf-8").lower()
     assert "scipy" in req
     assert "joblib" in req
+    assert "fastapi" in req
+    assert "requests" in req
+    assert "huggingface_hub" in req
 
 
 def test_regenerate_paper_results_script_exists():
@@ -60,6 +60,7 @@ def test_readmes_have_no_hardcoded_stale_auc():
         assert "0.9336" not in text
         assert "0.9273" not in text
         assert "docs/paper/results.md" in text
+    assert "P/N ≈ 3.25" not in root_readme
 
 
 def test_discussion_has_no_stale_run_specific_claims():

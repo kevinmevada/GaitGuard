@@ -2,8 +2,8 @@
 set -euo pipefail
 
 pip install --upgrade pip
-pip install --prefer-binary -r requirements-lock.txt
-python ../scripts/sync_front_end.py
+pip install --prefer-binary -r ../fall_risk_pipeline/requirements-lock.txt \
+  --extra-index-url https://download.pytorch.org/whl/cpu
 
 if [ -n "${GAITGUARD_HF_REPO:-}" ]; then
   if [ "${ENVIRONMENT:-}" = "production" ] || [ "${ENVIRONMENT:-}" = "prod" ]; then
@@ -16,7 +16,6 @@ if [ -n "${GAITGUARD_HF_REPO:-}" ]; then
       exit 1
     fi
   fi
-  pip install huggingface_hub
   python ../scripts/download_models.py
 else
   echo "ERROR: GAITGUARD_HF_REPO must be set in Render to download inference models." >&2

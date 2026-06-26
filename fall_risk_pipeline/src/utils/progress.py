@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any
 
@@ -10,6 +11,19 @@ from tqdm import tqdm
 
 def stderr_is_tty() -> bool:
     return hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
+
+
+def progress_enabled() -> bool:
+    """Whether sub-stage tqdm bars should render (override via env vars)."""
+    force = os.environ.get("GAITGUARD_FORCE_PROGRESS", "").lower()
+    if force in ("1", "true", "yes"):
+        return True
+    if force in ("0", "false", "no"):
+        return False
+    no_progress = os.environ.get("GAITGUARD_NO_PROGRESS", "").lower()
+    if no_progress in ("1", "true", "yes"):
+        return False
+    return stderr_is_tty()
 
 
 class _NullProgress:
@@ -50,7 +64,7 @@ def progress_bar(*args: Any, **kwargs: Any):
     When stderr is redirected (PowerShell Tee-Object, log capture), returns a
     no-op bar — callers should log milestones via loguru instead.
     """
-    if not stderr_is_tty():
+    if not progress_enabled():
         return _NullProgress(*args, **kwargs)
 
     kwargs.setdefault("file", sys.stderr)

@@ -165,20 +165,16 @@ class GaitEventValidator:
         return None
 
     def _load_imu_txt(self, path: Path) -> pd.DataFrame | None:
-        from src.ingestion.data_loader import IMU_AXES
+        from src.ingestion.voisard_imu_parser import voisard_txt_to_imu_frame
 
-        try:
-            df = pd.read_csv(path, sep=r"\s+", header=None)
-            if df.empty:
-                return None
-            n = len(df)
-            df.insert(0, "time", np.arange(n) / self.fs)
-            cols = ["time"] + IMU_AXES[: df.shape[1] - 1]
-            df = df.iloc[:, : len(cols)]
-            df.columns = cols
-            return df.apply(pd.to_numeric, errors="coerce").dropna().reset_index(drop=True)
-        except Exception:
+        df, issues, _gap = voisard_txt_to_imu_frame(
+            path,
+            fs=float(self.fs),
+            convert_gyro_to_rad=True,
+        )
+        if issues:
             return None
+        return df
 
     def _summarize_by_cohort(self, detail_df: pd.DataFrame) -> pd.DataFrame:
         if detail_df.empty or "cohort" not in detail_df.columns:

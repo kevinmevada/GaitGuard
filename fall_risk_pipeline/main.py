@@ -14,8 +14,6 @@ from pathlib import Path
 
 import yaml
 from loguru import logger
-
-from src.utils.reproducibility import get_pipeline_seed, set_global_seed
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -30,26 +28,13 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from src.utils.pipeline_stages import PIPELINE_STAGES, resolve_stages, validate_stage_order
+from src.utils.reproducibility import get_pipeline_seed, set_global_seed
+
 console = Console()
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(os.cpu_count() or 1))
 
-STAGES = [
-    "ingest",
-    "validate_gait_events",
-    "preprocess",
-    "eda",
-    "features",
-    "select_features",
-    "train",
-    "evaluate",
-    "train_deep",
-    "ablation",
-    "sensor_ablation",
-    "cross_cohort",
-    "predict",
-    "anomaly",
-    "report",
-]
+STAGES = list(PIPELINE_STAGES)
 
 
 def load_config(path: str) -> dict:
@@ -81,7 +66,13 @@ def setup_logging(config: dict):
 def run_stage(stage: str, config: dict) -> float:
     t0 = time.time()
 
-    if stage == "ingest":
+    if stage == "discover":
+        from src.ingestion.dataset_discovery import DatasetDiscovery
+        DatasetDiscovery(config).run()
+    elif stage == "validate_raw":
+        from src.ingestion.raw_data_validator import RawDataValidator
+        RawDataValidator(config).run()
+    elif stage == "ingest":
         from src.ingestion.data_loader import DataLoader
         DataLoader(config).run()
     elif stage == "validate_gait_events":
@@ -96,6 +87,9 @@ def run_stage(stage: str, config: dict) -> float:
     elif stage == "features":
         from src.features.feature_extractor import FeatureExtractor
         FeatureExtractor(config).run()
+    elif stage == "phase3_features":
+        from src.features.phase3_deep import run_phase3_feature_extraction
+        run_phase3_feature_extraction(config)
     elif stage == "select_features":
         from src.features.feature_selector import FeatureSelector
         FeatureSelector(config).run()
@@ -117,7 +111,50 @@ def run_stage(stage: str, config: dict) -> float:
         run_feature_ablation(config)
     elif stage == "sensor_ablation":
         from src.evaluation.sensor_ablation import run_sensor_ablation
+        from src.evaluation.primary_endpoint import ENDPOINT_BILSTM_AE_ENSEMBLE, resolve_primary_endpoint
+
         run_sensor_ablation(config)
+        sa_cfg = (config.get("sensor_ablation") or {}).get("bilstm_ae") or {}
+        if sa_cfg.get("enabled", True) and resolve_primary_endpoint(config) == ENDPOINT_BILSTM_AE_ENSEMBLE:
+            from src.evaluation.bilstm_ae_sensor_ablation import run_bilstm_ae_sensor_ablation
+
+            run_bilstm_ae_sensor_ablation(config)
+    elif stage == "classical_baselines":
+        from src.evaluation.classical_baseline_evaluator import run_classical_baselines
+
+        run_classical_baselines(config)
+    elif stage == "dl_baselines":
+        from src.evaluation.dl_baseline_evaluator import run_dl_baselines
+
+        run_dl_baselines(config)
+    elif stage == "competitor_metrics":
+        from src.evaluation.competitor_matrix_aggregator import run_competitor_discriminative_matrix
+
+        run_competitor_discriminative_matrix(config)
+    elif stage == "severity_regression":
+        from src.evaluation.severity_regression_evaluator import run_severity_regression_evaluation
+
+        run_severity_regression_evaluation(config)
+    elif stage == "statistical_benchmark":
+        from src.evaluation.statistical_benchmark_evaluator import run_statistical_benchmark
+
+        run_statistical_benchmark(config)
+    elif stage == "compute_overhead":
+        from src.evaluation.compute_overhead_evaluator import run_compute_overhead_benchmark
+
+        run_compute_overhead_benchmark(config)
+    elif stage == "novelty_table":
+        from src.evaluation.novelty_table_evaluator import run_novelty_comparison_table
+
+        run_novelty_comparison_table(config)
+    elif stage == "per_cohort_loso":
+        from src.evaluation.per_cohort_loso_evaluator import run_per_cohort_loso_results
+
+        run_per_cohort_loso_results(config)
+    elif stage == "fall_risk_spearman":
+        from src.evaluation.fall_risk_spearman_evaluator import run_fall_risk_spearman_correlation
+
+        run_fall_risk_spearman_correlation(config)
     elif stage == "cross_cohort":
         from src.evaluation.cross_cohort_transfer import run_cross_cohort_transfer
         run_cross_cohort_transfer(config)
@@ -145,13 +182,29 @@ def _fmt_time(seconds: float) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Gait screening pipeline — run all stages with `python main.py` or `--stage all`.",
+    )
     parser.add_argument("--config", default="configs/pipeline_config.yaml")
-    parser.add_argument("--stage", default="all")
+    parser.add_argument(
+        "--stage",
+        default="all",
+        help="Stage name, comma-separated list, or 'all' (default: full pipeline)",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     setup_logging(config)
+
+    try:
+        stages = resolve_stages(args.stage)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(2)
+
+    for warning in validate_stage_order(stages):
+        logger.warning(warning)
+        console.print(f"  [yellow][WARN][/yellow] {warning}")
 
     rep_cfg = config.get("reproducibility") or {}
     seed = get_pipeline_seed(config)
@@ -179,8 +232,11 @@ def main():
         )
 
     console.print(Panel.fit("[bold]Gait Screening Pipeline[/bold]", border_style="cyan"))
+    if args.stage == "all":
+        console.print(
+            f"[dim]Running all {len(stages)} stages end-to-end — no manual stage chaining required.[/dim]"
+        )
 
-    stages = STAGES if args.stage == "all" else [args.stage]
     n_stages = len(stages)
     stage_timings: list[tuple[str, float, str]] = []
 
@@ -203,6 +259,8 @@ def main():
                 description=f"[{pct}%] Stage {i}/{n_stages}: [bold]{stage}[/bold]",
             )
 
+            progress.stop()
+            console.print(f"\n[bold cyan]▶ Stage {i}/{n_stages}: {stage}[/bold cyan]")
             try:
                 elapsed = run_stage(stage, config)
                 stage_timings.append((stage, elapsed, "[green]OK[/green]"))
@@ -214,6 +272,8 @@ def main():
                 logger.exception(f"{stage} failed: {exc}")
                 console.print(f"  [red][FAIL] {stage}: {exc}[/red]")
                 sys.exit(1)
+            finally:
+                progress.start()
 
             progress.advance(task_id)
 

@@ -39,13 +39,6 @@ Pipeline workflow.png
 *.parquet
 *.pkl
 
-data/*
-!data/features/
-data/features/*
-!data/features/README.md
-
-/results/
-
 fall_risk_pipeline/data/*
 !fall_risk_pipeline/data/features/
 fall_risk_pipeline/data/features/*

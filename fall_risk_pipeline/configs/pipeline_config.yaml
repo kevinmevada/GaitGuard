@@ -19,6 +19,52 @@ paths:
   checkpoints: "results/checkpoints"
   logs: "logs"
 
+# Stage 0 — multi-source dataset discovery (Voisard + DAPHNET)
+discovery:
+  sources: ["voisard", "daphnet"]
+  inventory_path: "data/processed/dataset_inventory.csv"
+
+# Stage 1 — raw data QC (stops pipeline on failure when fail_on_error: true)
+validation:
+  inventory_path: "data/processed/dataset_inventory.csv"
+  report_path: "data/processed/quality_report.csv"
+  fail_on_error: true
+  voisard:
+    max_nan_fraction: 0.0
+    max_packet_gap: 30          # monotonic + bounded wireless dropout
+    max_length_diff_rows: 25
+    max_length_diff_fraction: 0.02
+  daphnet:
+    max_timestamp_gap_ms: 50.0
+
+# Stage 2 — Voisard .txt parsing (ingest)
+ingestion:
+  convert_gyro_to_rad: true       # gyr_rad = gyr_deg * (pi/180) at parse time
+  packet_gap_strategy: interpolate  # interpolate | truncate at first large gap
+  max_interpolate_gap: 10         # packets; larger gaps → truncate segment
+  daphnet:
+    enabled: true
+    drop_annotation_zero: true
+    source_fs_hz: 64
+    target_fs_hz: 100
+    resample_up: 25               # resample_poly(up, down) → 64 * 25/16 = 100 Hz
+    resample_down: 16
+    psd_verification:
+      enabled: true
+      min_subjects: 2             # plot trunk-Z PSD for ≥2 subjects (supplemental figs)
+      band_hz: [3.0, 8.0]         # freezing-index numerator band
+      max_peak_shift_hz: 0.5      # abort ingest if peak shifts more than this
+      figure_dir: "results/figs"  # writes psd_check_S01.png, …
+    # Design decision (not preprocessing): trunk → lower_back only; ankle/thigh dropped
+    sensor_mapping:
+      trunk_to: lower_back
+      dropped: [ankle, thigh]
+      eval_mode: single_sensor_zero_shot_lb
+    sealed_fog_eval:
+      enabled: true
+      allow_rerun: false   # sealed test — delete daphnet_fog_auroc.json to re-run
+      # labels_path: data/processed/daphnet/fog_labels.npz  # default
+
 # Dataset
 dataset:
   sensor_positions: ["head", "lower_back", "left_foot", "right_foot"]
@@ -49,15 +95,29 @@ dataset:
     HipOA: "right_dominant"
     CVA: "right_dominant"
 
-# Preprocessing
+  # Subject-grouped holdout (trials keyed by participant_id — no trial-level leakage).
+  # Healthy: 70% train / 15% val / 15% test; all pathological participants → test only.
+  subject_split:
+    healthy_train_fraction: 0.70
+    healthy_val_fraction: 0.15
+    healthy_test_fraction: 0.15
+    random_state: 42   # keep equal to reproducibility.seed
+
+# Preprocessing (Stage C: Voisard + DAPHNET merge @ 100 Hz)
 preprocessing:
-  lowpass_cutoff_hz: 15.0
+  # Unified accelerometer bandpass — identical on both datasets (zero-phase filtfilt)
+  unified_acc_bandpass:
+    enabled: true
+    low_hz: 0.5
+    high_hz: 20.0
+    order: 4
+  lowpass_cutoff_hz: 20.0       # gyro low-pass upper edge (matches unified high_hz)
   lowpass_order: 4
-  highpass_cutoff_hz: 0.1
+  highpass_cutoff_hz: 0.5       # legacy alias (matches unified low_hz)
   madgwick_enabled: true
   madgwick_beta: 0.1
   madgwick_sensors: ["head", "lower_back"]
-  gyro_in_degrees: true          # dataset gyro columns are deg/s; ahrs expects rad/s
+  gyro_in_degrees: false         # Voisard txt converted at ingest; set true only for legacy deg/s CSV
   madgwick_use_magnetometer: false
   min_trial_length_s: 10.0
   gait_event_source: "algorithm"   # algorithm | dataset (use Figshare HS when validated)
@@ -67,6 +127,8 @@ preprocessing:
   heel_strike_prominence_floor: null  # optional absolute prominence floor (m/s²) after percentile filter
   heel_strike_min_interval_s: 0.5  # min spacing between strikes (was 0.3 s @ 100 Hz)
   max_nan_fraction_before_filter: 0.05  # LOW-002: discard trial sensors above this NaN rate
+  exclude_uturn_segment: true          # drop annotated U-turn; keep outward+return walking only
+  min_walking_segment_s: 5.0             # each bout must be >= 5 s (500 samples @ 100 Hz)
 
   gait_event_validation:
     tolerance_ms: 50               # ± window for TP matching vs ground-truth heel strikes
@@ -77,7 +139,87 @@ preprocessing:
 
 # Feature Engineering
 features:
+  # Phase 1 spatiotemporal + variability (Moon 2020, Trabassi 2022, Voisard)
+  phase1_spatiotemporal:
+    enabled: true
+    rolling_cv_window_strides: 5
+    enable_spatial_integration: true
+    min_strides: 3
+    integration_axis: acc_resultant   # acc_x for AP-forward if sensor-aligned
+
+  # Phase 2 kinematic, kinetic & frequency (Trabassi, Sadeghsalehi, Brognara)
+  phase2_kinematic_frequency:
+    enabled: true
+    rms_window_s: 2.0
+    joint_gyro_axis: gyr_y
+    harmonic_max_order: 6
+    freezing_index:
+      locomotion_band_hz: [0.5, 3.0]
+      freezing_band_hz: [3.0, 8.0]
+      sample_window_s: 2.0   # short-time PSD for DAPHNET sample-level detector
+
+  phase2_kinematic:
+    - peak_gyro_deg_s
+    - rms_acc_2s_mean
+    - rms_acc_2s_std
+    - harmonic_ratio_ap
+    - harmonic_ratio_ml
+    - harmonic_ratio_v
+    - freezing_index
+    - hip_angle_rom_deg
+    - knee_angle_rom_deg
+    - ankle_angle_rom_deg
+
+  # Phase 3 deep representations (BiLSTM-AE, ROCKET, MINIROCKET, InceptionTime maps)
+  phase3_deep:
+    enabled: true
+    force_retrain: false
+    max_fit_windows: 50000
+    bilstm_autoencoder:
+      enabled: true
+      hidden_size: 128
+      latent_dim: 64
+      latent_export_dims: 16      # h_t coordinates exported per trial
+      max_epochs: 40
+      batch_size: 64
+      learning_rate: 0.001
+      early_stopping_patience: 8
+    rocket:
+      enabled: true
+      n_kernels: 10000
+      export_dims: 128            # prefix rk_f00000… for parquet; full kernel bank in checkpoint
+    minirocket:
+      enabled: true
+      n_kernels: 10000
+      export_dims: 128            # deterministic {-1,2} weights; prefix mr_f…
+    inception_multiscale:
+      enabled: true
+    run_baseline_eval: false   # set true to write phase3_rocket_baselines.json
+
+  phase3_deep_features:
+    - ae_latent_h00_mean
+    - ae_recon_mse_total
+    - ae_lb_recon_error
+    - rk_max_mean
+    - rk_ppv_mean
+    - mr_max_mean
+    - mr_ppv_mean
+    - it_ms10_00
+
   temporal:
+    # Canonical Phase 1 names (trial-level; per-side columns prefixed left_/right_)
+    - stride_duration_s
+    - stride_duration_std
+    - step_duration_s
+    - stance_pct
+    - swing_pct
+    - stride_duration_cv_pct
+    - stride_duration_rolling_cv_pct
+    - step_duration_cv_pct
+    - step_duration_rolling_cv_pct
+    - cadence_spm
+    - step_count
+    # Legacy aliases (still emitted for backward-compatible ablations)
     - stride_time_mean
     - stride_time_std
     - stride_time_cv
@@ -85,11 +227,12 @@ features:
     - stance_phase_ratio
     - swing_phase_ratio
     - double_support_ratio
-    - step_count
 
-  # Spatial metrics (step length, gait speed, step width) are NOT computed —
-  # require calibration or displacement integration; see docs/spatial_features.md
-  spatial: []
+  # Swing-phase double integration + drift correction (LF/RF only; DAPHNET LB-only → NaN)
+  spatial:
+    - step_length_m
+    - stride_length_m
+    - gait_velocity_m_s
 
   spectral:
     - dominant_frequency
@@ -137,6 +280,13 @@ features:
     - postural_sway_vel
 
   asymmetry:
+    - si_stride_duration
+    - si_stance_pct
+    - si_swing_pct
+    - si_step_length
+    - si_gait_velocity
+    - si_stride_duration_cv_pct
+    - si_rms_acc
     - stride_time_mean_asymmetry
     - stride_time_std_asymmetry
     - asymmetry_rms_acc
@@ -236,8 +386,8 @@ models:
 
   evaluation:
     strategy: "nested_group_cv"
-    # ML-032 / ANOM-001: primary manuscript endpoint (supervised deploy vs anomaly LOSO).
-    primary_endpoint: anomaly_ensemble   # anomaly_ensemble | deploy_ensemble | best_loso_nested
+    # ML-032 / ANOM-001: primary manuscript endpoint.
+    primary_endpoint: bilstm_ae_ensemble   # bilstm_ae_ensemble | anomaly_ensemble | deploy_ensemble | best_loso_nested
     report_deploy_loso_gap: true        # export deploy_loso_gap.csv + primary_endpoint.json
     random_state: 42   # keep equal to reproducibility.seed
     nested_n_trials: 10
@@ -278,8 +428,8 @@ models:
 # Deep Learning
 deep_learning:
   enabled: true
-  sequence_length: 256           # window length in samples (256 / 100 Hz ≈ 2.56 s)
-  overlap: 0.5                   # dense sliding windows for held-out participant inference
+  sequence_length: 200           # 2.0 s @ 100 Hz (trial-safe windowing; see preprocessing/windowing.py)
+  overlap: 0.5                   # 50% overlap within trial only — never cross trial boundaries
   training_window_deduplication: true  # ML-043: train/val use one window per stride block per trial
   batch_size: 64
   mixed_precision: true          # AMP on CUDA for faster training/inference
@@ -299,25 +449,170 @@ deep_learning:
     lr_max_factor: 10.0
   models:                        # architectures to evaluate in LOSO
     - inception_time             # Fawaz et al. 2020 — benchmark leader
+    - deep_conv_lstm             # Ordóñez & Roggen 2016 — conv+LSTM vs BiLSTM-AE
     - gait_transformer           # Transformer encoder for sensor time series
     - tcn                        # Temporal Convolutional Network (Bai et al. 2018)
     - cnn1d                      # Residual 1-D CNN with channel attention
     - bilstm_attention           # Bidirectional LSTM + multi-head attention
 
-# Unsupervised anomaly screening (ANOM-001 — primary when evaluation.primary_endpoint: anomaly_ensemble)
+# Unsupervised anomaly screening (ANOM-001 — tabular sklearn when primary_endpoint: anomaly_ensemble)
 anomaly:
   loso_evaluation: true
+  anomaly_threshold:
+    policy: healthy_train_percentile
+    percentile: 95.0
   methods:
     - isolation_forest
     - lof
     - one_class_svm
   ensemble_vote_threshold: 2   # API/deploy binary flag: ≥2 of 3 methods vote anomaly
 
+# Primary model — BiLSTM-AE 3-method one-class ensemble (Healthy train only; 4-sensor HE+LB+LF+RF)
+primary_model:
+  bilstm_ae_ensemble:
+    enabled: true
+    ae_reconstruction_weight: 0.40
+    isolation_forest_latent_weight: 0.33
+    one_class_svm_latent_weight: 0.27
+    max_windows_per_fold_fit: 30000
+    anomaly_threshold:
+      policy: healthy_train_percentile   # v13: train-fold healthy scores only
+      percentile: 95.0                   # descriptive statistic, not val-tuned
+    bilstm_autoencoder:
+      hidden_size: 128
+      latent_dim: 64
+      max_epochs: 40
+      batch_size: 64
+      learning_rate: 0.001
+      early_stopping_patience: 8
+
+# Classical baselines — competitor paradigm 1 (Phase 1+2 handcrafted features)
+classical_baselines:
+  enabled: true
+  export_oof_scores: true        # results/metrics/oof_scores/{model}.csv for CD/Wilcoxon
+  evaluation_level: trial          # trial | patient
+  models:
+    - svm_rbf
+    - random_forest
+    - logistic_regression_l2
+    - logistic_regression_l1
+    - knn
+  svm_rbf:
+    C: 1.0
+    gamma: scale
+  random_forest:
+    optuna_trials: 30
+    smote_imbalance_ratio_min: 2.5
+  logistic_regression:
+    C: 1.0
+    max_iter: 2000
+  knn:
+    n_neighbors: 5
+    weights: distance
+
+# DL baselines — competitor paradigm 2 (run in compute-cost order)
+dl_baselines:
+  enabled: true
+  include_bilstm_ae: true        # append row from bilstm_ae_anomaly_metrics.csv
+  max_fit_windows: 20000
+  models:
+    - minirocket
+    - rocket
+    - inception_time
+    - deep_conv_lstm
+  minirocket:
+    n_kernels: 10000
+  rocket:
+    n_kernels: 10000
+  ridge:
+    alpha: 1.0
+  deep:
+    max_epochs: 40
+    early_stopping_patience: 8
+    loso_hyperparameter_tuning:
+      enabled: false             # fixed LR for reproducible DL baseline sweep
+
+# Core discriminative metrics — competitor matrix (F1w, MCC, AUROC, κ, …)
+competitor_metrics:
+  enabled: true
+  mcc_abstract_lead_threshold: 0.7   # lead abstract with MCC if GaitGuard ≥ threshold
+
+# Severity regression — Navita 2025 benchmark (MAE, MSE, R² on latent head)
+severity_regression:
+  enabled: true
+  targets:
+    - ordinal_severity          # HS=0, HipOA/KneeOA/ACL=1, PD/CVA/CIPN/RIL=2
+    - fall_probability_pct      # cohort reference fall-risk % (continuous UPDRS proxy)
+  cohort_scopes:
+    - all_8                     # full 8-cohort ordinal severity (includes HS=0 anchor)
+    - neuro_ortho               # pathology tiers only (excludes Healthy)
+  navita_reference:
+    mae: null                    # fill from Navita 2025 paper for beat comparison
+    mse: null
+    r2: null
+    citation: "Navita et al. 2025 — AdaBoost/GB gait features → UPDRS"
+  regression_head:
+    hidden_dim: 32
+    dropout: 0.1
+    learning_rate: 0.001
+    max_epochs: 80
+    early_stopping_patience: 10
+    batch_size: 64
+
+# Statistical benchmark — Wilcoxon + Holm vs BiLSTM-AE, Critical Difference diagram
+statistical_benchmark:
+  enabled: true
+  reference_model: bilstm_ae_ensemble
+  alpha: 0.05
+  # Auto-discover models from results/metrics/oof_scores/*.csv when null
+  models: null
+
+# Compute overhead — training & inference latency (single LOSO fold benchmark)
+compute_overhead:
+  enabled: true
+  n_warmup: 1
+  n_inference_repeats: 5
+  skip_rf_tuning: true           # fixed RF params for reproducible timing
+  max_fit_windows: 30000
+  classical: true
+  dl_rocket: true
+  bilstm_ae: true
+  benchmark_deep_models: false     # InceptionTime/DeepConvLSTM (slow; uses deep_max_epochs)
+  deep_max_epochs: 5               # when benchmark_deep_models: true
+
+# Section 2 novelty table — methodological firsts vs competitor literature
+novelty_table:
+  enabled: true
+  sync_paper_docs: true            # writes docs/paper/table1_novelty_comparison.md
+
+# Per-cohort LOSO — pathology-tier AUROC/F1 (do not average away clinical signal)
+per_cohort_loso:
+  enabled: true
+  model: bilstm_ae_ensemble
+  score_column: bilstm_ae_ensemble_score
+  sync_paper_docs: true
+
+# Clinical validation — Spearman ρ (fall probability vs BiLSTM-AE anomaly score)
+fall_risk_spearman:
+  enabled: true
+  score_column: bilstm_ae_ensemble_score
+  min_n: 3
+  sync_paper_docs: true
+
 # Feature ablation (LOSO AUC; run after train, ideally after evaluate for SHAP context)
 ablation:
   reference_model: xgboost      # checkpoint re-fit per LOSO fold on each feature set
   top_k_shap: 10
   n_bootstrap: 1000
+
+# BiLSTM-AE sensor ablation (4 vs 2 vs 1 sensor; DAPHNET transfer on 4-sensor row)
+sensor_ablation:
+  bilstm_ae:
+    enabled: true
+    # Optional faster AE budget for ablation sweeps (falls back to primary_model AE settings)
+    bilstm_autoencoder:
+      max_epochs: 25
+      early_stopping_patience: 5
 
 # Explainability
 explainability:

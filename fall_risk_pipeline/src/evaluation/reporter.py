@@ -573,6 +573,10 @@ python main.py --config configs/pipeline_config.yaml
         return "\n".join(lines)
 
     def _sensor_ablation_section(self) -> str:
+        bilstm_path = self.metrics_dir / "bilstm_ae_sensor_ablation.md"
+        if bilstm_path.is_file():
+            return bilstm_path.read_text(encoding="utf-8")
+
         sa_path = self.metrics_dir / "sensor_ablation.csv"
         if not sa_path.exists():
             return ""

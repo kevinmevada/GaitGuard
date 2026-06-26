@@ -14,14 +14,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && groupadd -r gaitguard \
     && useradd -r -g gaitguard -d /app gaitguard
 
-COPY api/requirements-lock.txt /tmp/api_requirements-lock.txt
+COPY fall_risk_pipeline/requirements-lock.txt /tmp/pipeline_requirements-lock.txt
 COPY api/requirements-inference.txt /tmp/inference_requirements.txt
 RUN pip install --upgrade pip && \
-    pip install -r /tmp/api_requirements-lock.txt && \
+    pip install -r /tmp/pipeline_requirements-lock.txt \
+        --extra-index-url https://download.pytorch.org/whl/cpu && \
     pip install -r /tmp/inference_requirements.txt
 
 COPY scripts/download_models.py /app/scripts/download_models.py
-COPY scripts/sync_front_end.py /app/scripts/sync_front_end.py
 COPY fall_risk_pipeline /app/fall_risk_pipeline
 
 # Optional: bake Hub artifacts at build time
@@ -41,14 +41,12 @@ RUN if [ "${ENVIRONMENT}" = "production" ] || [ "${ENVIRONMENT}" = "prod" ]; the
       fi; \
     fi; \
     if [ -n "$GAITGUARD_HF_REPO" ]; then \
-      pip install huggingface_hub && \
       GAITGUARD_HF_REPO="$GAITGUARD_HF_REPO" GAITGUARD_HF_REVISION="$GAITGUARD_HF_REVISION" \
         python scripts/download_models.py --repo "$GAITGUARD_HF_REPO" --revision "$GAITGUARD_HF_REVISION"; \
     fi
 
 COPY api /app/api
-COPY Front_end /app/Front_end
-RUN python scripts/sync_front_end.py && chown -R gaitguard:gaitguard /app
+RUN chown -R gaitguard:gaitguard /app
 
 EXPOSE 8000
 WORKDIR /app

@@ -15,11 +15,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # REP-010: pinned lockfiles (aligned with CI).
 COPY fall_risk_pipeline/requirements-lock.txt /tmp/fall_risk_requirements-lock.txt
-COPY api/requirements-lock.txt /tmp/api_requirements-lock.txt
+COPY api/requirements-inference.txt /tmp/api_inference_requirements.txt
 RUN pip install --upgrade pip && \
     pip install -r /tmp/fall_risk_requirements-lock.txt \
         --extra-index-url https://download.pytorch.org/whl/cpu && \
-    pip install -r /tmp/api_requirements-lock.txt
+    pip install -r /tmp/api_inference_requirements.txt
 
 # Copy repository.
 COPY . /app

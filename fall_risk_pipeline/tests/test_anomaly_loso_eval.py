@@ -108,7 +108,10 @@ def test_pipeline_config_primary_endpoint_anomaly():
     cfg = yaml.safe_load(
         (PIPELINE_ROOT / "configs" / "pipeline_config.yaml").read_text(encoding="utf-8")
     )
-    assert cfg["models"]["evaluation"]["primary_endpoint"] == "anomaly_ensemble"
+    assert cfg["models"]["evaluation"]["primary_endpoint"] in (
+        "anomaly_ensemble",
+        "bilstm_ae_ensemble",
+    )
     assert cfg["anomaly"]["loso_evaluation"] is True
 
 

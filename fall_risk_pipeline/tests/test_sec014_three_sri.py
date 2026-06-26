@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-FRONTEND = REPO_ROOT / "Front_end"
+FRONTEND = REPO_ROOT / "api" / "static"
 
 
 def test_main_js_uses_importmap_specifiers_not_raw_cdn():

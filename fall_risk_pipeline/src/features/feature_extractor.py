@@ -4,8 +4,8 @@ src/features/feature_extractor.py
 Stage 4: Extract temporal gait-cycle, spectral, trunk-dynamics, orientation,
 nonlinear dynamics, and asymmetry features from preprocessed IMU signals.
 
-Absolute spatial metrics (step length, gait speed, step width) are not extracted;
-see docs/spatial_features.md.
+Absolute spatial metrics use swing-phase IMU double integration (Phase 1);
+see docs/spatial_features.md for calibration caveats.
 Patient rows aggregate each trial feature with mean, std, range, and
 session-ordered linear trend across trials.
 
@@ -54,6 +54,10 @@ from src.features.feature_matrix import (
     assert_no_target_proxies_in_feature_frame,
     drop_target_proxies_from_feature_frame,
 )
+from src.ingestion.daphnet_label_mapping import assert_labels_not_in_feature_columns
+from src.features.phase1_spatiotemporal import extract_phase1_spatiotemporal_features
+from src.features.phase2_kinematic_frequency import extract_phase2_kinematic_frequency_features
+from src.features.spectral_utils import harmonic_ratio_even_odd, spectral_centroid_hz, psd_band_power
 from src.features.patient_temporal_aggregation import (
     aggregate_trial_values,
     order_trial_group,
@@ -67,57 +71,14 @@ _META_COLS = METADATA_ONLY_COLS | {
 }
 
 
-def spectral_centroid_hz(freqs: np.ndarray, pxx: np.ndarray) -> float:
-    """First moment of the PSD: sum(f * P) / sum(P) in Hz."""
-    pxx = np.asarray(pxx, dtype=float)
-    total = float(pxx.sum())
-    if total < 1e-12:
-        return float("nan")
-    return float(np.sum(np.asarray(freqs, dtype=float) * pxx) / total)
-
-
-def harmonic_ratio_even_odd(
-    freqs: np.ndarray,
-    pxx: np.ndarray,
-    dominant_freq: float,
-    lp_cut_hz: float,
-    *,
-    max_harmonic_order: int = 6,
-) -> float | None:
-    """Even/odd harmonic power ratio using only in-band harmonics.
-
-    Preprocessed signals are low-pass filtered (``lp_cut_hz``). Harmonics at or
-    above ~80% of that cutoff are attenuated and must be excluded or the ratio
-    confounds gait cadence with filter roll-off.
-    """
-    if dominant_freq <= 0:
-        return None
-
-    max_harmonic_hz = lp_cut_hz * 0.8
-    even_sum = 0.0
-    odd_sum = 0.0
-    for k in range(1, max_harmonic_order + 1):
-        harmonic_hz = dominant_freq * k
-        if harmonic_hz >= max_harmonic_hz:
-            continue
-        power = float(pxx[np.argmin(np.abs(freqs - harmonic_hz))])
-        if k % 2 == 1:
-            odd_sum += power
-        else:
-            even_sum += power
-
-    if even_sum <= 0.0 and odd_sum <= 0.0:
-        return None
-    return float(even_sum / (odd_sum + 1e-10))
-
-
 class FeatureExtractor:
 
     def __init__(self, config: dict):
         self.config   = config
-        self.proc_dir = Path(config["paths"]["processed_data"])
-        self.out_dir  = Path(config["paths"]["features"])
-        self.metrics_dir = Path(config["paths"]["metrics"])
+        paths = config.get("paths", {})
+        self.proc_dir = Path(paths["processed_data"])
+        self.out_dir = Path(paths["features"])
+        self.metrics_dir = Path(paths.get("metrics", "results/metrics"))
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.fs = config["dataset"]["sampling_rate"]
         pp = config.get("preprocessing", {})
@@ -157,6 +118,7 @@ class FeatureExtractor:
         trial_df = pd.DataFrame(rows)
         trial_df = drop_target_proxies_from_feature_frame(trial_df)
         assert_no_target_proxies_in_feature_frame(trial_df, context="trial_features.parquet")
+        assert_labels_not_in_feature_columns(list(trial_df.columns), context="trial_features")
 
         trial_path = self.out_dir / "trial_features.parquet"
         trial_df.to_parquet(trial_path, index=False)
@@ -206,8 +168,12 @@ class FeatureExtractor:
         lf = processed.get("left_foot")
         rf = processed.get("right_foot")
         if lf is not None and rf is not None:
-            feats.update(self._gait_cycle_features(lf, rf))
-            feats.update(self._asymmetry_features(lf, rf))
+            feats.update(
+                extract_phase1_spatiotemporal_features(
+                    lf, rf, fs=self.fs, config=self.config
+                )
+            )
+            feats.update(self._foot_asymmetry_features(lf, rf))
 
         hd = processed.get("head")
         if hd is not None:
@@ -221,8 +187,19 @@ class FeatureExtractor:
 
         uturn_start = metadata.get("uturn_start")
         uturn_end = metadata.get("uturn_end")
-        if lb is not None and uturn_start is not None and uturn_end is not None:
-            feats.update(self._turning_features(lb, int(uturn_start), int(uturn_end)))
+        if uturn_start is not None and uturn_end is not None:
+            tid = str(metadata.get("trial_id", ""))
+            lb_full = self._load_raw_signal(tid, "lower_back") if tid else None
+            if lb_full is not None:
+                feats.update(
+                    self._turning_features(lb_full, int(uturn_start), int(uturn_end))
+                )
+
+        feats.update(
+            extract_phase2_kinematic_frequency_features(
+                processed, fs=self.fs, config=self.config
+            )
+        )
 
         return feats
 
@@ -261,8 +238,12 @@ class FeatureExtractor:
         lf = signals.get("left_foot")
         rf = signals.get("right_foot")
         if lf is not None and rf is not None:
-            feats.update(self._gait_cycle_features(lf, rf))
-            feats.update(self._asymmetry_features(lf, rf))
+            feats.update(
+                extract_phase1_spatiotemporal_features(
+                    lf, rf, fs=self.fs, config=self.config
+                )
+            )
+            feats.update(self._foot_asymmetry_features(lf, rf))
 
         hd = signals.get("head")
         if hd is not None:
@@ -278,10 +259,18 @@ class FeatureExtractor:
 
         uturn_start = row.get("uturn_start")
         uturn_end = row.get("uturn_end")
-        if lb is not None and uturn_start is not None and uturn_end is not None:
-            feats.update(self._turning_features(
-                lb, int(uturn_start), int(uturn_end),
-            ))
+        if uturn_start is not None and uturn_end is not None:
+            lb_full = self._load_raw_signal(trial_id, "lower_back")
+            if lb_full is not None:
+                feats.update(
+                    self._turning_features(lb_full, int(uturn_start), int(uturn_end))
+                )
+
+        feats.update(
+            extract_phase2_kinematic_frequency_features(
+                signals, fs=self.fs, config=self.config
+            )
+        )
 
         return feats
 
@@ -415,16 +404,7 @@ class FeatureExtractor:
         f[f"{prefix}_spectral_entropy"]   = float(sp_entropy(pxx / (pxx.sum() + 1e-10)))
 
         def band_power(f_lo: float, f_hi: float) -> float:
-            mask = (freqs >= f_lo) & (freqs < f_hi)
-            if not mask.any():
-                return 0.0
-            fm, pm = freqs[mask], pxx[mask]
-            if len(fm) > 1:
-                integrator = getattr(np, "trapezoid", None) or getattr(np, "trapz", None)
-                if integrator is None:
-                    return float(np.sum(pm))
-                return float(integrator(pm, fm))
-            return float(pm[0])
+            return psd_band_power(freqs, pxx, f_lo, f_hi)
 
         f[f"{prefix}_power_0_1hz"]  = band_power(0.0, 1.0)
         f[f"{prefix}_power_1_3hz"]  = band_power(1.0, 3.0)
@@ -523,108 +503,43 @@ class FeatureExtractor:
 
         return f
 
-    def _gait_cycle_features(self, lf: pd.DataFrame, rf: pd.DataFrame) -> dict:
+    def _foot_asymmetry_features(self, lf: pd.DataFrame, rf: pd.DataFrame) -> dict:
+        """Bilateral RMS acceleration asymmetry (supplements Phase 1 SI metrics)."""
         f: dict = {}
-
-        for df_foot, side in [(lf, "left"), (rf, "right")]:
-            hs_col = f"heel_strike_{side}"
-            to_col = f"toe_off_{side}"
-
-            if hs_col in df_foot.columns:
-                hs_idx = np.where(df_foot[hs_col].values == 1)[0]
-                if len(hs_idx) >= 3:
-                    stride_times = np.diff(hs_idx) / self.fs
-                    st_mean = float(np.mean(stride_times))
-                    f[f"{side}_stride_time_mean"] = st_mean
-                    f[f"{side}_stride_time_std"]  = float(np.std(stride_times))
-                    f[f"{side}_stride_time_cv"]   = float(
-                        np.std(stride_times) / (st_mean + 1e-10)
-                    )
-                    f[f"{side}_cadence"]    = float(60.0 / (st_mean + 1e-10))
-                    f[f"{side}_step_count"] = int(len(hs_idx))
-
-                if to_col in df_foot.columns and len(hs_idx) > 1:
-                    to_idx = np.where(df_foot[to_col].values == 1)[0]
-                    stance_durations = []
-                    swing_durations = []
-                    for hs in hs_idx[:-1]:
-                        toe_offs_after = to_idx[to_idx > hs]
-                        if len(toe_offs_after) > 0:
-                            to_sample = toe_offs_after[0]
-                            stance_durations.append((to_sample - hs) / self.fs)
-                            next_hs = hs_idx[hs_idx > to_sample]
-                            if len(next_hs) > 0:
-                                swing_durations.append((next_hs[0] - to_sample) / self.fs)
-                    st_mean_ref = f.get(f"{side}_stride_time_mean", 1.0)
-                    if stance_durations:
-                        mean_stance = float(np.mean(stance_durations))
-                        f[f"{side}_stance_phase_ratio"] = mean_stance / (st_mean_ref + 1e-10)
-                    if swing_durations:
-                        mean_swing = float(np.mean(swing_durations))
-                        f[f"{side}_swing_phase_ratio"] = mean_swing / (st_mean_ref + 1e-10)
-
-        cads = [f[k] for k in ("left_cadence", "right_cadence") if k in f]
-        if cads:
-            f["cadence_mean"] = float(np.mean(cads))
-
-        # Bilateral averages
-        stance_ratios = [f[k] for k in ("left_stance_phase_ratio", "right_stance_phase_ratio") if k in f]
-        if stance_ratios:
-            f["stance_phase_ratio"] = float(np.mean(stance_ratios))
-
-        swing_ratios = [f[k] for k in ("left_swing_phase_ratio", "right_swing_phase_ratio") if k in f]
-        if swing_ratios:
-            f["swing_phase_ratio"] = float(np.mean(swing_ratios))
-
-        # Double support ≈ 1 − (stance + swing) for a single limb, or
-        # equivalently the overlap where both feet are on the ground.
-        # With single-limb events: double_support = stance_ratio − (1 − swing_ratio)
-        # = stance_ratio + swing_ratio − 1.  We clamp to [0, 1].
-        if stance_ratios and swing_ratios:
-            ds = float(np.mean(stance_ratios)) + float(np.mean(swing_ratios)) - 1.0
-            f["double_support_ratio"] = max(0.0, min(1.0, ds))
-
-        return f
-
-    def _asymmetry_features(self, lf: pd.DataFrame, rf: pd.DataFrame) -> dict:
-        """Compute bilateral asymmetry features.
-
-        FIX: removed the duplicate stride_time_asymmetry computation that
-        shadowed stride_time_mean_asymmetry with an identically-derived value,
-        inflating feature count with redundant information.
-        """
-        f: dict = {}
-
-        def _stride_stats(df_foot: pd.DataFrame, side: str):
-            col = f"heel_strike_{side}"
-            if col not in df_foot.columns:
-                return None, None
-            hs_idx = np.where(df_foot[col].values == 1)[0]
-            if len(hs_idx) < 3:
-                return None, None
-            st = np.diff(hs_idx) / self.fs
-            return float(np.mean(st)), float(np.std(st))
-
-        st_l_mean, st_l_std = _stride_stats(lf, "left")
-        st_r_mean, st_r_std = _stride_stats(rf, "right")
-
-        if st_l_mean is not None and st_r_mean is not None:
-            f["stride_time_mean_asymmetry"] = float(
-                abs(st_l_mean - st_r_mean) / (st_l_mean + st_r_mean + 1e-10)
-            )
-
-        if st_l_std is not None and st_r_std is not None:
-            f["stride_time_std_asymmetry"] = float(
-                abs(st_l_std - st_r_std) / (st_l_std + st_r_std + 1e-10)
-            )
-
         if "acc_resultant" in lf.columns and "acc_resultant" in rf.columns:
             n = min(len(lf), len(rf))
             l_rms = float(np.sqrt(np.mean(lf["acc_resultant"].values[:n] ** 2)))
             r_rms = float(np.sqrt(np.mean(rf["acc_resultant"].values[:n] ** 2)))
             f["asymmetry_rms_acc"] = float(abs(l_rms - r_rms) / (l_rms + r_rms + 1e-10))
-
+            f["si_rms_acc"] = float(
+                abs(l_rms - r_rms) / (0.5 * (l_rms + r_rms) + 1e-10) * 100.0
+            )
         return f
+
+    # Legacy wrappers — Phase 1 module is canonical (Moon 2020 / Trabassi 2022).
+    def _gait_cycle_features(self, lf: pd.DataFrame, rf: pd.DataFrame) -> dict:
+        return extract_phase1_spatiotemporal_features(
+            lf, rf, fs=self.fs, config=self.config
+        )
+
+    def _asymmetry_features(self, lf: pd.DataFrame, rf: pd.DataFrame) -> dict:
+        out = self._foot_asymmetry_features(lf, rf)
+        phase1 = extract_phase1_spatiotemporal_features(
+            lf, rf, fs=self.fs, config=self.config
+        )
+        for key in (
+            "si_stride_duration",
+            "si_stance_pct",
+            "si_swing_pct",
+            "si_step_length",
+            "si_gait_velocity",
+            "si_stride_duration_cv_pct",
+            "stride_time_mean_asymmetry",
+            "stride_time_std_asymmetry",
+        ):
+            if key in phase1:
+                out[key] = phase1[key]
+        return out
 
     # ── Patient aggregation ────────────────────────────────────────────────────
 
@@ -682,3 +597,10 @@ class FeatureExtractor:
                     signals[pos] = pd.read_parquet(p)
                     break
         return signals
+
+    def _load_raw_signal(self, trial_id: str, position: str) -> pd.DataFrame | None:
+        """Full-length ingested signal (pre U-turn exclusion) for turn-segment features."""
+        path = self.proc_dir / "signals" / f"{trial_id}_{position}.parquet"
+        if not path.exists():
+            return None
+        return pd.read_parquet(path)

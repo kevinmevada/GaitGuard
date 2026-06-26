@@ -351,7 +351,7 @@ anomaly_deploy_calibration: dict[str, Any] = {}
 clinical_threshold: dict[str, Any] = {}
 runtime_dependencies: dict[str, dict[str, Any]] = {}
 
-# Modules probed for /health; PyWavelets is mandatory at startup (api/requirements.txt).
+# Modules probed for /health; PyWavelets is mandatory at startup (fall_risk_pipeline/requirements.txt).
 _DEPENDENCY_MODULES: dict[str, str] = {
     "PyWavelets": "pywt",
     "antropy": "antropy",
@@ -415,10 +415,10 @@ def _assert_startup_dependencies(dep_status: dict[str, dict[str, Any]]) -> None:
             if label == "PyWavelets":
                 raise RuntimeError(
                     "PyWavelets required for wavelet feature computation. "
-                    "Install api/requirements.txt (PyWavelets>=1.4.0) and redeploy."
+                    "Install fall_risk_pipeline/requirements.txt (PyWavelets>=1.4.0) and redeploy."
                 )
             raise RuntimeError(
-                f"{label} required. Install api/requirements.txt and redeploy."
+                f"{label} required. Install fall_risk_pipeline/requirements.txt and redeploy."
             )
 
 
@@ -1512,12 +1512,12 @@ async def root() -> dict[str, Any]:
 
 @app.get("/app")
 async def serve_ui() -> FileResponse:
-    """Synced frontend (STR-001). Run scripts/sync_front_end.py after Front_end changes."""
+    """Bundled frontend served from api/static/."""
     index = STATIC_DIR / "index.html"
     if not index.is_file():
         raise HTTPException(
             status_code=404,
-            detail="UI not found — run scripts/sync_front_end.py",
+            detail="UI not found — ensure api/static/index.html exists",
         )
     return FileResponse(index)
 

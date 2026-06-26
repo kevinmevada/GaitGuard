@@ -42,12 +42,12 @@ def test_api_upload_does_not_trust_upload_file_size_precheck():
 
 
 def test_frontend_three_modulepreload_sri():
-    html = (REPO_ROOT / "Front_end" / "index.html").read_text(encoding="utf-8")
+    html = (REPO_ROOT / "api" / "static" / "index.html").read_text(encoding="utf-8")
     assert 'integrity="sha384-' in html
     assert "three.module.js" in html
 
 
 def test_frontend_api_port_candidates_include_8000():
-    js = (REPO_ROOT / "Front_end" / "main.js").read_text(encoding="utf-8")
+    js = (REPO_ROOT / "api" / "static" / "main.js").read_text(encoding="utf-8")
     assert "localhost:8000" in js
     assert "window.location.origin" in js

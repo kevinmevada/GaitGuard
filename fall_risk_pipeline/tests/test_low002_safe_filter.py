@@ -14,8 +14,14 @@ def _processor() -> SignalProcessor:
             "paths": {"processed_data": "."},
             "dataset": {"sampling_rate": 100},
             "preprocessing": {
-                "lowpass_cutoff_hz": 15.0,
-                "highpass_cutoff_hz": 0.1,
+                "unified_acc_bandpass": {
+                    "enabled": True,
+                    "low_hz": 0.5,
+                    "high_hz": 20.0,
+                    "order": 4,
+                },
+                "lowpass_cutoff_hz": 20.0,
+                "highpass_cutoff_hz": 0.5,
                 "lowpass_order": 4,
                 "madgwick_beta": 0.1,
                 "madgwick_enabled": False,

@@ -8,13 +8,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CI = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 PIPELINE_LOCK = REPO_ROOT / "fall_risk_pipeline" / "requirements-lock.txt"
 DEV_LOCK = REPO_ROOT / "fall_risk_pipeline" / "requirements-dev-lock.txt"
-API_LOCK = REPO_ROOT / "api" / "requirements-lock.txt"
 
 
 def test_ci_lockfiles_exist():
     assert PIPELINE_LOCK.is_file()
     assert DEV_LOCK.is_file()
-    assert API_LOCK.is_file()
 
 
 def test_dev_lock_pins_pytest():
@@ -23,9 +21,9 @@ def test_dev_lock_pins_pytest():
     assert "pytest-cov==" in text
 
 
-def test_api_lock_pins_fastapi_stack():
-    text = API_LOCK.read_text(encoding="utf-8").lower()
-    for pkg in ("fastapi==", "uvicorn", "python-multipart==", "slowapi=="):
+def test_pipeline_lock_pins_api_stack():
+    text = PIPELINE_LOCK.read_text(encoding="utf-8").lower()
+    for pkg in ("fastapi==", "uvicorn==", "python-multipart==", "slowapi=="):
         assert pkg in text
 
 

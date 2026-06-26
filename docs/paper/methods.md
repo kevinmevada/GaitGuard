@@ -14,6 +14,18 @@ We used the Springer Nature Figshare dataset of clinical gait signals (DOI: 10.6
 
 These are cohort-level diagnostic categories; participant-level prospective fall outcomes were not available.
 
+### 2.1 DAPHNET cross-dataset extension (PD freezing gait)
+
+We additionally ingested the public DAPHNET freezing-gait corpus (64 Hz, ankle / thigh / trunk accelerometry; 17 recordings, 10 PD participants) for **zero-shot** transfer evaluation against models trained on the four-sensor Voisard corpus.
+
+**Sensor mapping is a design decision, not a preprocessing step.** DAPHNET trunk → Voisard lower back (LB) is the only anatomically defensible pairing: lumbar placement, shared dominant axes during gait, and the same trunk-dynamics phenomenon captured by LB features in the primary pipeline. DAPHNET ankle was **not** mapped to Voisard left/right foot (lateral malleolus vs dorsal foot; different heel-strike vibration). DAPHNET thigh has no Voisard equivalent and was **dropped**. After calibration-row removal, trunk signals were resampled to 100 Hz with `resample_poly(up=25, down=16)` and stored under the Voisard `lower_back` channel key.
+
+**Single-sensor zero-shot evaluation.** Primary Voisard models train on four IMUs (head, LB, left foot, right foot), learning a rich multi-site Healthy reference. At DAPHNET evaluation time, only LB input is provided—the sole shared channel. A zero-shot AUROC above 0.77 on this harder single-sensor transfer supports both (1) multi-sensor training improving the reference representation and (2) cross-dataset generalization without forced anatomical alignment. This is a stricter claim than same-configuration cross-dataset transfer; most prior wearable-gait studies do not attempt cross-dataset evaluation at all.
+
+**FOG label mapping (eval-only).** Per-sample DAPHNET annotations map to sealed-test ground truth: `annotation == 1` → `y_true = 0` (normal walking); `annotation == 2` → `y_true = 1` (freezing of gait). Labels are written to `data/processed/daphnet/fog_labels.npz` as separate NumPy arrays per subject — **never** concatenated into feature tensors or used during Voisard model training. The headline DAPHNET metric is `roc_auc_score(y_true, anomaly_scores)` on LB-only zero-shot anomaly scores (Healthy-reference ensemble fit on Voisard trunk accelerometry only). This sealed test runs once via the `anomaly` stage (`results/metrics/daphnet_fog_auroc.json`); do not tune anomaly models against it.
+
+Manifest: `results/metrics/daphnet_sensor_mapping.json`; per-trial fields `source_dataset`, `sensor_mapping`, `eval_sensors` in `trial_metadata.csv`.
+
 ## 3. Pipeline overview
 
 The pipeline executes sequential stages:
@@ -40,8 +52,8 @@ The primary configuration file is `fall_risk_pipeline/configs/pipeline_config.ya
 
 Preprocessing used configuration-controlled steps:
 
-- Butterworth filtering (band-limited denoising for gait-relevant frequencies)
-- Optional Madgwick orientation fusion (head and lower-back sensors)
+- **Stage C unified bandpass (Voisard + DAPHNET @ 100 Hz):** 4th-order Butterworth bandpass 0.5–20 Hz on all accelerometer channels via zero-phase `filtfilt` (no group-delay peak shift on stride events). Applied identically to both corpora after DAPHNET resampling; any asymmetry would invalidate cross-dataset comparison.
+- Optional Madgwick orientation fusion (head and lower-back sensors; Voisard)
 - Gravity-removal path for trunk acceleration feature computation
 - Algorithmic gait-event detection from foot signals
 - Trial-level validity checks including minimum trial duration
@@ -107,6 +119,10 @@ Window overlap protocol (ML-043): trials are sliced with 50% overlap (`overlap: 
 ## 9. Evaluation protocol and metrics
 
 ### 9.1 Primary protocol
+
+**Subject-grouped splitting (no trial-level leakage).** All trials are keyed by `participant_id` before any train/validation/test assignment. We never randomize individual trials across splits: every trial from a given participant stays in the same partition. For Healthy-reference holdout bookkeeping, Healthy participants are split **70% train / 15% validation / 15% test** (seeded partition of the subject list); **all pathological participants are assigned to test only**. Exported manifests: `subject_split.csv` / `subject_split.json`. Before model fitting, the pipeline asserts `set(train_ids) ∩ set(test_ids) == ∅` and aborts with `DATA LEAKAGE: subject in both splits` if violated.
+
+**LOSO evaluation** holds out one participant per fold; all trials from that subject form the test fold while remaining subjects supply training data. This is a leave-one-**subject**-out split by participant ID — no subject appears in both train and test within a fold, unlike Klaver et al. (2023), who randomized trials and were criticized in review when the same subject's gait signature appeared in both train and test (inflated AUC). Inner hyperparameter validation (tabular Optuna, deep learning learning-rate search) uses additional **participant-level** holdouts (`StratifiedGroupKFold` / stratified participant splits), never window- or trial-level randomization.
 
 **Primary endpoint (`anomaly_ensemble`):** trial-level Healthy-reference anomaly screening with LOSO out-of-fold evaluation (ANOM-001). For each held-out participant, one-class models (isolation forest, LOF, one-class SVM) were fit on Healthy training trials only; held-out trials received normalized decision scores averaged into an ensemble. Evaluation pseudo-label: non-Healthy trial = positive (screening target). Youden J thresholds were fit on OOF scores for sensitivity/specificity reporting. Artifacts: `anomaly_metrics.csv`, `anomaly_threshold.json`, `primary_endpoint.json`.
 

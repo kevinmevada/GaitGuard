@@ -15,10 +15,9 @@ def test_makefile_uses_lockfiles_and_hash_seed():
     assert "fall_risk_pipeline/requirements.txt" not in makefile
 
 
-def test_api_static_readme_documents_sync():
+def test_api_static_readme_documents_canonical_ui():
     text = (REPO_ROOT / "api" / "static" / "README.md").read_text(encoding="utf-8")
-    assert "sync_front_end.py" in text
-    assert "do not edit directly" in text.lower()
+    assert "api/static" in text.lower() or "canonical" in text.lower()
 
 
 def test_dockerfile_uses_lockfiles():
@@ -27,10 +26,10 @@ def test_dockerfile_uses_lockfiles():
     assert "fall_risk_pipeline/requirements.txt" not in dockerfile
 
 
-def test_api_build_sh_uses_lockfile():
+def test_api_build_sh_uses_pipeline_lockfile():
     build_sh = (REPO_ROOT / "api" / "build.sh").read_text(encoding="utf-8")
-    assert "requirements-lock.txt" in build_sh
-    assert "requirements.txt" not in build_sh
+    assert "fall_risk_pipeline/requirements-lock.txt" in build_sh
+    assert "sync_front_end" not in build_sh
 
 
 def test_dockerfile_api_production_guards():

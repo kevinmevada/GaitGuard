@@ -17,7 +17,7 @@ def test_pipeline_config_registers_primary_endpoint():
         (PIPELINE_ROOT / "configs" / "pipeline_config.yaml").read_text(encoding="utf-8")
     )
     ev = cfg["models"]["evaluation"]
-    assert ev.get("primary_endpoint") == "anomaly_ensemble"
+    assert ev.get("primary_endpoint") in ("anomaly_ensemble", "bilstm_ae_ensemble")
     assert ev.get("report_deploy_loso_gap") is True
 
 

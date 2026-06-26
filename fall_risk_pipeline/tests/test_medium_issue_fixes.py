@@ -139,12 +139,13 @@ def test_requirements_dev_split():
         assert unused not in dev
 
 
-def test_anomaly_detector_uses_shared_healthy_scaler():
+def test_anomaly_detector_uses_train_fold_healthy_fit():
     source = (PIPELINE_ROOT / "src" / "models" / "anomaly_detector.py").read_text(
         encoding="utf-8"
     )
-    assert "_fit_healthy_scaler" in source
-    assert source.count("self._fit_healthy_scaler(X, healthy_mask)") >= 3
+    assert "healthy_train_fit_mask" in source
+    assert "reconstruction_threshold_train_only" in source
+    assert "fit_mask" in source
 
 
 def test_lockfile_generator_exists():

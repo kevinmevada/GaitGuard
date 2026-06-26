@@ -1,13 +1,5 @@
-# API static assets (LOW-003)
+# Web UI (production static assets)
 
-**AUTO-GENERATED** by [`scripts/sync_front_end.py`](../scripts/sync_front_end.py) — **do not edit directly.**
+Canonical frontend for GaitGuard: `index.html`, `main.js`, `style.css`.
 
-Canonical source: [`Front_end/`](../Front_end/) (`index.html`, `main.js`, `style.css`).
-
-After editing the frontend:
-
-```bash
-python scripts/sync_front_end.py
-```
-
-CI asserts `Front_end/` and `api/static/` stay in sync.
+Served by FastAPI at `GET /app` from this directory. Edit files here directly.

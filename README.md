@@ -213,14 +213,9 @@ Endpoints:
 
 Runs at: `http://localhost:8001`
 
-### Web Frontend (`Front_end/`)
+### Web Frontend (`api/static/`)
 
-Research dashboard with:
-- `index.html` - Semantic HTML structure
-- `main.js` - API communication, Three.js model, signal visualization
-- `style.css` - UI design system
-
-Features:
+Research dashboard (served at `GET /app` when the API is running):
 - Drag-drop file upload
 - Real-time IMU signal visualization
 - Interactive 3D human model with sensor placement
@@ -270,7 +265,7 @@ Trial-level blocks (see `fall_risk_pipeline/src/features/feature_extractor.py`):
 
 **Not extracted:** absolute step length, gait speed, or step width (uncalibrated IMU; see `fall_risk_pipeline/docs/spatial_features.md`).
 
-Patient-level matrices aggregate each trial feature with **mean, std, range, and trend** across ordered within-session trials. Re-run `features` after spectral or aggregation changes. With **P/N ≈ 3.25** on the full matrix, use `select_features` (≤20) before final models.
+Patient-level matrices aggregate each trial feature with **mean, std, range, and trend** across ordered within-session trials. Re-run `features` after spectral or aggregation changes. With **P/N ≈ 1.8** (p/N; ~464 features / 260 participants) on the full matrix, use `select_features` (≤20) before final models.
 
 ### Class labels and imbalance
 
@@ -364,8 +359,9 @@ make docker-stage STAGE=evaluate
 cd c:\Users\mevad\Desktop\GI
 python -m venv venv
 .\venv\Scripts\Activate.ps1
-pip install -r fall_risk_pipeline/requirements.txt
-pip install -r api/requirements.txt
+pip install -r fall_risk_pipeline/requirements-lock.txt \
+  --extra-index-url https://download.pytorch.org/whl/cpu
+pip install -r fall_risk_pipeline/requirements-dev-lock.txt
 ```
 
 ### Configuration File
@@ -426,13 +422,13 @@ make docker-run
 
 ```bash
 cd api
-python start_api.py
+python -m uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
-Or:
+Or from repo root:
 
 ```bash
-python -m uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+make api
 ```
 
 ### Option 3: Open Frontend
@@ -482,8 +478,8 @@ Each test dataset contains:
 Use with:
 
 ```bash
-cd api
-python start_api.py
+make api
+# then open http://localhost:8001/app
 ```
 
 ---
@@ -494,7 +490,7 @@ Key directories:
 
 - `api/` - FastAPI inference service
 - `fall_risk_pipeline/` - training/evaluation pipeline
-- `Front_end/` - frontend dashboard
+- `api/static/` - frontend dashboard (served by FastAPI)
 - `test/` - sample upload bundles
 - `examples/` - example sensor files
 

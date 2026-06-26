@@ -21,7 +21,8 @@ def trial_feature_groups(config: dict[str, Any]) -> dict[str, list[str]]:
     feat_cfg = config.get("features", {})
     groups: dict[str, list[str]] = {}
     for group_name in ("temporal", "spectral", "wavelet", "trunk_dynamics",
-                       "orientation", "asymmetry", "turning", "spatial"):
+                       "orientation", "asymmetry", "turning", "spatial",
+                       "phase2_kinematic", "phase3_deep_features"):
         bases = feat_cfg.get(group_name, [])
         if bases:
             groups[group_name] = list(bases)

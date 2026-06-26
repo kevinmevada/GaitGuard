@@ -42,6 +42,7 @@ from src.dataset.label_policy import (
     is_binary_task,
     label_mode_description,
 )
+from src.dataset.subject_split import assert_loso_fold_disjoint, ensure_subject_split_manifest
 from src.evaluation.auc_significance import pairwise_auc_significance
 from src.evaluation.clinical_threshold import (
     FIXED_THRESHOLD_FALLBACK_STRATEGIES,
@@ -193,6 +194,7 @@ class Evaluator:
     # ------------------------------------------------------------------
 
     def run(self):
+        ensure_subject_split_manifest(self.config, self.metrics_dir)
         X, y, groups, feat_names, cohorts = self._load_data()
         self._feat_cols = feat_names
         self._init_fold_feature_masks(X, y, groups, feat_names)
@@ -311,6 +313,12 @@ class Evaluator:
         for subj in unique_subjects:
             test_idx  = np.where(groups == subj)[0]
             train_idx = np.where(groups != subj)[0]
+            assert_loso_fold_disjoint(
+                groups[train_idx],
+                groups[test_idx],
+                held_out_subject=str(subj),
+                context=f"fast LOSO ({name})",
+            )
 
             if len(np.unique(y[train_idx])) < 2:
                 continue
@@ -432,6 +440,12 @@ class Evaluator:
         for subj in unique_subjects:
             test_idx = np.where(groups == subj)[0]
             train_idx = np.where(groups != subj)[0]
+            assert_loso_fold_disjoint(
+                groups[train_idx],
+                groups[test_idx],
+                held_out_subject=str(subj),
+                context="ensemble fast LOSO",
+            )
             if len(np.unique(y[train_idx])) < 2:
                 continue
 
@@ -543,6 +557,12 @@ class Evaluator:
         """Single LOSO fold — called in parallel."""
         test_idx  = np.where(groups == subj)[0]
         train_idx = np.where(groups != subj)[0]
+        assert_loso_fold_disjoint(
+            groups[train_idx],
+            groups[test_idx],
+            held_out_subject=str(subj),
+            context=f"tabular LOSO ({name})",
+        )
 
         if len(np.unique(y[train_idx])) < 2:
             return None, None, None, None, None, None, None, None

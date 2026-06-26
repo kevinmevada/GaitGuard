@@ -17,15 +17,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from loguru import logger
-from sklearn.metrics import (
-    accuracy_score,
-    average_precision_score,
-    confusion_matrix,
-    f1_score,
-    roc_auc_score,
-)
+from sklearn.metrics import average_precision_score, roc_auc_score
 
-from src.evaluation.clinical_threshold import youden_threshold
+from src.evaluation.competitor_metrics import compute_discriminative_metrics, nan_discriminative_metrics
+
+from src.evaluation.anomaly_threshold_policy import fit_anomaly_threshold
 from src.evaluation.primary_endpoint import (
     ENDPOINT_ANOMALY_ENSEMBLE,
     PROTOCOL_ANOMALY_LOSO,
@@ -38,7 +34,9 @@ from src.models.anomaly_scoring import (
     normalise_scores,
     score_fitted_method,
 )
+from src.dataset.subject_split import assert_loso_fold_disjoint
 from src.utils.reproducibility import get_pipeline_seed
+from src.utils.progress import progress_bar
 
 MIN_HEALTHY_TRAIN = 5
 
@@ -46,6 +44,8 @@ MIN_HEALTHY_TRAIN = 5
 def _load_trial_matrix(config: dict) -> tuple[np.ndarray, pd.DataFrame, list[str]]:
     feat_dir = Path(config["paths"]["features"])
     df = pd.read_parquet(feat_dir / "trial_features.parquet")
+    if "trial_id" in df.columns:
+        df = df[~df["trial_id"].astype(str).str.startswith("daphnet_")].reset_index(drop=True)
     meta_cols = [
         "trial_id",
         "participant_id",
@@ -66,20 +66,14 @@ def _load_trial_matrix(config: dict) -> tuple[np.ndarray, pd.DataFrame, list[str
     return X, metadata, feature_cols
 
 
-def _metrics_from_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
-    y_true = np.asarray(y_true).astype(int)
-    y_pred = np.asarray(y_pred).astype(int)
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    if cm.shape == (2, 2):
-        tn, fp, fn, tp = cm.ravel()
-    else:
-        tn = fp = fn = tp = 0
-    return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "sensitivity": float(tp / (tp + fn + 1e-10)),
-        "specificity": float(tn / (tn + fp + 1e-10)),
-    }
+def _metrics_from_predictions(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_score: np.ndarray | None = None,
+) -> dict[str, float]:
+    return compute_discriminative_metrics(
+        y_true, y_pred, y_score=y_score, config={"dataset": {"label_mode": "binary"}}
+    )
 
 
 def _score_block(
@@ -91,6 +85,8 @@ def _score_block(
     fold_threshold_mean: float,
     fold_threshold_std: float,
     n_threshold_folds: int,
+    feature_selection_protocol: str = PROTOCOL_ANOMALY_LOSO,
+    threshold_source: str = "loso_healthy_train_percentile",
 ) -> dict[str, Any]:
     y_true = np.asarray(y_true).astype(int)
     y_score = np.asarray(y_score, dtype=float)
@@ -100,20 +96,17 @@ def _score_block(
     row: dict[str, Any] = {
         "method": method,
         "evaluation_mode": "loso_trial_oof",
-        "feature_selection_protocol": PROTOCOL_ANOMALY_LOSO,
+        "feature_selection_protocol": feature_selection_protocol,
         "n_trials_scored": int(valid.sum()),
-        "threshold_source": "loso_train_fold_youden",
+        "threshold_source": threshold_source,
         "n_threshold_folds": int(n_threshold_folds),
     }
     if len(np.unique(yt)) < 2:
+        row.update(nan_discriminative_metrics())
         row.update(
             {
                 "auc": float("nan"),
                 "auc_pr": float("nan"),
-                "accuracy": float("nan"),
-                "f1": float("nan"),
-                "sensitivity": float("nan"),
-                "specificity": float("nan"),
                 "threshold_youden": float("nan"),
                 "threshold_youden_std": float("nan"),
             }
@@ -121,13 +114,15 @@ def _score_block(
         return row
     auc = float(roc_auc_score(yt, ys))
     auc_pr = float(average_precision_score(yt, ys))
+    disc = _metrics_from_predictions(yt, yp, y_score=ys)
     row.update(
         {
             "auc": auc,
+            "auroc": auc,
             "auc_pr": auc_pr,
             "threshold_youden": float(fold_threshold_mean),
             "threshold_youden_std": float(fold_threshold_std),
-            **_metrics_from_predictions(yt, yp),
+            **disc,
         }
     )
     return row
@@ -149,13 +144,20 @@ def run_anomaly_loso_evaluation(config: dict) -> pd.DataFrame:
         m: np.full(n, np.nan, dtype=float) for m in (*ANOMALY_METHODS, "ensemble")
     }
     fold_thresholds: dict[str, list[float]] = {m: [] for m in (*ANOMALY_METHODS, "ensemble")}
+    threshold_source_report = "loso_healthy_train_percentile"
 
     unique_pids = np.unique(groups)
     logger.info("ANOM-001: LOSO anomaly evaluation over {} participants", len(unique_pids))
 
-    for pid in unique_pids:
+    for pid in progress_bar(unique_pids, desc="Anomaly LOSO", unit="participant"):
         test_mask = groups == pid
         train_mask = ~test_mask
+        assert_loso_fold_disjoint(
+            groups[train_mask],
+            groups[test_mask],
+            held_out_subject=str(pid),
+            context="anomaly LOSO",
+        )
         healthy_train = train_mask & (cohorts == "Healthy")
         if int(healthy_train.sum()) < MIN_HEALTHY_TRAIN:
             logger.warning(
@@ -169,6 +171,7 @@ def run_anomaly_loso_evaluation(config: dict) -> pd.DataFrame:
         X_train = X[train_mask]
         X_test = X[test_mask]
         y_train = y_true[train_mask]
+        healthy_on_train = (cohorts[train_mask] == "Healthy")
 
         norm_train_layers: list[np.ndarray] = []
         norm_test_layers: list[np.ndarray] = []
@@ -178,7 +181,13 @@ def run_anomaly_loso_evaluation(config: dict) -> pd.DataFrame:
                 X_h, X_test, method, random_state=rs
             )
             sq_train = score_fitted_method(model, scaler, X_train)
-            thresh = youden_threshold(y_train, sq_train)
+            thresh, thresh_src = fit_anomaly_threshold(
+                sq_train,
+                config,
+                healthy_train_mask=healthy_on_train,
+                y_train=y_train,
+            )
+            threshold_source_report = thresh_src
 
             oof_method_scores[method][test_mask] = sq_test
             oof_method_preds[method][test_mask] = (sq_test >= thresh).astype(float)
@@ -189,7 +198,13 @@ def run_anomaly_loso_evaluation(config: dict) -> pd.DataFrame:
 
         ens_train = np.mean(np.stack(norm_train_layers, axis=0), axis=0)
         ens_test = np.mean(np.stack(norm_test_layers, axis=0), axis=0)
-        ens_thresh = youden_threshold(y_train, ens_train)
+        ens_thresh, ens_src = fit_anomaly_threshold(
+            ens_train,
+            config,
+            healthy_train_mask=healthy_on_train,
+            y_train=y_train,
+        )
+        threshold_source_report = ens_src
 
         oof_method_scores["ensemble"][test_mask] = ens_test
         oof_method_preds["ensemble"][test_mask] = (ens_test >= ens_thresh).astype(float)
@@ -209,6 +224,7 @@ def run_anomaly_loso_evaluation(config: dict) -> pd.DataFrame:
                 fold_threshold_mean=th_mean,
                 fold_threshold_std=th_std,
                 n_threshold_folds=len(th_list),
+                threshold_source=threshold_source_report,
             )
         )
 
@@ -242,7 +258,7 @@ def run_anomaly_loso_evaluation(config: dict) -> pd.DataFrame:
             "threshold_youden": float(r["threshold_youden"])
             if pd.notna(r.get("threshold_youden"))
             else None,
-            "threshold_source": "loso_train_fold_youden_mean",
+            "threshold_source": str(r.get("threshold_source", threshold_source_report)),
         }
         thresh_path = metrics_dir / "anomaly_threshold.json"
         thresh_payload = {
@@ -250,7 +266,7 @@ def run_anomaly_loso_evaluation(config: dict) -> pd.DataFrame:
             "probability": float(r["threshold_youden"])
             if pd.notna(r.get("threshold_youden"))
             else 0.5,
-            "source": "loso_train_fold_youden_mean",
+            "source": str(r.get("threshold_source", threshold_source_report)),
             "eval_positive_definition": "non_Healthy_trial",
         }
         thresh_path.write_text(json.dumps(thresh_payload, indent=2), encoding="utf-8")
@@ -264,5 +280,9 @@ def run_anomaly_loso_evaluation(config: dict) -> pd.DataFrame:
         oof_df[f"{method}_pred_train_youden"] = oof_method_preds[method]
     oof_df["eval_non_healthy"] = y_true
     oof_df.to_csv(oof_path, index=False)
+
+    from src.evaluation.threshold_validation import run_threshold_validation
+
+    run_threshold_validation(config)
 
     return metrics_df

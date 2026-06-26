@@ -1,0 +1,8 @@
+---
+description: Never add Cursor git or PR attribution
+alwaysApply: true
+---
+
+Never add "Made-with: Cursor", "Co-authored-by: Cursor", or any Cursor attribution trailer to commits, pull requests, or code comments.
+
+When creating git commits, use the repository owner's identity only (Kevin Mevada <mevadakevin@gmail.com>). Do not use placeholder emails.

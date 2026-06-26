@@ -19,15 +19,18 @@ from src.models.ensemble_builder import primary_ensemble_checkpoint_name
 ENDPOINT_DEPLOY_ENSEMBLE = "deploy_ensemble"
 ENDPOINT_BEST_LOSO_NESTED = "best_loso_nested"
 ENDPOINT_ANOMALY_ENSEMBLE = "anomaly_ensemble"
+ENDPOINT_BILSTM_AE_ENSEMBLE = "bilstm_ae_ensemble"
 
 PROTOCOL_NESTED_RFECV = "nested_rfecv_per_loso_fold"
 PROTOCOL_DEPLOY_GLOBAL = "global_selected_features_json"
 PROTOCOL_ANOMALY_LOSO = "anomaly_loso_healthy_reference"
+PROTOCOL_BILSTM_AE_LOSO = "bilstm_ae_loso_healthy_reference_3method"
 
 _ALL_ENDPOINTS = (
     ENDPOINT_DEPLOY_ENSEMBLE,
     ENDPOINT_BEST_LOSO_NESTED,
     ENDPOINT_ANOMALY_ENSEMBLE,
+    ENDPOINT_BILSTM_AE_ENSEMBLE,
 )
 
 
@@ -93,7 +96,12 @@ def build_primary_endpoint_registry(
     best_nested = best_nested_model_name(nested_results) if nested_results else ""
     primary = resolve_primary_endpoint(config)
 
-    if primary == ENDPOINT_ANOMALY_ENSEMBLE:
+    if primary == ENDPOINT_BILSTM_AE_ENSEMBLE:
+        guidance = (
+            "Primary endpoint: strict LOSO BiLSTM-AE reconstruction + latent Isolation "
+            "Forest + latent One-Class SVM weighted ensemble (Healthy train only)."
+        )
+    elif primary == ENDPOINT_ANOMALY_ENSEMBLE:
         guidance = (
             "Primary endpoint: trial-level LOSO OOF anomaly ensemble (Healthy-reference "
             "one-class screening). Supervised pathology-tier metrics below are secondary."
@@ -138,11 +146,26 @@ def write_deploy_loso_artifacts(
     metrics_dir.mkdir(parents=True, exist_ok=True)
     if gap_rows:
         pd.DataFrame(gap_rows).to_csv(metrics_dir / "deploy_loso_gap.csv", index=False)
-    if registry.get("primary_endpoint") != ENDPOINT_ANOMALY_ENSEMBLE:
+    if registry.get("primary_endpoint") not in (
+        ENDPOINT_ANOMALY_ENSEMBLE,
+        ENDPOINT_BILSTM_AE_ENSEMBLE,
+    ):
         (metrics_dir / "primary_endpoint.json").write_text(
             json.dumps(registry, indent=2),
             encoding="utf-8",
         )
+
+
+def write_bilstm_ae_primary_artifacts(
+    metrics_dir: Path,
+    registry: dict[str, Any],
+) -> None:
+    """Write primary registry when BiLSTM-AE 3-method ensemble is the manuscript endpoint."""
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    (metrics_dir / "primary_endpoint.json").write_text(
+        json.dumps(registry, indent=2),
+        encoding="utf-8",
+    )
 
 
 def write_anomaly_primary_artifacts(

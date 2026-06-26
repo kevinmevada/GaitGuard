@@ -23,6 +23,11 @@ from loguru import logger
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedShuffleSplit
 
+from src.dataset.subject_split import (
+    assert_loso_fold_disjoint,
+    assert_no_subject_leakage,
+    ensure_subject_split_manifest,
+)
 from src.evaluation.multiclass_metrics import build_multiclass_metric_payload
 from src.models.deep_models import (
     DEEP_MODEL_REGISTRY,
@@ -423,6 +428,12 @@ class DeepLearningPipeline:
             y_test_label = test_data["label"]
 
             train_pids = [p for p in pids if p != test_pid]
+            assert_loso_fold_disjoint(
+                np.array(train_pids),
+                np.array([test_pid]),
+                held_out_subject=str(test_pid),
+                context=f"DL LOSO ({model_name})",
+            )
             participant_labels = {
                 pid: int(participants[pid]["label"]) for pid in train_pids
             }
@@ -431,6 +442,12 @@ class DeepLearningPipeline:
                 participant_labels,
                 seed=self._inner_val_split_seed(self.seed, fold_idx),
                 val_fraction=0.1,
+            )
+            assert_no_subject_leakage(
+                inner_train_pids,
+                [],
+                inner_val_pids,
+                context=f"DL inner val ({model_name} fold {fold_idx + 1})",
             )
             dedupe_kw = {}
             if self.training_window_deduplication:
@@ -705,6 +722,7 @@ class DeepLearningPipeline:
     def run(self) -> dict[str, dict]:
         """Run LOSO evaluation for all enabled DL models and save metrics."""
         logger.info("=== Deep Learning LOSO Pipeline ===")
+        ensure_subject_split_manifest(self.config, self.metrics_dir)
         t0 = time.time()
 
         meta = pd.read_csv(self.meta_path)

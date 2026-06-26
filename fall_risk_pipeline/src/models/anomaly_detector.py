@@ -34,9 +34,15 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import OneClassSVM
 
 from src.models.anomaly_feature_schema import save_trial_feature_schema
-from src.models.anomaly_scoring import ANOMALY_METHODS
+from src.models.anomaly_scoring import ANOMALY_METHODS, normalise_scores
 from src.evaluation.anomaly_loso_evaluator import run_anomaly_loso_evaluation
-from src.evaluation.primary_endpoint import resolve_primary_endpoint
+from src.evaluation.primary_endpoint import (
+    ENDPOINT_ANOMALY_ENSEMBLE,
+    ENDPOINT_BILSTM_AE_ENSEMBLE,
+    resolve_primary_endpoint,
+)
+from src.dataset.train_fit_mask import healthy_train_fit_mask
+from src.preprocessing.fold_normalization import reconstruction_threshold_train_only
 from src.utils.checkpoint_io import save_checkpoint
 from src.utils.reproducibility import get_pipeline_seed
 
@@ -52,15 +58,16 @@ INSAMPLE_JSON_DISCLAIMER = {
         "Do not cite AUC/sensitivity/specificity from this file. "
         "Primary metrics: results/metrics/anomaly_metrics.csv."
     ),
+    "_fit_policy": (
+        "Scaler, one-class models, score normalisation, and ensemble threshold "
+        "are fit on subject-split Healthy TRAIN trials only (v13 fix)."
+    ),
 }
 
 
-def _normalise(scores: np.ndarray) -> np.ndarray:
-    """Min-max normalise an anomaly score vector to [0, 1]."""
-    lo, hi = scores.min(), scores.max()
-    if hi - lo < 1e-12:
-        return np.zeros_like(scores)
-    return (scores - lo) / (hi - lo)
+def _normalise(scores: np.ndarray, reference: np.ndarray | None = None) -> np.ndarray:
+    """Min-max to [0, 1] using *reference* scores (train-fold Healthy by default)."""
+    return normalise_scores(scores, reference)
 
 
 class GaitAnomalyDetector:
@@ -98,19 +105,20 @@ class GaitAnomalyDetector:
         X, metadata, feature_cols = self._load_data()
         self.trial_feature_columns = feature_cols
 
-        # FIX: fit scalers only on the "Healthy" (normal) cohort rows so that
-        # test-sample statistics do not influence the scaling step.
-        healthy_mask = (metadata["cohort"] == "Healthy").values
-        if healthy_mask.sum() < 5:
+        # v13: fit scaler / models / thresholds on subject-split Healthy TRAIN only.
+        fit_mask = healthy_train_fit_mask(metadata, self.config)
+        if fit_mask.sum() < 5:
             logger.warning(
-                "Fewer than 5 Healthy samples — falling back to full-dataset scaling. "
-                "Results may be optimistic."
+                "Fewer than 5 Healthy TRAIN-fold samples — falling back to all Healthy. "
+                "Re-run after subject_split manifest is generated."
             )
-            healthy_mask = np.ones(len(X), dtype=bool)
-        self._healthy_mask_size = int(healthy_mask.sum())
+            fit_mask = (metadata["cohort"] == "Healthy").values
+        self._fit_mask = fit_mask
+        self._healthy_mask_size = int(fit_mask.sum())
 
         results: Dict[str, Any] = {}
         loso_metrics = None
+        daphnet_fog_result = None
 
         with Progress(
             SpinnerColumn(),
@@ -120,22 +128,22 @@ class GaitAnomalyDetector:
             TimeElapsedColumn(),
             console=console,
         ) as progress:
-            task_id = progress.add_task("Running anomaly detection...", total=7)
+            task_id = progress.add_task("Running anomaly detection...", total=8)
 
             progress.update(task_id, description="Anomaly method: isolation_forest")
-            results["isolation_forest"] = self._isolation_forest_detection(X, metadata, healthy_mask)
+            results["isolation_forest"] = self._isolation_forest_detection(X, metadata, fit_mask)
             progress.advance(task_id)
 
             progress.update(task_id, description="Anomaly method: lof")
-            results["lof"] = self._lof_detection(X, metadata, healthy_mask)
+            results["lof"] = self._lof_detection(X, metadata, fit_mask)
             progress.advance(task_id)
 
             progress.update(task_id, description="Anomaly method: one_class_svm")
-            results["one_class_svm"] = self._one_class_svm_detection(X, metadata, healthy_mask)
+            results["one_class_svm"] = self._one_class_svm_detection(X, metadata, fit_mask)
             progress.advance(task_id)
 
             progress.update(task_id, description="Combining anomaly ensemble")
-            results["ensemble"] = self._ensemble_detection(results, metadata)
+            results["ensemble"] = self._ensemble_detection(results, metadata, fit_mask)
             progress.advance(task_id)
 
             progress.update(task_id, description="Analyzing cohorts and visualizing")
@@ -148,8 +156,36 @@ class GaitAnomalyDetector:
             progress.advance(task_id)
 
             progress.update(task_id, description="LOSO anomaly evaluation (ANOM-001)")
+            primary_ep = resolve_primary_endpoint(self.config)
             if self.config.get("anomaly", {}).get("loso_evaluation", True):
-                loso_metrics = run_anomaly_loso_evaluation(self.config)
+                if primary_ep == ENDPOINT_BILSTM_AE_ENSEMBLE:
+                    from src.evaluation.bilstm_ae_loso_evaluator import run_bilstm_ae_loso_evaluation
+
+                    loso_metrics = run_bilstm_ae_loso_evaluation(self.config)
+                else:
+                    loso_metrics = run_anomaly_loso_evaluation(self.config)
+            progress.advance(task_id)
+
+            progress.update(task_id, description="DAPHNET sealed FOG eval (zero-shot)")
+            try:
+                if primary_ep == ENDPOINT_BILSTM_AE_ENSEMBLE:
+                    from src.evaluation.daphnet_bilstm_ae_evaluator import run_daphnet_bilstm_ae_fog_eval
+
+                    daphnet_fog_result = run_daphnet_bilstm_ae_fog_eval(self.config)
+                else:
+                    from src.evaluation.daphnet_fog_evaluator import run_daphnet_sealed_fog_eval
+
+                    daphnet_fog_result = run_daphnet_sealed_fog_eval(self.config)
+            except FileNotFoundError as exc:
+                logger.info("Skipping DAPHNET sealed FOG eval: {}", exc)
+            except Exception as exc:
+                from src.evaluation.daphnet_fog_evaluator import DaphnetSealedEvalError
+                from src.evaluation.daphnet_bilstm_ae_evaluator import DaphnetBilstmAeEvalError
+
+                if isinstance(exc, (DaphnetSealedEvalError, DaphnetBilstmAeEvalError)):
+                    logger.warning("DAPHNET sealed FOG eval skipped: {}", exc)
+                else:
+                    raise
             progress.advance(task_id)
 
             progress.update(task_id, description="Anomaly detection complete")
@@ -157,9 +193,16 @@ class GaitAnomalyDetector:
         logger.info("Anomaly detection completed!")
         summary = self._generate_summary(results, cohort_analysis)
         if loso_metrics is not None and not loso_metrics.empty:
-            ens = loso_metrics[loso_metrics["method"] == "ensemble"]
+            ens_method = (
+                "bilstm_ae_ensemble"
+                if resolve_primary_endpoint(self.config) == ENDPOINT_BILSTM_AE_ENSEMBLE
+                else "ensemble"
+            )
+            ens = loso_metrics[loso_metrics["method"] == ens_method]
             if not ens.empty:
                 summary["loso_ensemble_auc"] = float(ens.iloc[0]["auc"])
+        if daphnet_fog_result:
+            summary["daphnet_fog_auroc"] = daphnet_fog_result.get("auc")
         return {
             "detection_results": results,
             "cohort_analysis": cohort_analysis,
@@ -173,6 +216,10 @@ class GaitAnomalyDetector:
 
     def _load_data(self) -> Tuple[np.ndarray, pd.DataFrame, List[str]]:
         df = pd.read_parquet(self.feat_dir / "trial_features.parquet")
+        if "trial_id" in df.columns:
+            df = df[~df["trial_id"].astype(str).str.startswith("daphnet_")].reset_index(drop=True)
+
+        from src.ingestion.daphnet_label_mapping import assert_labels_not_in_feature_columns
 
         meta_cols = [
             "trial_id", "participant_id", "cohort", "risk_label",
@@ -181,6 +228,7 @@ class GaitAnomalyDetector:
 
         feature_cols = [col for col in df.columns if col not in meta_cols]
         feature_cols = df[feature_cols].select_dtypes(include=[np.number]).columns.tolist()
+        assert_labels_not_in_feature_columns(feature_cols, context="anomaly trial features")
 
         X = df[feature_cols].replace([np.inf, -np.inf], np.nan)
         X = X.fillna(X.median(numeric_only=True))
@@ -196,24 +244,24 @@ class GaitAnomalyDetector:
 
     @staticmethod
     def _fit_healthy_scaler(
-        X: np.ndarray, healthy_mask: np.ndarray
+        X: np.ndarray, fit_mask: np.ndarray
     ) -> tuple[StandardScaler, np.ndarray]:
-        """Fit StandardScaler on healthy trials only; transform all rows."""
+        """Fit StandardScaler on train-fold Healthy rows; transform all rows."""
         scaler = StandardScaler()
-        scaler.fit(X[healthy_mask])
+        scaler.fit(X[fit_mask])
         return scaler, scaler.transform(X)
 
     def _isolation_forest_detection(
-        self, X: np.ndarray, metadata: pd.DataFrame, healthy_mask: np.ndarray
+        self, X: np.ndarray, metadata: pd.DataFrame, fit_mask: np.ndarray
     ) -> Dict[str, Any]:
-        scaler, X_scaled = self._fit_healthy_scaler(X, healthy_mask)
+        scaler, X_scaled = self._fit_healthy_scaler(X, fit_mask)
 
         iso_forest = IsolationForest(
             contamination=0.1,
             random_state=self.random_state,
             n_estimators=100,
         )
-        iso_forest.fit(X_scaled[healthy_mask])          # train on normals only
+        iso_forest.fit(X_scaled[fit_mask])          # train on normals only
         anomaly_labels = iso_forest.predict(X_scaled)
         anomaly_scores = iso_forest.decision_function(X_scaled)
 
@@ -233,16 +281,16 @@ class GaitAnomalyDetector:
         }
 
     def _lof_detection(
-        self, X: np.ndarray, metadata: pd.DataFrame, healthy_mask: np.ndarray
+        self, X: np.ndarray, metadata: pd.DataFrame, fit_mask: np.ndarray
     ) -> Dict[str, Any]:
-        scaler, X_scaled = self._fit_healthy_scaler(X, healthy_mask)
+        scaler, X_scaled = self._fit_healthy_scaler(X, fit_mask)
 
         lof = LocalOutlierFactor(
             n_neighbors=20,
             contamination=0.1,
             novelty=True,
         )
-        lof.fit(X_scaled[healthy_mask])
+        lof.fit(X_scaled[fit_mask])
         anomaly_labels = lof.predict(X_scaled)
         anomaly_scores = -lof.decision_function(X_scaled)
 
@@ -262,12 +310,12 @@ class GaitAnomalyDetector:
         }
 
     def _one_class_svm_detection(
-        self, X: np.ndarray, metadata: pd.DataFrame, healthy_mask: np.ndarray
+        self, X: np.ndarray, metadata: pd.DataFrame, fit_mask: np.ndarray
     ) -> Dict[str, Any]:
-        scaler, X_scaled = self._fit_healthy_scaler(X, healthy_mask)
+        scaler, X_scaled = self._fit_healthy_scaler(X, fit_mask)
 
         svm = OneClassSVM(kernel="rbf", gamma="scale", nu=0.1)
-        svm.fit(X_scaled[healthy_mask])
+        svm.fit(X_scaled[fit_mask])
         anomaly_labels = svm.predict(X_scaled)
         anomaly_scores = -svm.decision_function(X_scaled)
 
@@ -291,21 +339,27 @@ class GaitAnomalyDetector:
     # ------------------------------------------------------------------
 
     def _ensemble_detection(
-        self, results: Dict[str, Any], metadata: pd.DataFrame
+        self,
+        results: Dict[str, Any],
+        metadata: pd.DataFrame,
+        fit_mask: np.ndarray,
     ) -> Dict[str, Any]:
         """
-        FIX: normalise each method's scores to [0,1] independently before
-        averaging, so a method with a larger raw score range cannot dominate.
+        Normalise each method using train-fold Healthy scores only, then average.
+
+        v13 fix: ensemble threshold (p90) computed on train-fold reconstruction /
+        anomaly scores — never on held-out or pathological trials.
         """
         normalised = []
         for method_name in ANOMALY_METHODS:
             if method_name not in results:
                 continue
-            normalised.append(_normalise(results[method_name]["anomaly_scores"]))
+            scores = np.asarray(results[method_name]["anomaly_scores"], dtype=float)
+            normalised.append(_normalise(scores, scores[fit_mask]))
 
         ensemble_scores = np.mean(normalised, axis=0)
-
-        threshold = np.percentile(ensemble_scores, 90)
+        train_ref = ensemble_scores[fit_mask]
+        threshold = reconstruction_threshold_train_only(train_ref, percentile=90.0)
         ensemble_binary = (ensemble_scores >= threshold).astype(int)
 
         return {
@@ -506,19 +560,22 @@ class GaitAnomalyDetector:
         logger.info("Results saved to anomaly detection directory")
 
     def _save_deploy_calibration(self, results: Dict[str, Any]) -> None:
-        """Persist deploy-time score ranges for API ensemble normalisation."""
+        """Persist deploy-time score ranges fit on train-fold Healthy trials only."""
+        fit_mask = getattr(self, "_fit_mask", None)
         methods_calib: Dict[str, Dict[str, float]] = {}
         for method_name in ANOMALY_METHODS:
             if method_name not in results:
                 continue
             scores = np.asarray(results[method_name]["anomaly_scores"], dtype=float)
+            ref = scores[fit_mask] if fit_mask is not None else scores
             methods_calib[method_name] = {
-                "min": float(np.nanmin(scores)),
-                "max": float(np.nanmax(scores)),
+                "min": float(np.nanmin(ref)),
+                "max": float(np.nanmax(ref)),
             }
         payload = {
             "methods": methods_calib,
             "ensemble_threshold_p90": float(results["ensemble"]["threshold"]),
+            "threshold_fit_policy": "healthy_train_fold_only",
             "primary_endpoint": resolve_primary_endpoint(self.config),
         }
         path = self.results_dir / "deploy_calibration.json"

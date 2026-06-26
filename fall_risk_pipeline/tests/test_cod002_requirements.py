@@ -35,7 +35,7 @@ def test_ci_installs_pinned_lockfiles():
     ci = CI.read_text(encoding="utf-8")
     assert "requirements-lock.txt" in ci
     assert "requirements-dev-lock.txt" in ci
-    assert "api/requirements-lock.txt" in ci
+    assert "api/requirements-lock.txt" not in ci
+    assert "sync_front_end" not in ci
     assert "requirements-dev.txt" not in ci
-    assert "api/requirements.txt" not in ci.split("Install dependencies")[1].split("Sync frontend")[0]
     assert "download.pytorch.org/whl/cpu" in ci

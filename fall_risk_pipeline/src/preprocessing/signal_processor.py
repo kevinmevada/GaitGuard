@@ -22,6 +22,13 @@ from loguru import logger
 from scipy.signal import butter, filtfilt, find_peaks
 from tqdm import tqdm
 
+from src.preprocessing.unified_bandpass import (
+    UnifiedBandpassConfig,
+    apply_unified_acc_bandpass,
+    lowpass_gyro_columns,
+)
+from tqdm import tqdm
+
 
 class SignalProcessor:
 
@@ -35,9 +42,10 @@ class SignalProcessor:
         pp = config["preprocessing"]
 
         self.fs      = config["dataset"]["sampling_rate"]
-        self.lp_cut  = pp["lowpass_cutoff_hz"]
-        self.hp_cut  = pp["highpass_cutoff_hz"]
-        self.order   = pp["lowpass_order"]
+        self.bandpass_cfg = UnifiedBandpassConfig.from_pipeline_config(config)
+        self.lp_cut  = float(pp.get("lowpass_cutoff_hz", self.bandpass_cfg.high_hz))
+        self.hp_cut  = float(pp.get("highpass_cutoff_hz", self.bandpass_cfg.low_hz))
+        self.order   = int(pp.get("lowpass_order", self.bandpass_cfg.order))
         self.beta    = pp["madgwick_beta"]
         self.madgwick_enabled = pp.get("madgwick_enabled", True)
         self.madgwick_sensors = set(pp.get("madgwick_sensors", ["head", "lower_back"]))
@@ -57,6 +65,9 @@ class SignalProcessor:
         self.hs_prominence_floor = float(floor) if floor is not None else None
         self.hs_min_interval_s = float(pp.get("heel_strike_min_interval_s", 0.5))
         self.max_nan_fraction = float(pp.get("max_nan_fraction_before_filter", 0.05))
+        self.exclude_uturn = bool(pp.get("exclude_uturn_segment", True))
+        self.min_walking_segment_s = float(pp.get("min_walking_segment_s", 5.0))
+        self._uturn_exclusion_rows: list[dict] = []
         self._trial_cohort: dict[str, str] = {}
 
         if self.madgwick_enabled:
@@ -83,6 +94,8 @@ class SignalProcessor:
                 zip(meta["trial_id"].astype(str), meta["cohort"].astype(str))
             )
 
+        has_uturn_cols = {"uturn_start", "uturn_end"}.issubset(meta.columns)
+
         signals_dir = self.proc_dir / "signals"
 
         for row in tqdm(
@@ -96,16 +109,31 @@ class SignalProcessor:
 
             try:
                 cohort = self._trial_cohort.get(str(trial_id))
-                self._process_trial(trial_id, signals_dir, cohort=cohort)
+                uturn_start = int(row.uturn_start) if has_uturn_cols and pd.notna(row.uturn_start) else None
+                uturn_end = int(row.uturn_end) if has_uturn_cols and pd.notna(row.uturn_end) else None
+                self._process_trial(
+                    trial_id,
+                    signals_dir,
+                    cohort=cohort,
+                    uturn_start=uturn_start,
+                    uturn_end=uturn_end,
+                )
             except Exception as e:
                 logger.warning(f"{trial_id} failed: {e}")
 
+        self._write_uturn_exclusion_report()
         logger.info(f"Saved cleaned signals → {self.out_dir}")
 
     # ─────────────────────────────────────────
 
     def _process_trial(
-        self, trial_id: str, signals_dir: Path, *, cohort: str | None = None
+        self,
+        trial_id: str,
+        signals_dir: Path,
+        *,
+        cohort: str | None = None,
+        uturn_start: int | None = None,
+        uturn_end: int | None = None,
     ):
         positions = ["head", "lower_back", "left_foot", "right_foot"]
         clean: dict[str, pd.DataFrame] = {}
@@ -121,6 +149,31 @@ class SignalProcessor:
             if df.empty:
                 continue
 
+            if (
+                self.exclude_uturn
+                and uturn_start is not None
+                and uturn_end is not None
+            ):
+                from src.preprocessing.walking_segments import extract_walking_segments
+
+                df, seg_info = extract_walking_segments(
+                    df,
+                    uturn_start,
+                    uturn_end,
+                    fs=float(self.fs),
+                    min_segment_s=self.min_walking_segment_s,
+                )
+                if pos == "lower_back":
+                    self._uturn_exclusion_rows.append(
+                        {"trial_id": trial_id, "sensor": pos, **seg_info}
+                    )
+                if df is None or df.empty:
+                    raise ValueError(
+                        f"U-turn exclusion failed ({seg_info.get('status')}): "
+                        f"outward={seg_info.get('outward_samples')}, "
+                        f"return={seg_info.get('return_samples')}"
+                    )
+
             df = self.process_sensor_dataframe(df, pos, cohort=cohort)
             clean[pos] = df
 
@@ -130,6 +183,28 @@ class SignalProcessor:
         for pos, df in clean.items():
             out = self.out_dir / f"{trial_id}_{pos}.parquet"
             df.to_parquet(out, index=False)
+
+    def _write_uturn_exclusion_report(self) -> None:
+        if not self._uturn_exclusion_rows:
+            return
+        metrics_dir = Path(self.config["paths"]["metrics"])
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        report = pd.DataFrame(self._uturn_exclusion_rows)
+        out_path = metrics_dir / "uturn_exclusion_report.csv"
+        report.to_csv(out_path, index=False)
+        n_fail = int((report["status"] != "ok").sum()) if "status" in report.columns else 0
+        if n_fail:
+            logger.warning(
+                "U-turn walking extraction failed for {} trials — see {}",
+                n_fail,
+                out_path,
+            )
+        else:
+            logger.info(
+                "U-turn segments excluded from walking signals ({} trials) → {}",
+                len(report),
+                out_path,
+            )
 
     # ─────────────────────────────────────────
 
@@ -146,9 +221,6 @@ class SignalProcessor:
         Order: filter → resultants → Madgwick orientation (trunk) → gait events (feet)
         → gravity removal (lower back).
         """
-        if df.empty:
-            return df
-
         if df.empty:
             return df
 
@@ -209,18 +281,29 @@ class SignalProcessor:
             return df
 
         acc_cols = [c for c in df.columns if c.startswith("acc_")]
-        gyr_cols = [c for c in df.columns if c.startswith("gyr_")]
 
         try:
-            if self.hp_cut > 0:
-                b, a = butter(self.order, self.hp_cut / (self.fs / 2), btype="high")
-                for col in acc_cols:
+            if self.bandpass_cfg.enabled:
+                # Stage C: identical 0.5–20 Hz zero-phase bandpass (Voisard + DAPHNET).
+                df = apply_unified_acc_bandpass(df, self.bandpass_cfg)
+            else:
+                gyr_cols = [c for c in df.columns if c.startswith("gyr_")]
+                if self.hp_cut > 0:
+                    b, a = butter(self.order, self.hp_cut / (self.fs / 2), btype="high")
+                    for col in acc_cols:
+                        df[col] = filtfilt(b, a, df[col])
+                b, a = butter(self.order, self.lp_cut / (self.fs / 2), btype="low")
+                for col in acc_cols + gyr_cols:
                     df[col] = filtfilt(b, a, df[col])
 
-            b, a = butter(self.order, self.lp_cut / (self.fs / 2), btype="low")
-
-            for col in acc_cols + gyr_cols:
-                df[col] = filtfilt(b, a, df[col])
+            gyr_cols = [c for c in df.columns if c.startswith("gyr_")]
+            if gyr_cols and self.bandpass_cfg.enabled:
+                df = lowpass_gyro_columns(
+                    df,
+                    fs_hz=float(self.fs),
+                    cutoff_hz=self.bandpass_cfg.high_hz,
+                    order=self.bandpass_cfg.order,
+                )
 
         except Exception as e:
             logger.warning(f"Filter failed: {e}")

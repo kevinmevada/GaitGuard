@@ -22,7 +22,6 @@ install:
 	pip install -r fall_risk_pipeline/requirements-lock.txt \
 		--extra-index-url https://download.pytorch.org/whl/cpu
 	pip install -r fall_risk_pipeline/requirements-dev-lock.txt
-	pip install -r api/requirements-lock.txt
 
 pipeline:
 	cd fall_risk_pipeline && PYTHONHASHSEED=$(PYTHONHASHSEED) python main.py --config $(CONFIG)

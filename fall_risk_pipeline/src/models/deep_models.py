@@ -126,6 +126,46 @@ class _InceptionBlock(nn.Module):
         y = torch.cat(branches, dim=1)
         return F.relu(self.bn(y))
 
+    def branch_maps(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Parallel branch activations before concat (lengths 10, 20, 40, MP)."""
+        x_bn = self.bottleneck(x) if self.bottleneck else x
+        branches = {
+            "ms10": self.conv10(x_bn),
+            "ms20": self.conv20(x_bn),
+            "ms40": self.conv40(x_bn),
+            "ms_mp": self.conv_mp(self.mp(x)),
+        }
+        t = min(b.size(-1) for b in branches.values())
+        return {k: v[..., :t] for k, v in branches.items()}
+
+
+class InceptionMultiscaleExtractor(nn.Module):
+    """
+    Multi-scale context maps from the first Inception block (kernels 10/20/40).
+
+    Fawaz et al. 2020 — micro-tremor vs macro-gait parallel filters.
+    """
+
+    def __init__(self, n_channels: int, filters: int = 32, bottleneck: int = 32):
+        super().__init__()
+        self.block = _InceptionBlock(n_channels, filters, bottleneck)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        maps = self.block.branch_maps(x)
+        feats = []
+        for branch in ("ms10", "ms20", "ms40", "ms_mp"):
+            gap = maps[branch].mean(dim=2)
+            feats.append(gap)
+        return torch.cat(feats, dim=1)
+
+    @staticmethod
+    def feature_names(filters: int = 32) -> list[str]:
+        names: list[str] = []
+        for branch in ("ms10", "ms20", "ms40", "ms_mp"):
+            for i in range(filters):
+                names.append(f"it_{branch}_{i:02d}")
+        return names
+
 
 class InceptionTime(nn.Module):
     """
@@ -352,11 +392,60 @@ class LSTMClassifier(nn.Module):
 
 
 # ═════════════════════════════════════════════════════════════════
+# 6.  DeepConvLSTM (Ordóñez & Roggen 2016)
+# ═════════════════════════════════════════════════════════════════
+
+class DeepConvLSTM(nn.Module):
+    """
+    Convolutional feature maps + stacked LSTM classifier.
+
+    Ordóñez & Roggen 2016 — deep conv front-end over sensor channels,
+    LSTM temporal pooling, linear head. Benchmark for BiLSTM-AE comparison.
+    """
+
+    def __init__(
+        self,
+        n_channels: int,
+        seq_len: int,
+        n_classes: int = 3,
+        *,
+        conv_filters: int = 64,
+        lstm_hidden: int = 128,
+        lstm_layers: int = 2,
+        dropout: float = 0.3,
+    ):
+        super().__init__()
+        self.conv1 = nn.Conv1d(n_channels, conv_filters, kernel_size=5, padding=2)
+        self.bn1 = nn.BatchNorm1d(conv_filters)
+        self.conv2 = nn.Conv1d(conv_filters, conv_filters, kernel_size=5, padding=2)
+        self.bn2 = nn.BatchNorm1d(conv_filters)
+        self.pool = nn.MaxPool1d(2)
+        self.lstm = nn.LSTM(
+            conv_filters,
+            lstm_hidden,
+            num_layers=lstm_layers,
+            batch_first=True,
+            dropout=dropout if lstm_layers > 1 else 0.0,
+        )
+        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Linear(lstm_hidden, n_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.pool(F.relu(self.bn1(self.conv1(x))))
+        x = self.pool(F.relu(self.bn2(self.conv2(x))))
+        x = x.transpose(1, 2)
+        lstm_out, _ = self.lstm(x)
+        out = lstm_out[:, -1, :]
+        return self.fc(self.dropout(out))
+
+
+# ═════════════════════════════════════════════════════════════════
 # Model registry
 # ═════════════════════════════════════════════════════════════════
 
 DEEP_MODEL_REGISTRY: dict[str, type[nn.Module]] = {
     "inception_time": InceptionTime,
+    "deep_conv_lstm": DeepConvLSTM,
     "gait_transformer": GaitTransformer,
     "tcn": TCN,
     "cnn1d": CNN1D,
@@ -388,10 +477,14 @@ def trial_to_tensor(
     signals_dir,
     sensor_positions: list[str],
     channels: list[str] = CHANNEL_ORDER,
+    *,
+    require_all_sensors: bool = True,
 ) -> np.ndarray | None:
     """
     Load cleaned per-sensor parquets for one trial and stack into a
     (n_channels_total, T_min) array.  Returns None on failure.
+
+    When ``require_all_sensors=False``, stacks every available sensor (e.g. DAPHNET LB-only).
     """
     from pathlib import Path
     signals_dir = Path(signals_dir)
@@ -400,12 +493,16 @@ def trial_to_tensor(
     for pos in sensor_positions:
         path = signals_dir / f"{trial_id}_{pos}.parquet"
         if not path.exists():
-            return None
+            if require_all_sensors:
+                return None
+            continue
         import pandas as pd
         df = pd.read_parquet(path)
         usable = [c for c in channels if c in df.columns]
         if not usable:
-            return None
+            if require_all_sensors:
+                return None
+            continue
         arr = df[usable].values.T  # (usable_ch, T)
         arrays.append(arr)
         min_len = min(min_len, arr.shape[1])
@@ -424,7 +521,10 @@ def create_windows(
     return_starts: bool = False,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """
-    Slide fixed-length windows over a (C, T) signal array.
+    Slide fixed-length windows over a (C, T) signal array for a **single trial**.
+
+    Windows must not span trial boundaries — call once per trial, never on
+    concatenated multi-trial buffers (see ``preprocessing.windowing``).
     Returns (n_windows, C, window_len), optionally with start indices per window.
     """
     if overlap >= 1.0:
