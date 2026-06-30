@@ -66,11 +66,18 @@ export TMPDIR="${STAGING}/tmp"
 mkdir -p "${TMPDIR}"
 cd "${PROJECT}"
 
+echo "  python: $(which python) ($(python --version 2>&1))"
 rm -f condor/manifests/*.json
+
+echo "  running: hpc.py init ..."
 python hpc.py init
+echo "  running: hpc.py manifests ingest ..."
 python hpc.py manifests ingest
+echo "  running: hpc.py manifests preprocess ..."
 python hpc.py manifests preprocess
+echo "  running: hpc.py manifests features ..."
 python hpc.py manifests features
+echo "  manifests: $(ls condor/manifests/*.json 2>/dev/null | wc -l) files"
 
 echo "=== 5. Regenerate DAG and submit ==="
 python hpc/submit/generate_dag.py --config configs/pipeline_config.yaml
