@@ -30,6 +30,7 @@ class _NullProgress:
     """No-op stand-in when progress bars would spam lines (piped / Tee-Object)."""
 
     def __init__(self, *args: Any, **kwargs: Any):
+        self._iterable = _coerce_iterable(args[0] if args else None)
         self.total = kwargs.get("total")
 
     def refresh(self) -> None:
@@ -48,6 +49,8 @@ class _NullProgress:
         pass
 
     def __iter__(self):
+        if self._iterable is not None:
+            return iter(self._iterable)
         return iter([])
 
     def __enter__(self):
@@ -55,6 +58,19 @@ class _NullProgress:
 
     def __exit__(self, *args: Any) -> None:
         pass
+
+
+def _coerce_iterable(candidate: Any) -> Any | None:
+    """Return ``candidate`` if it is a tqdm-style iterable (not a scalar total)."""
+    if candidate is None:
+        return None
+    if isinstance(candidate, (str, bytes, int, float)):
+        return None
+    try:
+        iter(candidate)
+    except TypeError:
+        return None
+    return candidate
 
 
 def progress_bar(*args: Any, **kwargs: Any):

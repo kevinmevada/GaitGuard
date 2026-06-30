@@ -76,7 +76,24 @@ $env:PYTHONHASHSEED = "42"
 
 Linux/macOS: `export PYTHONHASHSEED=42` or `make pipeline` (Makefile exports it).
 
-## Reproducible one-command run
+### OSPool (ap40) — staging + HTCondor
+
+On the access point, keep large artifacts on staging and submit heavy stages to workers (not the login node):
+
+```bash
+bash ../scripts/setup_ospool_staging.sh          # symlinks data/ + results/ → /ospool/.../gaitguard/
+conda activate gaitguard                          # env on /ospool/.../conda/envs/gaitguard
+export TMPDIR=/ospool/ap40/data/kevin.mevada/tmp # avoid /tmp block quota during pip
+
+cd fall_risk_pipeline
+chmod +x condor/run_stage.sh condor/print_submit_order.sh
+mkdir -p condor/logs
+condor_submit condor/ingest.sub                   # or: condor_submit condor/cpu_stage.sub -a "stage=preprocess"
+bash condor/print_submit_order.sh                 # full stage submit order (CPU + GPU)
+```
+
+Set `+ProjectName` in `condor/*.sub` to your OSG project (e.g. `IIT_Rosa`). GPU stages: `condor/gpu_stage.sub` (`anomaly`, `train_deep`, `dl_baselines`, …).
+
 
 From repo root:
 

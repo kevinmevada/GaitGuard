@@ -1,0 +1,26 @@
+# Submit one CPU pipeline stage on OSPool.
+#
+#   condor_submit condor/cpu_stage.sub -a "stage=preprocess"
+#   condor_submit condor/cpu_stage.sub -a "stage=features"
+#
+# Monitor: condor_q && tail -f condor/logs/preprocess_*.out
+
+universe   = vanilla
+initialdir = /home/kevin.mevada/projects/GaitGuard/fall_risk_pipeline
+executable = condor/run_stage.sh
+arguments  = $(stage)
+
+log    = condor/logs/$(stage)_$(Cluster)_$(Process).log
+output = condor/logs/$(stage)_$(Cluster)_$(Process).out
+error  = condor/logs/$(stage)_$(Cluster)_$(Process).err
+
+request_cpus   = 4
+request_memory = 16 GB
+request_disk   = 50 GB
+
+should_transfer_files = NO
+getenv                = True
+
++ProjectName = "IIT_Rosa"
+
+queue
