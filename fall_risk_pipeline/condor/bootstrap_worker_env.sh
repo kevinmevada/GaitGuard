@@ -2,8 +2,9 @@
 # Create a lightweight venv on OSPool workers (avoids transferring 2.5 GB conda env).
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${WORKER_VENV:-${PWD}/.worker-venv}"
-REQ="${PWD}/condor/requirements-hpc-cpu.txt"
+REQ="${SCRIPT_DIR}/requirements-hpc-cpu.txt"
 
 if [[ -x "${VENV_DIR}/bin/python" ]]; then
   export PATH="${VENV_DIR}/bin:${PATH}"
