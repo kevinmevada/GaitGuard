@@ -6,40 +6,42 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from loguru import logger
 
-def _osdf_copy(src: str, dst: Path, *, recursive: bool = False) -> None:
+
+def _osdf_copy(src: str, dst: Path, *, recursive: bool = False) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
-        return
+        return True
     flags = ["-r"] if recursive else []
-    cmd = ["stashcp", *flags, src, str(dst)]
-    try:
-        subprocess.run(cmd, check=True)
-        return
-    except FileNotFoundError:
-        pass
-    except subprocess.CalledProcessError:
-        pass
-    # HTCondor OSDF plugin URL — stashcp preferred on OSPool when available.
-    url = src if src.startswith("osdf://") else f"osdf://{src.lstrip('/')}"
-    cmd = ["stashcp", *flags, url, str(dst)]
-    subprocess.run(cmd, check=True)
+    for url in (src, src if src.startswith("osdf://") else f"osdf://{src.lstrip('/')}"):
+        try:
+            subprocess.run(["stashcp", *flags, url, str(dst)], check=True)
+            return True
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            logger.warning("stashcp failed {} -> {}: {}", url, dst, exc)
+    return False
 
 
 def _stage_ingest(manifest: dict, osd_gg: str, raw_root: Path) -> None:
     paths = manifest.get("trial_source_paths") or {}
-    for _trial_id, rel in paths.items():
+    ok = 0
+    for trial_id, rel in paths.items():
         rel = str(rel).strip("/")
         trial_dir = raw_root / rel
         if trial_dir.is_dir():
+            ok += 1
             continue
         src = f"{osd_gg}/raw/{rel}?recursive"
-        _osdf_copy(src, trial_dir, recursive=True)
+        if _osdf_copy(src, trial_dir, recursive=True):
+            ok += 1
+        else:
+            logger.warning("ingest staging miss: trial {} ({})", trial_id, rel)
+    logger.info("ingest staging: {}/{} trial dirs ready", ok, len(paths))
 
 
 def _stage_preprocess_or_features(
@@ -67,7 +69,8 @@ def _stage_preprocess_or_features(
                 continue
             src = f"{osd_gg}/processed/signals/{name}"
             try:
-                _osdf_copy(src, dst)
+                if not _osdf_copy(src, dst):
+                    continue
             except subprocess.CalledProcessError:
                 continue
 

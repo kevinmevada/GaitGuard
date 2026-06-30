@@ -1,9 +1,8 @@
-# CPU shard job — OSPool: transfer code only; bootstrap small venv on worker.
+# CPU shard job — OSPool: transfer code; venv on worker; OSDF upload via stashcp in job.
 OSDF_BASE = osdf:///ospool/ap40/data/kevin.mevada
 OSDF_GAITGUARD = $(OSDF_BASE)/gaitguard
 
 universe   = vanilla
-initialdir = /home/kevin.mevada/projects/GaitGuard/fall_risk_pipeline
 executable = condor/run_hpc.sh
 arguments  = shard $(stage) --manifest $(shard_manifest)
 
@@ -16,7 +15,7 @@ request_memory = 8 GB
 request_disk   = 20 GB
 
 should_transfer_files   = YES
-when_to_transfer_output = ON_EXIT
+when_to_transfer_output = NEVER
 transfer_input_files    = \
     condor/run_hpc.sh, \
     condor/ospool_paths.sh, \
@@ -28,9 +27,6 @@ transfer_input_files    = \
     configs/pipeline_config.yaml, \
     $(shard_manifest), \
     src
-
-transfer_output_files = shard_out.tar.gz
-transfer_output_remaps = "shard_out.tar.gz = $(OSDF_GAITGUARD)/hpc/shards/$(stage)/$(chunk_id).tar.gz"
 
 getenv = True
 +ProjectName = "IIT_Rosa"

@@ -17,8 +17,9 @@ on_worker() {
 }
 
 if on_worker; then
+  cd "${_CONDOR_SCRATCH_DIR}"
   export TMPDIR="${_CONDOR_SCRATCH_DIR}/tmp"
-  mkdir -p "${TMPDIR}"
+  mkdir -p "${TMPDIR}" data/hpc/shards data/processed data/raw
 else
   export TMPDIR="${STAGING}/tmp"
   export PIP_CACHE_DIR="${STAGING}/pip-cache"
@@ -57,30 +58,48 @@ run_shard() {
   done
   [[ -n "${manifest}" ]] || { echo "missing --manifest" >&2; exit 1; }
 
+  local rc=0
+  local err_msg=""
+
   if on_worker; then
-    python condor/stage_shard_inputs.py "${stage}" --manifest "${manifest}"
+    python condor/stage_shard_inputs.py "${stage}" --manifest "${manifest}" || {
+      rc=$?
+      err_msg="stage_shard_inputs failed (rc=${rc})"
+    }
   fi
-  python hpc.py shard "${stage}" --manifest "${manifest}"
+
+  if ! python hpc.py shard "${stage}" --manifest "${manifest}"; then
+    rc=$?
+    err_msg="${err_msg:+$err_msg; }hpc.py shard failed (rc=${rc})"
+  fi
+
   if on_worker; then
-    python condor/package_shard_outputs.py "${stage}" --manifest "${manifest}"
+    python condor/package_shard_outputs.py "${stage}" --manifest "${manifest}" --error "${err_msg}" || {
+      rc=$?
+      echo "package_shard_outputs failed (rc=${rc})" >&2
+    }
   fi
+
+  return "${rc}"
 }
 
 run_merge() {
   local stage="$1"
+  local rc=0
   if on_worker; then
-    python condor/fetch_shards_for_merge.py "${stage}"
+    python condor/fetch_shards_for_merge.py "${stage}" || rc=$?
     mkdir -p data/processed data/features
   fi
-  python hpc.py merge "${stage}"
+  python hpc.py merge "${stage}" || rc=$?
   if on_worker; then
-    python condor/publish_merge_outputs.py "${stage}"
+    python condor/publish_merge_outputs.py "${stage}" || rc=$?
   fi
+  return "${rc}"
 }
 
 setup_python
 if on_worker; then
-  echo "=== worker: $(hostname) scratch=${_CONDOR_SCRATCH_DIR} ==="
+  echo "=== worker: $(hostname) pwd=$(pwd) scratch=${_CONDOR_SCRATCH_DIR} ==="
 else
   echo "=== ap40 local: $(hostname) ==="
   cd "${PROJECT}"
