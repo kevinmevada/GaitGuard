@@ -7,6 +7,7 @@ STAGING="${STAGING:-/ospool/ap40/data/kevin.mevada}"
 MAMBA_ROOT="${STAGING}/miniforge3"
 ENV_NAME="${ENV_NAME:-gaitguard}"
 PROJECT="${HOME}/projects/GaitGuard/fall_risk_pipeline"
+PY="${MAMBA_ROOT}/envs/${ENV_NAME}/bin/python"
 
 export TMPDIR="${STAGING}/tmp"
 export PIP_CACHE_DIR="${STAGING}/pip-cache"
@@ -24,9 +25,20 @@ fi
 # shellcheck source=/dev/null
 source "${MAMBA_ROOT}/bin/activate"
 
+env_ok() {
+  [[ -x "${PY}" ]] && "${PY}" -c "import pandas, numpy, pyarrow" 2>/dev/null
+}
+
 if conda env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
-  echo "Conda env ${ENV_NAME} already exists at ${MAMBA_ROOT}/envs/${ENV_NAME}"
-else
+  if env_ok; then
+    echo "Conda env ${ENV_NAME} OK at ${MAMBA_ROOT}/envs/${ENV_NAME}"
+  else
+    echo "WARN: ${ENV_NAME} is registered but broken — removing and recreating ..."
+    conda env remove -y -n "${ENV_NAME}" || rm -rf "${MAMBA_ROOT}/envs/${ENV_NAME}"
+  fi
+fi
+
+if ! env_ok; then
   echo "Creating ${ENV_NAME} (python 3.11) ..."
   conda create -y -n "${ENV_NAME}" python=3.11 pip
   conda activate "${ENV_NAME}"
@@ -34,12 +46,11 @@ else
     --extra-index-url https://download.pytorch.org/whl/cpu
 fi
 
-PY="${MAMBA_ROOT}/envs/${ENV_NAME}/bin/python"
 "${PY}" -c "import pandas, numpy, pyarrow; print('OK:', pandas.__version__)"
 
 echo ""
 echo "Worker transfer path (used by condor/*.sub):"
-echo "  ${MAMBA_ROOT}/envs/${ENV_NAME}/bin/python"
-echo "  osdf://${STAGING#/*}/miniforge3/envs/${ENV_NAME}?recursive"
+echo "  ${PY}"
+echo "  osdf://${STAGING#/}/miniforge3/envs/${ENV_NAME}?recursive"
 echo ""
 echo "Activate locally: source ${MAMBA_ROOT}/bin/activate && conda activate ${ENV_NAME}"
