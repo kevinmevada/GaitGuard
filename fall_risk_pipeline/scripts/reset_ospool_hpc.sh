@@ -22,6 +22,7 @@ OWNER="$(whoami)"
 confirm() {
   if $YES; then return 0; fi
   echo "This will:"
+  echo "  - git pull latest code"
   echo "  - condor_rm ALL jobs for ${OWNER}"
   echo "  - delete condor/logs/* and condor/dags/*.{rescue*,condor.sub,dagman.*,lib.*}"
   echo "  - delete ${GG}/hpc/{shards,merge,oof}/*"
@@ -33,6 +34,11 @@ confirm() {
 }
 
 confirm || { echo "Aborted."; exit 0; }
+
+echo "=== 0. Pull latest code ==="
+cd "${HOME}/projects/GaitGuard"
+git pull
+cd "${PROJECT}"
 
 echo "=== 1. Remove all HTCondor jobs ==="
 condor_rm "${OWNER}" 2>/dev/null || true
