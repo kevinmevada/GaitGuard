@@ -2,7 +2,7 @@
 universe   = vanilla
 initialdir = /home/kevin.mevada/projects/GaitGuard/fall_risk_pipeline
 executable = condor/run_hpc.sh
-arguments  = shard anomaly --manifest $(manifest)
+arguments  = shard anomaly --manifest $(shard_manifest)
 
 log    = condor/logs/hpc_anomaly_$(Cluster)_$(Process).log
 output = condor/logs/hpc_anomaly_$(Cluster)_$(Process).out

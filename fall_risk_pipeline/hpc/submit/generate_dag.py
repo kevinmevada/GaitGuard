@@ -62,7 +62,7 @@ def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> N
     for i, m in enumerate(ingest_m):
         name = f"ing_{i}"
         rel = m.relative_to(REPO).as_posix()
-        lines.extend(_job_block(name, "condor/hpc_shard_cpu.sub", {"stage": "ingest", "manifest": rel}))
+        lines.extend(_job_block(name, "condor/hpc_shard_cpu.sub", {"stage": "ingest", "shard_manifest": rel}))
         ingest_jobs.append(name)
 
     lines.extend(_job_block("merge_ingest", "condor/hpc_merge.sub", {"command": "merge", "stage": "ingest"}))
@@ -72,7 +72,7 @@ def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> N
     for i, m in enumerate(pre_m):
         name = f"pre_{i}"
         rel = m.relative_to(REPO).as_posix()
-        lines.extend(_job_block(name, "condor/hpc_shard_cpu.sub", {"stage": "preprocess", "manifest": rel}))
+        lines.extend(_job_block(name, "condor/hpc_shard_cpu.sub", {"stage": "preprocess", "shard_manifest": rel}))
         pre_jobs.append(name)
     lines.extend(_job_block("merge_preprocess", "condor/hpc_merge.sub", {"command": "merge", "stage": "preprocess"}))
     if pre_jobs:
@@ -85,7 +85,7 @@ def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> N
     for i, m in enumerate(feat_m):
         name = f"feat_{i}"
         rel = m.relative_to(REPO).as_posix()
-        lines.extend(_job_block(name, "condor/hpc_shard_cpu.sub", {"stage": "features", "manifest": rel}))
+        lines.extend(_job_block(name, "condor/hpc_shard_cpu.sub", {"stage": "features", "shard_manifest": rel}))
         feat_jobs.append(name)
     lines.extend(_job_block("merge_features", "condor/hpc_merge.sub", {"command": "merge", "stage": "features"}))
     if feat_jobs:
@@ -98,7 +98,7 @@ def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> N
     for i, m in enumerate(anom_m):
         name = f"anom_{i}"
         rel = m.relative_to(REPO).as_posix()
-        lines.extend(_job_block(name, "condor/hpc_shard_gpu.sub", {"manifest": rel}))
+        lines.extend(_job_block(name, "condor/hpc_shard_gpu.sub", {"shard_manifest": rel}))
         anom_jobs.append(name)
     lines.extend(_job_block("reduce_anomaly", "condor/hpc_merge.sub", {"command": "reduce", "stage": "anomaly"}))
     if anom_jobs:

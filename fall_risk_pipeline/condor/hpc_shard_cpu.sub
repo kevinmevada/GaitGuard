@@ -1,8 +1,8 @@
-# CPU shard job — pass manifest path via $(manifest)
+# CPU shard job — $(shard_manifest) is the manifest path (not `manifest` — HTCondor reserved keyword)
 universe   = vanilla
 initialdir = /home/kevin.mevada/projects/GaitGuard/fall_risk_pipeline
 executable = condor/run_hpc.sh
-arguments  = shard $(stage) --manifest $(manifest)
+arguments  = shard $(stage) --manifest $(shard_manifest)
 
 log    = condor/logs/hpc_$(stage)_$(Cluster)_$(Process).log
 output = condor/logs/hpc_$(stage)_$(Cluster)_$(Process).out
