@@ -10,10 +10,14 @@ def hpc_cfg(config: dict) -> dict:
 
 
 def pipeline_root(config: dict) -> Path:
+    """Directory containing ``main.py`` (parent of ``configs/`` when config lives there)."""
     meta = config.get("_pipeline_meta") or {}
     cfg_path = meta.get("config_path")
     if cfg_path:
-        return Path(cfg_path).resolve().parent
+        cfg = Path(cfg_path).resolve()
+        if cfg.parent.name == "configs":
+            return cfg.parent.parent
+        return cfg.parent
     return Path(__file__).resolve().parents[2]
 
 

@@ -11,7 +11,10 @@ from src.hpc.manifests import write_ingest_manifests
 
 
 def _config(tmp_path: Path) -> dict:
-    processed = tmp_path / "processed"
+    pipeline = tmp_path / "fall_risk_pipeline"
+    configs = pipeline / "configs"
+    configs.mkdir(parents=True)
+    processed = pipeline / "data" / "processed"
     processed.mkdir(parents=True)
     inv = pd.DataFrame(
         {
@@ -22,9 +25,10 @@ def _config(tmp_path: Path) -> dict:
     )
     inv.to_csv(processed / "dataset_inventory.csv", index=False)
     return {
+        "_pipeline_meta": {"config_path": str(configs / "pipeline_config.yaml")},
         "paths": {"processed_data": str(processed)},
         "hpc": {
-            "manifests_dir": str(tmp_path / "manifests"),
+            "manifests_dir": "data/hpc/manifests",
             "trials_per_chunk": 2,
         },
     }
@@ -37,3 +41,5 @@ def test_write_ingest_manifests_chunks(tmp_path: Path):
     payload = json.loads(paths[0].read_text(encoding="utf-8"))
     assert "trial_ids" in payload
     assert len(payload["trial_ids"]) == 2
+    # manifests must live under trial processed root, not configs/
+    assert "configs" not in str(paths[0])
