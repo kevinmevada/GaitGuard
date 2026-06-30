@@ -5,7 +5,7 @@ set -euo pipefail
 STAGING="/ospool/ap40/data/kevin.mevada"
 PROJECT="${HOME}/projects/GaitGuard/fall_risk_pipeline"
 
-mkdir -p "${STAGING}/gaitguard"/{raw,processed,features,results}
+mkdir -p "${STAGING}/gaitguard"/{raw,processed,features,results,hpc/shards,hpc/oof,hpc/merge}
 mkdir -p "${STAGING}"/{conda/pkgs,conda/envs,pip-cache,tmp,cache}
 
 cd "${PROJECT}/data"
@@ -29,6 +29,16 @@ elif [ -e results ] && [ ! -L results ]; then
 else
   ln -s "${STAGING}/gaitguard/results" results
   echo "linked results -> ${STAGING}/gaitguard/results"
+fi
+
+cd "${PROJECT}/data"
+if [ -L hpc ]; then
+  echo "OK: hpc already symlinked"
+elif [ -e hpc ]; then
+  echo "WARN: data/hpc exists and is not a symlink"
+else
+  ln -s "${STAGING}/gaitguard/hpc" hpc
+  echo "linked hpc -> ${STAGING}/gaitguard/hpc"
 fi
 
 echo "Staging ready under ${STAGING}/gaitguard"

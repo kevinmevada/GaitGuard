@@ -20,6 +20,7 @@ def _config(tmp_path: Path) -> dict:
         {
             "dataset": ["voisard"] * 5,
             "trial": [f"T_{i}" for i in range(5)],
+            "source_path": [f"voisard/sub/T_{i}" for i in range(5)],
             "complete": [True] * 5,
         }
     )

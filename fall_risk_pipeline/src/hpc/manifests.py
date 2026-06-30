@@ -31,13 +31,23 @@ def write_ingest_manifests(config: dict) -> list[Path]:
     """Write ``ingest_chunk_NNN.json`` files; return paths."""
     inv = _load_inventory(config)
     trial_ids = sorted(inv["trial"].astype(str).unique().tolist())
+    inv_by_trial = inv.set_index("trial")
     out_dir = manifests_dir(config)
     out_dir.mkdir(parents=True, exist_ok=True)
     size = chunk_size(config)
     paths: list[Path] = []
     for idx, chunk in enumerate(_chunk_list(trial_ids, size)):
         chunk_id = f"chunk_{idx:04d}"
-        payload = {"chunk_id": chunk_id, "trial_ids": chunk}
+        trial_source_paths = {
+            str(t): str(inv_by_trial.loc[t, "source_path"])
+            for t in chunk
+            if t in inv_by_trial.index
+        }
+        payload = {
+            "chunk_id": chunk_id,
+            "trial_ids": chunk,
+            "trial_source_paths": trial_source_paths,
+        }
         path = out_dir / f"ingest_{chunk_id}.json"
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         paths.append(path)

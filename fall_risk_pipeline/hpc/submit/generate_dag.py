@@ -46,6 +46,15 @@ def _job_block(name: str, sub: str, vars: dict[str, str]) -> list[str]:
     return lines
 
 
+def _chunk_id_from_manifest(path: Path, kind: str) -> str:
+    # ingest_chunk_0000.json -> chunk_0000
+    stem = path.stem
+    prefix = f"{kind}_"
+    if stem.startswith(prefix):
+        return stem[len(prefix) :]
+    return stem
+
+
 def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     ingest_m = _manifests(config_path, "ingest")
@@ -62,7 +71,14 @@ def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> N
     for i, m in enumerate(ingest_m):
         name = f"ing_{i}"
         rel = m.relative_to(REPO).as_posix()
-        lines.extend(_job_block(name, "condor/hpc_shard_cpu.sub", {"stage": "ingest", "shard_manifest": rel}))
+        cid = _chunk_id_from_manifest(m, "ingest")
+        lines.extend(
+            _job_block(
+                name,
+                "condor/hpc_shard_cpu.sub",
+                {"stage": "ingest", "shard_manifest": rel, "chunk_id": cid},
+            )
+        )
         ingest_jobs.append(name)
 
     lines.extend(_job_block("merge_ingest", "condor/hpc_merge.sub", {"command": "merge", "stage": "ingest"}))
@@ -72,7 +88,14 @@ def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> N
     for i, m in enumerate(pre_m):
         name = f"pre_{i}"
         rel = m.relative_to(REPO).as_posix()
-        lines.extend(_job_block(name, "condor/hpc_shard_cpu.sub", {"stage": "preprocess", "shard_manifest": rel}))
+        cid = _chunk_id_from_manifest(m, "preprocess")
+        lines.extend(
+            _job_block(
+                name,
+                "condor/hpc_shard_cpu.sub",
+                {"stage": "preprocess", "shard_manifest": rel, "chunk_id": cid},
+            )
+        )
         pre_jobs.append(name)
     lines.extend(_job_block("merge_preprocess", "condor/hpc_merge.sub", {"command": "merge", "stage": "preprocess"}))
     if pre_jobs:
@@ -85,7 +108,14 @@ def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> N
     for i, m in enumerate(feat_m):
         name = f"feat_{i}"
         rel = m.relative_to(REPO).as_posix()
-        lines.extend(_job_block(name, "condor/hpc_shard_cpu.sub", {"stage": "features", "shard_manifest": rel}))
+        cid = _chunk_id_from_manifest(m, "features")
+        lines.extend(
+            _job_block(
+                name,
+                "condor/hpc_shard_cpu.sub",
+                {"stage": "features", "shard_manifest": rel, "chunk_id": cid},
+            )
+        )
         feat_jobs.append(name)
     lines.extend(_job_block("merge_features", "condor/hpc_merge.sub", {"command": "merge", "stage": "features"}))
     if feat_jobs:
