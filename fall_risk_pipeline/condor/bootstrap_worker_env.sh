@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${WORKER_VENV:-${PWD}/.worker-venv}"
 REQ="${SCRIPT_DIR}/requirements-hpc-cpu.txt"
 MIN_PY_MAJOR=3
-MIN_PY_MINOR=9
+MIN_PY_MINOR=10
 
 if [[ -x "${VENV_DIR}/bin/python" ]]; then
   export PATH="${VENV_DIR}/bin:${PATH}"
@@ -27,13 +27,19 @@ _pick_python() {
       return 0
     fi
   fi
-  for cand in python3.12 python3.11 python3.10 python3.9 python3; do
+  for cand in python3.12 python3.11 python3.10; do
     if command -v "${cand}" >/dev/null 2>&1 \
       && "${cand}" -c "import sys; sys.exit(0 if sys.version_info >= (${MIN_PY_MAJOR}, ${MIN_PY_MINOR}) else 1)"; then
       echo "${cand}"
       return 0
     fi
   done
+  # Last resort: default python3 if it meets the minimum (skip 3.9-only workers).
+  if command -v python3 >/dev/null 2>&1 \
+    && python3 -c "import sys; sys.exit(0 if sys.version_info >= (${MIN_PY_MAJOR}, ${MIN_PY_MINOR}) else 1)"; then
+    echo "python3"
+    return 0
+  fi
   return 1
 }
 

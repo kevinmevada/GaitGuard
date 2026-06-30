@@ -1,5 +1,5 @@
 # Minimal CPU shard deps (ingest / preprocess / features on OSPool).
-# Pinned for Python 3.9+ — many OSPool workers only ship python3.9 as default.
+# Pinned for Python 3.10+ (antropy 0.2.2 requires >=3.10).
 pandas==2.2.3
 numpy==1.26.4
 pyarrow==17.0.0

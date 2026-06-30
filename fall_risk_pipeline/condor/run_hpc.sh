@@ -31,6 +31,10 @@ resolve_path() {
     echo "${PWD}/${name}"
     return 0
   fi
+  if [[ -f "${PROJECT}/${name}" ]]; then
+    echo "${PROJECT}/${name}"
+    return 0
+  fi
   local base
   base="$(basename "${name}")"
   if [[ -f "${SCRIPT_DIR}/${base}" ]]; then
@@ -39,6 +43,10 @@ resolve_path() {
   fi
   if [[ -f "${PWD}/${base}" ]]; then
     echo "${PWD}/${base}"
+    return 0
+  fi
+  if [[ -f "${PROJECT}/${base}" ]]; then
+    echo "${PROJECT}/${base}"
     return 0
   fi
   echo "ERROR: cannot find ${name} (pwd=${PWD}, script_dir=${SCRIPT_DIR})" >&2
@@ -50,6 +58,10 @@ condor_py() {
   script="$(resolve_path "$1")" || return 1
   shift
   python "${script}" "$@"
+}
+
+hpc_py() {
+  python "$(resolve_path hpc.py)" --config "${PIPELINE_CONFIG}" "$@"
 }
 
 if on_worker; then
@@ -105,7 +117,7 @@ run_shard() {
     }
   fi
 
-  if ! python "$(resolve_path hpc.py)" shard "${stage}" --manifest "${manifest}"; then
+  if ! hpc_py shard "${stage}" --manifest "${manifest}"; then
     rc=$?
     err_msg="${err_msg:+$err_msg; }hpc.py shard failed (rc=${rc})"
   fi
@@ -121,13 +133,18 @@ run_shard() {
 }
 
 run_merge() {
-  local stage="$1"
+  local cmd="$1"
+  local stage="$2"
   local rc=0
   if on_worker; then
     condor_py fetch_shards_for_merge.py "${stage}" || rc=$?
     mkdir -p data/processed data/features
   fi
-  python "$(resolve_path hpc.py)" merge "${stage}" || rc=$?
+  if [[ "${cmd}" == "reduce" ]]; then
+    hpc_py reduce "${stage}" || rc=$?
+  else
+    hpc_py merge "${stage}" || rc=$?
+  fi
   if on_worker; then
     condor_py publish_merge_outputs.py "${stage}" || rc=$?
   fi
@@ -142,18 +159,27 @@ else
   cd "${PROJECT}"
 fi
 
+PIPELINE_CONFIG="${GAITGUARD_CONFIG:-configs/pipeline_config.yaml}"
+PIPELINE_CONFIG="$(resolve_path "${PIPELINE_CONFIG}")" || exit 1
+echo "=== config: ${PIPELINE_CONFIG} ==="
+
 echo "=== hpc: $* ==="
 
+JOB_RC=0
 case "${1:-}" in
   shard)
-    run_shard "$2" "${@:3}"
+    run_shard "$2" "${@:3}" || JOB_RC=$?
     ;;
   merge|reduce)
-    run_merge "$2"
+    run_merge "$1" "$2" || JOB_RC=$?
     ;;
   *)
-    python "$(resolve_path hpc.py)" "$@"
+    hpc_py "$@" || JOB_RC=$?
     ;;
 esac
 
+if [[ "${JOB_RC}" -ne 0 ]]; then
+  echo "=== failed (rc=${JOB_RC}) ===" >&2
+  exit "${JOB_RC}"
+fi
 echo "=== done ==="
