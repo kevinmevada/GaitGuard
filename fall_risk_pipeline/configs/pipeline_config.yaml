@@ -630,3 +630,12 @@ reporting:
   figure_dpi: 300
   figure_format: "pdf"
   ieee_table_format: true
+
+# HPC / OSPool sharded execution (see hpc.py and condor/dag/)
+hpc:
+  shard_root: "data/hpc/shards"
+  oof_root: "data/hpc/oof"
+  manifests_dir: "data/hpc/manifests"
+  trials_per_chunk: 20          # ingest / preprocess / features array width
+  osg_project: "IIT_Rosa"
+  staging_root: "/ospool/ap40/data/kevin.mevada"   # override on other access points

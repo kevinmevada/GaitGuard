@@ -1,0 +1,20 @@
+# CPU shard job — pass manifest path via $(manifest)
+universe   = vanilla
+initialdir = /home/kevin.mevada/projects/GaitGuard/fall_risk_pipeline
+executable = condor/run_hpc.sh
+arguments  = shard $(stage) --manifest $(manifest)
+
+log    = condor/logs/hpc_$(stage)_$(Cluster)_$(Process).log
+output = condor/logs/hpc_$(stage)_$(Cluster)_$(Process).out
+error  = condor/logs/hpc_$(stage)_$(Cluster)_$(Process).err
+
+request_cpus   = 2
+request_memory = 8 GB
+request_disk   = 10 GB
+
+should_transfer_files = NO
+getenv                = True
+
++ProjectName = "IIT_Rosa"
+
+queue

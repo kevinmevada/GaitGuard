@@ -124,6 +124,57 @@ class SignalProcessor:
         self._write_uturn_exclusion_report()
         logger.info(f"Saved cleaned signals → {self.out_dir}")
 
+    def run_shard(self, trial_ids: list[str], shard_out: Path) -> dict:
+        """Preprocess manifest chunk; writes directly to ``signals_clean/``."""
+        meta_path = self.proc_dir / "trial_metadata.csv"
+        if not meta_path.exists():
+            raise FileNotFoundError("trial_metadata.csv not found")
+        meta = pd.read_csv(meta_path)
+        meta_by_id = {str(r.trial_id): r for r in meta.itertuples(index=False)}
+        if "cohort" in meta.columns:
+            self._trial_cohort = dict(zip(meta["trial_id"].astype(str), meta["cohort"].astype(str)))
+        has_uturn_cols = {"uturn_start", "uturn_end"}.issubset(meta.columns)
+        signals_dir = self.proc_dir / "signals"
+        shard_out.mkdir(parents=True, exist_ok=True)
+        self._uturn_exclusion_rows = []
+        processed = 0
+
+        for trial_id in trial_ids:
+            tid = str(trial_id)
+            row = meta_by_id.get(tid)
+            if row is None:
+                logger.warning("Preprocess shard: unknown trial {}", tid)
+                continue
+            try:
+                cohort = self._trial_cohort.get(tid)
+                uturn_start = (
+                    int(row.uturn_start)
+                    if has_uturn_cols and pd.notna(getattr(row, "uturn_start", None))
+                    else None
+                )
+                uturn_end = (
+                    int(row.uturn_end)
+                    if has_uturn_cols and pd.notna(getattr(row, "uturn_end", None))
+                    else None
+                )
+                self._process_trial(
+                    tid,
+                    signals_dir,
+                    cohort=cohort,
+                    uturn_start=uturn_start,
+                    uturn_end=uturn_end,
+                )
+                processed += 1
+            except Exception as exc:
+                logger.warning("Preprocess shard {} failed: {}", tid, exc)
+
+        if self._uturn_exclusion_rows:
+            pd.DataFrame(self._uturn_exclusion_rows).to_csv(
+                shard_out / "uturn_exclusion_chunk.csv", index=False
+            )
+        logger.info("Preprocess shard → {} trials", processed)
+        return {"processed": processed, "shard_out": str(shard_out)}
+
     # ─────────────────────────────────────────
 
     def _process_trial(

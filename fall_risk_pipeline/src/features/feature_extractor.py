@@ -135,6 +135,44 @@ class FeatureExtractor:
         patient_df.to_parquet(patient_path, index=False)
         logger.info(f"Patient features saved → {patient_path}  shape={patient_df.shape}")
 
+    def aggregate_patient_features(self, trial_df: pd.DataFrame) -> pd.DataFrame:
+        """Public wrapper for patient-level aggregation (HPC merge step)."""
+        patient_df = self._aggregate_to_patient(trial_df)
+        patient_df = drop_target_proxies_from_feature_frame(patient_df)
+        assert_no_target_proxies_in_feature_frame(
+            patient_df, context="patient_features.parquet"
+        )
+        return patient_df
+
+    def run_shard(self, trial_ids: list[str], shard_out: Path) -> dict:
+        """Extract features for a manifest chunk → ``trial_features_chunk.parquet``."""
+        meta_path = self.proc_dir / "trial_metadata.csv"
+        if not meta_path.exists():
+            raise FileNotFoundError(f"trial_metadata.csv not found at {meta_path}")
+        meta = pd.read_csv(meta_path)
+        meta_by_id: dict[str, dict] = {}
+        for row in meta.itertuples(index=False):
+            meta_by_id[str(row.trial_id)] = row._asdict()
+        shard_out.mkdir(parents=True, exist_ok=True)
+        rows: list[dict] = []
+        for trial_id in trial_ids:
+            row = meta_by_id.get(str(trial_id))
+            if row is None:
+                continue
+            feats = self._extract_trial(row)
+            if feats:
+                rows.append(feats)
+        if not rows:
+            logger.warning("Feature shard produced no rows for {}", shard_out)
+            return {"extracted": 0, "shard_out": str(shard_out)}
+        trial_df = pd.DataFrame(rows)
+        trial_df = drop_target_proxies_from_feature_frame(trial_df)
+        assert_no_target_proxies_in_feature_frame(trial_df, context="trial_features_chunk")
+        out = shard_out / "trial_features_chunk.parquet"
+        trial_df.to_parquet(out, index=False)
+        logger.info("Feature shard → {} ({} trials)", out, len(trial_df))
+        return {"extracted": len(trial_df), "shard_out": str(shard_out)}
+
     def extract_trial_features_from_processed(
         self,
         processed: dict[str, pd.DataFrame],

@@ -241,6 +241,102 @@ class DataLoader:
             if meta_path.is_file()
         )
 
+    def trial_dir_index(self) -> dict[str, Path]:
+        return {td.name: td for td in self._find_trial_dirs()}
+
+    def find_trial_dir(self, trial_id: str) -> Path | None:
+        return self.trial_dir_index().get(str(trial_id))
+
+    def _save_records_to_dir(self, records: list[TrialRecord], out_dir: Path) -> None:
+        """Write parquets + gait events for records under ``out_dir`` (shard layout)."""
+        signals_dir = out_dir / "signals"
+        signals_dir.mkdir(parents=True, exist_ok=True)
+        for rec in records:
+            for pos, df in rec.signals.items():
+                if df is None or df.empty:
+                    continue
+                path = signals_dir / f"{rec.trial_id}_{pos}.parquet"
+                df.to_parquet(path, index=False)
+            if rec.gait_events is not None and not rec.gait_events.empty:
+                ge_dir = out_dir / "gait_events"
+                ge_dir.mkdir(exist_ok=True)
+                rec.gait_events.to_csv(ge_dir / f"{rec.trial_id}.csv", index=False)
+
+    def run_voisard_shard(self, trial_ids: list[str], shard_out: Path) -> dict:
+        """
+        Ingest a manifest chunk of Voisard trials into ``shard_out``.
+
+        Writes ``trial_metadata_chunk.csv``, ``signals/``, optional ``packet_gap_chunk.csv``.
+        """
+        shard_out.mkdir(parents=True, exist_ok=True)
+        index = self.trial_dir_index()
+        records: list[TrialRecord] = []
+        skipped: list[str] = []
+        self._packet_gap_rows = []
+
+        for trial_id in trial_ids:
+            td = index.get(str(trial_id))
+            if td is None:
+                skipped.append(str(trial_id))
+                logger.warning("Shard ingest: missing trial dir for {}", trial_id)
+                continue
+            try:
+                rec = self._load_trial(td)
+                if rec.duration_s < self.min_duration:
+                    skipped.append(str(trial_id))
+                    continue
+                records.append(rec)
+            except Exception as exc:
+                skipped.append(str(trial_id))
+                logger.warning("Shard ingest: skipping {}: {}", trial_id, exc)
+
+        if records:
+            meta_df = pd.DataFrame([r.to_meta_dict() for r in records])
+            meta_df.to_csv(shard_out / "trial_metadata_chunk.csv", index=False)
+            self._save_records_to_dir(records, shard_out)
+
+        if self._packet_gap_rows:
+            pd.DataFrame(self._packet_gap_rows).to_csv(
+                shard_out / "packet_gap_chunk.csv", index=False
+            )
+
+        logger.info(
+            "Shard ingest → {} ({} loaded, {} skipped)",
+            shard_out,
+            len(records),
+            len(skipped),
+        )
+        return {"loaded": len(records), "skipped": skipped, "shard_out": str(shard_out)}
+
+    def run_daphnet_ingest(self) -> list[TrialRecord]:
+        """Ingest DAPHNET only (run once after Voisard shard merge)."""
+        records: list[TrialRecord] = []
+        added, skipped = self._ingest_daphnet_subjects(records)
+        logger.info("DAPHNET ingest: {} added, {} skipped", added, skipped)
+        self._write_daphnet_ingest_report()
+        return records
+
+    def append_daphnet_to_processed(self, daphnet_records: list[TrialRecord]) -> None:
+        """Append DAPHNET trials to existing ``trial_metadata.csv`` and save signals."""
+        if not daphnet_records:
+            return
+        meta_path = self.out_dir / "trial_metadata.csv"
+        existing = pd.read_csv(meta_path) if meta_path.is_file() else pd.DataFrame()
+        new_meta = pd.DataFrame([r.to_meta_dict() for r in daphnet_records])
+        pd.concat([existing, new_meta], ignore_index=True).to_csv(meta_path, index=False)
+        self._save_records_to_dir(daphnet_records, self.out_dir)
+        metrics_dir = Path(self.config["paths"]["metrics"])
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        if self._daphnet_fog_labels:
+            trial_ids = {sid: f"daphnet_{sid}" for sid in self._daphnet_fog_labels}
+            save_fog_labels_npz(fog_labels_path(self.config), self._daphnet_fog_labels, trial_ids)
+        try:
+            from src.reporting.demographics_table import generate_demographics_table
+
+            generate_demographics_table(self.config)
+        except Exception as exc:
+            logger.warning(f"Demographics table skipped: {exc}")
+
     def run(self) -> list[TrialRecord]:
         logger.info(f"Scanning raw data: {self.raw_dir}")
 
