@@ -25,7 +25,7 @@ transfer_input_files    = \
     condor/publish_merge_outputs.py, \
     hpc.py, \
     configs/pipeline_config.yaml, \
-    data/hpc/manifests, \
+    condor/manifests, \
     src
 
 getenv = True

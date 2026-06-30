@@ -27,7 +27,7 @@ def _manifests(config_path: Path, kind: str) -> list[Path]:
     with open(config_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     hpc = cfg.get("hpc") or {}
-    man_dir = Path(hpc.get("manifests_dir", "data/hpc/manifests"))
+    man_dir = Path(hpc.get("manifests_dir", "condor/manifests"))
     if not man_dir.is_absolute():
         man_dir = REPO / man_dir
     pattern = {

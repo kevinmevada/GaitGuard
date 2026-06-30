@@ -33,12 +33,23 @@ fi
 
 cd "${PROJECT}/data"
 if [ -L hpc ]; then
-  echo "OK: hpc already symlinked"
-elif [ -e hpc ]; then
-  echo "WARN: data/hpc exists and is not a symlink"
-else
-  ln -s "${STAGING}/gaitguard/hpc" hpc
-  echo "linked hpc -> ${STAGING}/gaitguard/hpc"
+  echo "Removing legacy data/hpc -> OSDF symlink (manifests must live on AP for condor transfer)"
+  rm hpc
 fi
+mkdir -p hpc/manifests
+for sub in shards oof merge; do
+  target="${STAGING}/gaitguard/hpc/${sub}"
+  link="hpc/${sub}"
+  if [ -L "${link}" ]; then
+    echo "OK: ${link} already symlinked"
+  elif [ -e "${link}" ]; then
+    echo "WARN: data/${link} exists and is not a symlink"
+  else
+    ln -s "${target}" "${link}"
+    echo "linked ${link} -> ${target}"
+  fi
+done
+
+mkdir -p "${PROJECT}/condor/manifests"
 
 echo "Staging ready under ${STAGING}/gaitguard"

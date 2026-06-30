@@ -29,7 +29,7 @@ def _config(tmp_path: Path) -> dict:
         "_pipeline_meta": {"config_path": str(configs / "pipeline_config.yaml")},
         "paths": {"processed_data": str(processed)},
         "hpc": {
-            "manifests_dir": "data/hpc/manifests",
+            "manifests_dir": "condor/manifests",
             "trials_per_chunk": 2,
         },
     }

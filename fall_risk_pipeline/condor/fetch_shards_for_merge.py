@@ -24,7 +24,7 @@ def _osdf_list_and_fetch(stage: str, osd_gg: str, shard_root: Path) -> int:
     stage_dir.mkdir(parents=True, exist_ok=True)
 
     # Fallback: try known chunk pattern from local manifests if listing fails.
-    man_dir = Path("data/hpc/manifests")
+    man_dir = Path("condor/manifests")
     if man_dir.is_dir():
         for manifest in sorted(man_dir.glob(f"{stage}_chunk_*.json")):
             chunk_id = manifest.stem.split("_", 1)[1]
