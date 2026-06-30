@@ -45,17 +45,27 @@ def write_ingest_manifests(config: dict) -> list[Path]:
     return paths
 
 
-def write_preprocess_manifests(config: dict) -> list[Path]:
+def _voisard_trial_ids(config: dict) -> list[str]:
+    """Trial IDs for shard manifests (inventory before ingest merge, metadata after)."""
     meta_path = Path(config["paths"]["processed_data"]) / "trial_metadata.csv"
-    if not meta_path.is_file():
-        raise FileNotFoundError(f"Missing {meta_path}. Run ingest merge first.")
-    meta = pd.read_csv(meta_path)
-    trial_ids = sorted(
-        meta[~meta["trial_id"].astype(str).str.startswith("daphnet_")]["trial_id"]
-        .astype(str)
-        .unique()
-        .tolist()
+    if meta_path.is_file():
+        meta = pd.read_csv(meta_path)
+        return sorted(
+            meta[~meta["trial_id"].astype(str).str.startswith("daphnet_")]["trial_id"]
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+    logger.warning(
+        "{} not found — using dataset_inventory trial IDs (same as ingest manifests)",
+        meta_path,
     )
+    inv = _load_inventory(config)
+    return sorted(inv["trial"].astype(str).unique().tolist())
+
+
+def write_preprocess_manifests(config: dict) -> list[Path]:
+    trial_ids = _voisard_trial_ids(config)
     out_dir = manifests_dir(config)
     out_dir.mkdir(parents=True, exist_ok=True)
     size = chunk_size(config)
@@ -71,16 +81,7 @@ def write_preprocess_manifests(config: dict) -> list[Path]:
 
 
 def write_features_manifests(config: dict) -> list[Path]:
-    meta_path = Path(config["paths"]["processed_data"]) / "trial_metadata.csv"
-    if not meta_path.is_file():
-        raise FileNotFoundError(f"Missing {meta_path}. Run ingest merge first.")
-    meta = pd.read_csv(meta_path)
-    trial_ids = sorted(
-        meta[~meta["trial_id"].astype(str).str.startswith("daphnet_")]["trial_id"]
-        .astype(str)
-        .unique()
-        .tolist()
-    )
+    trial_ids = _voisard_trial_ids(config)
     out_dir = manifests_dir(config)
     out_dir.mkdir(parents=True, exist_ok=True)
     size = chunk_size(config)

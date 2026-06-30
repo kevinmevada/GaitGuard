@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.hpc.manifests import write_ingest_manifests
+from src.hpc.manifests import write_ingest_manifests, write_preprocess_manifests
 
 
 def _config(tmp_path: Path) -> dict:
@@ -43,3 +43,11 @@ def test_write_ingest_manifests_chunks(tmp_path: Path):
     assert len(payload["trial_ids"]) == 2
     # manifests must live under trial processed root, not configs/
     assert "configs" not in str(paths[0])
+
+
+def test_write_preprocess_manifests_from_inventory(tmp_path: Path):
+    config = _config(tmp_path)
+    paths = write_preprocess_manifests(config)
+    assert len(paths) == 3
+    payload = json.loads(paths[0].read_text(encoding="utf-8"))
+    assert payload["trial_ids"] == ["T_0", "T_1"]
