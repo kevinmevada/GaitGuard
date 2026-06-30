@@ -9,7 +9,6 @@ from pathlib import Path
 import yaml
 from loguru import logger
 
-from src.hpc.anomaly import reduce_anomaly_folds, run_anomaly_fold
 from src.hpc.manifests import (
     load_manifest,
     write_anomaly_fold_manifests,
@@ -81,6 +80,8 @@ def cmd_shard(args: argparse.Namespace, config: dict) -> None:
         FeatureExtractor(config).run_shard(trial_ids, out)
 
     elif stage == "anomaly":
+        from src.hpc.anomaly import run_anomaly_fold
+
         pid = manifest["held_out_participant_id"]
         run_anomaly_fold(config, pid)
 
@@ -102,6 +103,8 @@ def cmd_merge(args: argparse.Namespace, config: dict) -> None:
 
 def cmd_reduce(args: argparse.Namespace, config: dict) -> None:
     if args.stage == "anomaly":
+        from src.hpc.anomaly import reduce_anomaly_folds
+
         reduce_anomaly_folds(config)
     else:
         raise ValueError(f"Unknown reduce stage: {args.stage}")

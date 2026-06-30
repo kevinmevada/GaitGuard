@@ -16,6 +16,42 @@ on_worker() {
   [[ -n "${_CONDOR_SCRATCH_DIR:-}" ]]
 }
 
+# HTCondor may flatten transfer_input_files; resolve script/manifest paths.
+resolve_path() {
+  local name="$1"
+  if [[ -f "${name}" ]]; then
+    echo "${name}"
+    return 0
+  fi
+  if [[ -f "${SCRIPT_DIR}/${name}" ]]; then
+    echo "${SCRIPT_DIR}/${name}"
+    return 0
+  fi
+  if [[ -f "${PWD}/${name}" ]]; then
+    echo "${PWD}/${name}"
+    return 0
+  fi
+  local base
+  base="$(basename "${name}")"
+  if [[ -f "${SCRIPT_DIR}/${base}" ]]; then
+    echo "${SCRIPT_DIR}/${base}"
+    return 0
+  fi
+  if [[ -f "${PWD}/${base}" ]]; then
+    echo "${PWD}/${base}"
+    return 0
+  fi
+  echo "ERROR: cannot find ${name} (pwd=${PWD}, script_dir=${SCRIPT_DIR})" >&2
+  return 1
+}
+
+condor_py() {
+  local script
+  script="$(resolve_path "$1")" || return 1
+  shift
+  python "${script}" "$@"
+}
+
 if on_worker; then
   cd "${_CONDOR_SCRATCH_DIR}"
   export TMPDIR="${_CONDOR_SCRATCH_DIR}/tmp"
@@ -57,24 +93,25 @@ run_shard() {
     fi
   done
   [[ -n "${manifest}" ]] || { echo "missing --manifest" >&2; exit 1; }
+  manifest="$(resolve_path "${manifest}")" || exit 1
 
   local rc=0
   local err_msg=""
 
   if on_worker; then
-    python condor/stage_shard_inputs.py "${stage}" --manifest "${manifest}" || {
+    condor_py stage_shard_inputs.py "${stage}" --manifest "${manifest}" || {
       rc=$?
       err_msg="stage_shard_inputs failed (rc=${rc})"
     }
   fi
 
-  if ! python hpc.py shard "${stage}" --manifest "${manifest}"; then
+  if ! python "$(resolve_path hpc.py)" shard "${stage}" --manifest "${manifest}"; then
     rc=$?
     err_msg="${err_msg:+$err_msg; }hpc.py shard failed (rc=${rc})"
   fi
 
   if on_worker; then
-    python condor/package_shard_outputs.py "${stage}" --manifest "${manifest}" --error "${err_msg}" || {
+    condor_py package_shard_outputs.py "${stage}" --manifest "${manifest}" --error "${err_msg}" || {
       rc=$?
       echo "package_shard_outputs failed (rc=${rc})" >&2
     }
@@ -87,12 +124,12 @@ run_merge() {
   local stage="$1"
   local rc=0
   if on_worker; then
-    python condor/fetch_shards_for_merge.py "${stage}" || rc=$?
+    condor_py fetch_shards_for_merge.py "${stage}" || rc=$?
     mkdir -p data/processed data/features
   fi
-  python hpc.py merge "${stage}" || rc=$?
+  python "$(resolve_path hpc.py)" merge "${stage}" || rc=$?
   if on_worker; then
-    python condor/publish_merge_outputs.py "${stage}" || rc=$?
+    condor_py publish_merge_outputs.py "${stage}" || rc=$?
   fi
   return "${rc}"
 }
@@ -115,7 +152,7 @@ case "${1:-}" in
     run_merge "$2"
     ;;
   *)
-    python hpc.py "$@"
+    python "$(resolve_path hpc.py)" "$@"
     ;;
 esac
 

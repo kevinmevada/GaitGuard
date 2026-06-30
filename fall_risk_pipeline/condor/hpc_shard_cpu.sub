@@ -14,9 +14,6 @@ request_cpus   = 2
 request_memory = 10 GB
 request_disk   = 20 GB
 
-# EL9 workers typically provide python3.11+ (required by numpy 2.x pins).
-requirements = (OpSysMajorVer == 9)
-
 should_transfer_files   = YES
 when_to_transfer_output = NEVER
 transfer_input_files    = \

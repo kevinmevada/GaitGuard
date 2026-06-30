@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${WORKER_VENV:-${PWD}/.worker-venv}"
 REQ="${SCRIPT_DIR}/requirements-hpc-cpu.txt"
 MIN_PY_MAJOR=3
-MIN_PY_MINOR=11
+MIN_PY_MINOR=9
 
 if [[ -x "${VENV_DIR}/bin/python" ]]; then
   export PATH="${VENV_DIR}/bin:${PATH}"
@@ -27,7 +27,7 @@ _pick_python() {
       return 0
     fi
   fi
-  for cand in python3.12 python3.11 python3; do
+  for cand in python3.12 python3.11 python3.10 python3.9 python3; do
     if command -v "${cand}" >/dev/null 2>&1 \
       && "${cand}" -c "import sys; sys.exit(0 if sys.version_info >= (${MIN_PY_MAJOR}, ${MIN_PY_MINOR}) else 1)"; then
       echo "${cand}"
@@ -39,7 +39,7 @@ _pick_python() {
 
 PY="$(_pick_python || true)"
 if [[ -z "${PY}" ]]; then
-  echo "ERROR: no Python >= ${MIN_PY_MAJOR}.${MIN_PY_MINOR} on worker. Tried PYTHON_BOOTSTRAP=${PYTHON_BOOTSTRAP:-<unset>}, python3.12, python3.11, python3." >&2
+  echo "ERROR: no Python >= ${MIN_PY_MAJOR}.${MIN_PY_MINOR} on worker." >&2
   command -v python3 >/dev/null 2>&1 && python3 --version >&2 || true
   exit 1
 fi
