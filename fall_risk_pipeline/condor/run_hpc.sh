@@ -117,14 +117,14 @@ run_shard() {
     }
   fi
 
-  if ! hpc_py shard "${stage}" --manifest "${manifest}"; then
+  hpc_py shard "${stage}" --manifest "${manifest}" || {
     rc=$?
     err_msg="${err_msg:+$err_msg; }hpc.py shard failed (rc=${rc})"
-  fi
+  }
 
   if on_worker; then
     condor_py package_shard_outputs.py "${stage}" --manifest "${manifest}" --error "${err_msg}" || {
-      rc=$?
+      [[ "${rc}" -eq 0 ]] && rc=$?
       echo "package_shard_outputs failed (rc=${rc})" >&2
     }
   fi

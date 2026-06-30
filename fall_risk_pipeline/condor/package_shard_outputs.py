@@ -82,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
 
         _push_osdf(tar_path, osd_dest)
         print(f"uploaded {tar_path} -> {osd_dest}")
+        if args.error:
+            return 1
         return 0
     finally:
         tar_path.unlink(missing_ok=True)

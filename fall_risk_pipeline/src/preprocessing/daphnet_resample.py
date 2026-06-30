@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from loguru import logger
@@ -141,6 +140,8 @@ def plot_trunk_z_psd_check(
     dpi: int = 150,
 ) -> Path:
     """Save before/after trunk Z PSD overlay for supplemental material."""
+    import matplotlib.pyplot as plt
+
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"psd_check_{subject_id}.png"
