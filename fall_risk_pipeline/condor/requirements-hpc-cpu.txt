@@ -1,0 +1,15 @@
+# Minimal CPU shard dependencies (ingest / preprocess / features on OSPool).
+# Full gaitguard env (torch, shap, …) is only needed for GPU anomaly stages.
+pandas==2.3.3
+numpy==2.3.5
+pyarrow==21.0.0
+scipy==1.16.3
+scikit-learn==1.8.0
+PyYAML==6.0.3
+loguru==0.7.3
+tqdm==4.67.1
+antropy==0.2.2
+nolds==0.6.3
+PyWavelets==1.9.0
+numba==0.65.1
+llvmlite==0.47.0

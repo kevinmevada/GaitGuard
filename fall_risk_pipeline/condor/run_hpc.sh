@@ -10,30 +10,35 @@ STAGING="${STAGING_LOCAL}"
 PROJECT="${GAITGUARD_PROJECT:-${HOME}/projects/GaitGuard/fall_risk_pipeline}"
 
 export STAGING OSDF_BASE OSDF_GAITGUARD STAGING_LOCAL
-export TMPDIR="${STAGING}/tmp"
-export PIP_CACHE_DIR="${STAGING}/pip-cache"
-export XDG_CACHE_HOME="${STAGING}/cache"
 export PYTHONHASHSEED=42
 
 on_worker() {
   [[ -n "${_CONDOR_SCRATCH_DIR:-}" ]]
 }
 
+if on_worker; then
+  export TMPDIR="${_CONDOR_SCRATCH_DIR}/tmp"
+  mkdir -p "${TMPDIR}"
+else
+  export TMPDIR="${STAGING}/tmp"
+  export PIP_CACHE_DIR="${STAGING}/pip-cache"
+  export XDG_CACHE_HOME="${STAGING}/cache"
+fi
+
 setup_python() {
   if on_worker; then
-    if [[ -d "${PWD}/gaitguard/bin" ]]; then
-      export PATH="${PWD}/gaitguard/bin:${PATH}"
-    elif [[ -d "${PWD}/miniforge3/envs/gaitguard/bin" ]]; then
-      export PATH="${PWD}/miniforge3/envs/gaitguard/bin:${PATH}"
-    else
-      echo "ERROR: conda env not found in job sandbox — check transfer_input_files OSDF env" >&2
-      exit 1
-    fi
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/bootstrap_worker_env.sh"
   else
     mkdir -p "${TMPDIR}" "${PIP_CACHE_DIR}" "${XDG_CACHE_HOME}"
-    # shellcheck source=/dev/null
-    source "${STAGING}/miniforge3/bin/activate"
-    conda activate gaitguard
+    if [[ -x "${STAGING}/miniforge3/envs/gaitguard/bin/python" ]]; then
+      # shellcheck source=/dev/null
+      source "${STAGING}/miniforge3/bin/activate" "${STAGING}/miniforge3/envs/gaitguard"
+    else
+      # shellcheck source=/dev/null
+      source "${STAGING}/miniforge3/bin/activate"
+      conda activate gaitguard
+    fi
     cd "${PROJECT}"
   fi
 }

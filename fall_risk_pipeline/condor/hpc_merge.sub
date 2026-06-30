@@ -1,7 +1,6 @@
-# Merge / reduce — runs on OSPool worker; reads shard tarballs from OSDF.
+# Merge / reduce — bootstrap venv on worker; no full conda transfer.
 OSDF_BASE = osdf:///ospool/ap40/data/kevin.mevada
 OSDF_GAITGUARD = $(OSDF_BASE)/gaitguard
-OSDF_ENV = $(OSDF_BASE)/miniforge3/envs/gaitguard
 
 universe   = vanilla
 initialdir = /home/kevin.mevada/projects/GaitGuard/fall_risk_pipeline
@@ -21,13 +20,14 @@ when_to_transfer_output = ON_EXIT
 transfer_input_files    = \
     condor/run_hpc.sh, \
     condor/ospool_paths.sh, \
+    condor/bootstrap_worker_env.sh, \
+    condor/requirements-hpc-cpu.txt, \
     condor/fetch_shards_for_merge.py, \
     condor/publish_merge_outputs.py, \
     hpc.py, \
     configs/pipeline_config.yaml, \
     data/hpc/manifests, \
-    src, \
-    $(OSDF_ENV)?recursive
+    src
 
 transfer_output_files = merge_out.tar.gz
 transfer_output_remaps = "merge_out.tar.gz = $(OSDF_GAITGUARD)/hpc/merge/$(stage)_merge.tar.gz"
