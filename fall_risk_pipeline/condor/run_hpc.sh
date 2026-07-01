@@ -129,6 +129,7 @@ run_shard() {
 
   if on_worker; then
     echo "=== package_shard_outputs: ${stage} ==="
+    condor_py package_shard_outputs.py "${stage}" --manifest "${manifest}" --error "${err_msg}" || {
       [[ "${rc}" -eq 0 ]] && rc=$?
       echo "package_shard_outputs failed (rc=${rc})" >&2
     }
