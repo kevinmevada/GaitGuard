@@ -10,12 +10,15 @@ case "${STAGE}" in
     MIN_PY_MAJOR=3
     MIN_PY_MINOR=10
     VENV_TAG="features"
+    PY_CANDIDATES=(python3.10 python3.11 python3.12 python3)
     ;;
   *)
     REQ="${SCRIPT_DIR}/requirements-hpc-ingest.txt"
     MIN_PY_MAJOR=3
     MIN_PY_MINOR=9
     VENV_TAG="ingest"
+    # Prefer 3.9/3.10 on OSPool — many 3.12 images lack python3-venv (PEP 668).
+    PY_CANDIDATES=(python3.9 python3.10 python3.11 python3.12 python3)
     ;;
 esac
 
@@ -31,23 +34,64 @@ if [[ ! -f "${REQ}" ]]; then
   exit 1
 fi
 
+_py_version_ok() {
+  "$1" -c "import sys; sys.exit(0 if sys.version_info >= (${MIN_PY_MAJOR}, ${MIN_PY_MINOR}) else 1)" 2>/dev/null
+}
+
+_has_venv_module() {
+  "$1" -c "import venv" 2>/dev/null && "$1" -m venv --help >/dev/null 2>&1
+}
+
 _pick_python() {
   local cand
   if [[ -n "${PYTHON_BOOTSTRAP:-}" ]]; then
-    if command -v "${PYTHON_BOOTSTRAP}" >/dev/null 2>&1 \
-      && "${PYTHON_BOOTSTRAP}" -c "import sys; sys.exit(0 if sys.version_info >= (${MIN_PY_MAJOR}, ${MIN_PY_MINOR}) else 1)"; then
+    if command -v "${PYTHON_BOOTSTRAP}" >/dev/null 2>&1 && _py_version_ok "${PYTHON_BOOTSTRAP}"; then
       echo "${PYTHON_BOOTSTRAP}"
       return 0
     fi
   fi
-  for cand in python3.12 python3.11 python3.10 python3.9 python3; do
-    if command -v "${cand}" >/dev/null 2>&1 \
-      && "${cand}" -c "import sys; sys.exit(0 if sys.version_info >= (${MIN_PY_MAJOR}, ${MIN_PY_MINOR}) else 1)"; then
+  # Prefer interpreters that can run "python -m venv" without PEP 668 hacks.
+  for cand in "${PY_CANDIDATES[@]}"; do
+    if command -v "${cand}" >/dev/null 2>&1 && _py_version_ok "${cand}" && _has_venv_module "${cand}"; then
+      echo "${cand}"
+      return 0
+    fi
+  done
+  # Fallback: any version-ok interpreter (may need virtualenv + break-system-packages).
+  for cand in "${PY_CANDIDATES[@]}"; do
+    if command -v "${cand}" >/dev/null 2>&1 && _py_version_ok "${cand}"; then
       echo "${cand}"
       return 0
     fi
   done
   return 1
+}
+
+_install_virtualenv() {
+  local py="$1"
+  if command -v virtualenv >/dev/null 2>&1; then
+    return 0
+  fi
+  if "${py}" -m pip install --user virtualenv; then
+    return 0
+  fi
+  echo "pip --user blocked (PEP 668); using --break-system-packages for virtualenv bootstrap only ..." >&2
+  "${py}" -m pip install --user --break-system-packages virtualenv
+}
+
+_create_venv() {
+  local py="$1"
+  local venv_dir="$2"
+  if _has_venv_module "${py}" && "${py}" -m venv "${venv_dir}" 2>/dev/null; then
+    return 0
+  fi
+  echo "venv module missing for ${py}; trying virtualenv ..." >&2
+  if command -v virtualenv >/dev/null 2>&1; then
+    virtualenv -p "${py}" "${venv_dir}"
+    return $?
+  fi
+  _install_virtualenv "${py}"
+  "${py}" -m virtualenv -p "${py}" "${venv_dir}"
 }
 
 PY="$(_pick_python || true)"
@@ -58,11 +102,7 @@ if [[ -z "${PY}" ]]; then
 fi
 
 echo "Bootstrapping worker venv [${STAGE}] with ${PY} ($(${PY} --version)) ..."
-if ! "${PY}" -m venv "${VENV_DIR}" 2>/dev/null; then
-  echo "venv module missing; trying virtualenv ..."
-  "${PY}" -m pip install --user virtualenv
-  "${PY}" -m virtualenv "${VENV_DIR}"
-fi
+_create_venv "${PY}" "${VENV_DIR}"
 
 "${VENV_DIR}/bin/pip" install --upgrade pip wheel
 if ! "${VENV_DIR}/bin/pip" install --no-cache-dir -r "${REQ}"; then
