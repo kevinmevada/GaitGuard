@@ -21,8 +21,8 @@ case "${STAGE}" in
     MAX_PY_MAJOR=3
     MAX_PY_MINOR=12
     VENV_TAG="ingest"
-    # Explicit versions only — bare python3 may be 3.13+ without pyarrow wheels.
-    PY_CANDIDATES=(python3.9 python3.10 python3.11 python3.12)
+    # Prefer 3.9/3.10 (widest pyarrow wheels on OSPool); never bare python3 (3.13+).
+    PY_CANDIDATES=(python3.9 python3.10 python3.11)
     ;;
 esac
 
@@ -115,8 +115,23 @@ fi
 echo "Bootstrapping worker venv [${STAGE}] with ${PY} ($(${PY} --version)) ..."
 _create_venv "${PY}" "${VENV_DIR}"
 
+export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-180}"
+export PIP_PREFER_BINARY="${PIP_PREFER_BINARY:-1}"
+
+echo "pip install: upgrading pip/setuptools/wheel ..."
 "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
-if ! "${VENV_DIR}/bin/pip" install --no-cache-dir -r "${REQ}"; then
+
+echo "pip install: requirements from ${REQ} (timeout=${PIP_BOOTSTRAP_TIMEOUT:-900}s) ..."
+_pip_install_reqs() {
+  local pip="${VENV_DIR}/bin/pip"
+  local args=(install --no-cache-dir -r "${REQ}")
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${PIP_BOOTSTRAP_TIMEOUT:-900}" "${pip}" "${args[@]}"
+  else
+    "${pip}" "${args[@]}"
+  fi
+}
+if ! _pip_install_reqs; then
   echo "ERROR: pip install failed for ${REQ}" >&2
   "${VENV_DIR}/bin/pip" --version >&2 || true
   exit 1

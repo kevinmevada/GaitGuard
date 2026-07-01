@@ -36,7 +36,7 @@ transfer_input_files    = \
     src
 
 getenv = True
-environment = "HPC_WORKER_STAGE=ingest"
+environment = "PYTHONUNBUFFERED=1 HPC_WORKER_STAGE=ingest"
 +ProjectName = "IIT_Rosa"
 
 queue

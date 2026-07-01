@@ -16,6 +16,10 @@ on_worker() {
   [[ -n "${_CONDOR_SCRATCH_DIR:-}" ]]
 }
 
+if on_worker; then
+  export PYTHONUNBUFFERED=1
+fi
+
 # HTCondor may flatten transfer_input_files; resolve script/manifest paths.
 resolve_path() {
   local name="$1"
@@ -110,19 +114,21 @@ run_shard() {
   local err_msg=""
 
   if on_worker; then
+    echo "=== stage_shard_inputs: ${stage} ==="
     condor_py stage_shard_inputs.py "${stage}" --manifest "${manifest}" || {
       rc=$?
       err_msg="stage_shard_inputs failed (rc=${rc})"
     }
   fi
 
+  echo "=== hpc.py shard ${stage} ==="
   hpc_py shard "${stage}" --manifest "${manifest}" || {
     rc=$?
     err_msg="${err_msg:+$err_msg; }hpc.py shard failed (rc=${rc})"
   }
 
   if on_worker; then
-    condor_py package_shard_outputs.py "${stage}" --manifest "${manifest}" --error "${err_msg}" || {
+    echo "=== package_shard_outputs: ${stage} ==="
       [[ "${rc}" -eq 0 ]] && rc=$?
       echo "package_shard_outputs failed (rc=${rc})" >&2
     }
