@@ -9,16 +9,20 @@ case "${STAGE}" in
     REQ="${SCRIPT_DIR}/requirements-hpc-cpu.txt"
     MIN_PY_MAJOR=3
     MIN_PY_MINOR=10
+    MAX_PY_MAJOR=3
+    MAX_PY_MINOR=12
     VENV_TAG="features"
-    PY_CANDIDATES=(python3.10 python3.11 python3.12 python3)
+    PY_CANDIDATES=(python3.10 python3.11 python3.12)
     ;;
   *)
     REQ="${SCRIPT_DIR}/requirements-hpc-ingest.txt"
     MIN_PY_MAJOR=3
     MIN_PY_MINOR=9
+    MAX_PY_MAJOR=3
+    MAX_PY_MINOR=12
     VENV_TAG="ingest"
-    # Prefer 3.9/3.10 on OSPool — many 3.12 images lack python3-venv (PEP 668).
-    PY_CANDIDATES=(python3.9 python3.10 python3.11 python3.12 python3)
+    # Explicit versions only — bare python3 may be 3.13+ without pyarrow wheels.
+    PY_CANDIDATES=(python3.9 python3.10 python3.11 python3.12)
     ;;
 esac
 
@@ -35,7 +39,12 @@ if [[ ! -f "${REQ}" ]]; then
 fi
 
 _py_version_ok() {
-  "$1" -c "import sys; sys.exit(0 if sys.version_info >= (${MIN_PY_MAJOR}, ${MIN_PY_MINOR}) else 1)" 2>/dev/null
+  "$1" -c "import sys
+vi = sys.version_info
+lo = (${MIN_PY_MAJOR}, ${MIN_PY_MINOR})
+hi = (${MAX_PY_MAJOR}, ${MAX_PY_MINOR})
+ok = lo <= (vi.major, vi.minor) <= hi
+sys.exit(0 if ok else 1)" 2>/dev/null
 }
 
 _has_venv_module() {
@@ -96,15 +105,17 @@ _create_venv() {
 
 PY="$(_pick_python || true)"
 if [[ -z "${PY}" ]]; then
-  echo "ERROR: no Python >= ${MIN_PY_MAJOR}.${MIN_PY_MINOR} on worker (stage=${STAGE})." >&2
-  command -v python3 >/dev/null 2>&1 && python3 --version >&2 || true
+  echo "ERROR: no Python ${MIN_PY_MAJOR}.${MIN_PY_MINOR}-${MAX_PY_MAJOR}.${MAX_PY_MINOR} with venv on worker (stage=${STAGE})." >&2
+  for cand in "${PY_CANDIDATES[@]}" python3; do
+    command -v "${cand}" >/dev/null 2>&1 && "${cand}" --version >&2 || true
+  done
   exit 1
 fi
 
 echo "Bootstrapping worker venv [${STAGE}] with ${PY} ($(${PY} --version)) ..."
 _create_venv "${PY}" "${VENV_DIR}"
 
-"${VENV_DIR}/bin/pip" install --upgrade pip wheel
+"${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
 if ! "${VENV_DIR}/bin/pip" install --no-cache-dir -r "${REQ}"; then
   echo "ERROR: pip install failed for ${REQ}" >&2
   "${VENV_DIR}/bin/pip" --version >&2 || true
