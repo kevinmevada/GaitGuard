@@ -1,4 +1,5 @@
-# Features stage only (antropy 0.2.2 requires >=3.10). Ingest/preprocess use requirements-hpc-ingest.txt.
+# Ingest / preprocess / merge on OSPool (Python 3.9+).
+# No antropy — not needed until the features stage.
 pandas==2.2.3
 numpy==1.26.4
 pyarrow==17.0.0
@@ -7,7 +8,6 @@ scikit-learn==1.5.2
 PyYAML==6.0.2
 loguru==0.7.3
 tqdm==4.67.1
-antropy==0.2.2
 nolds==0.6.3
 PyWavelets==1.8.0
 numba==0.60.0

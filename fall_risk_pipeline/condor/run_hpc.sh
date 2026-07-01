@@ -78,8 +78,7 @@ setup_python() {
   if on_worker; then
     # shellcheck disable=SC1091
     source "${SCRIPT_DIR}/bootstrap_worker_env.sh"
-  else
-    mkdir -p "${TMPDIR}" "${PIP_CACHE_DIR}" "${XDG_CACHE_HOME}"
+  else    mkdir -p "${TMPDIR}" "${PIP_CACHE_DIR}" "${XDG_CACHE_HOME}"
     if [[ -x "${STAGING}/miniforge3/envs/gaitguard/bin/python" ]]; then
       # shellcheck source=/dev/null
       source "${STAGING}/miniforge3/bin/activate" "${STAGING}/miniforge3/envs/gaitguard"
@@ -150,6 +149,15 @@ run_merge() {
   fi
   return "${rc}"
 }
+
+case "${1:-}" in
+  shard|merge|reduce)
+    export HPC_WORKER_STAGE="${HPC_WORKER_STAGE:-${2:-ingest}}"
+    ;;
+  *)
+    export HPC_WORKER_STAGE="${HPC_WORKER_STAGE:-ingest}"
+    ;;
+esac
 
 setup_python
 if on_worker; then
