@@ -30,11 +30,24 @@ def _osdf_copy(src: str, dst: Path, *, recursive: bool = False) -> bool:
 def _stage_ingest(manifest: dict, osd_gg: str, raw_root: Path) -> None:
     paths = manifest.get("trial_source_paths") or {}
     ok = 0
+    scratch = Path.cwd()
     for trial_id, rel in paths.items():
         rel = str(rel).strip("/")
         trial_dir = raw_root / rel
         if trial_dir.is_dir():
             ok += 1
+            continue
+        # HTCondor osdf:// transfer may land at cwd/<rel>, cwd/<basename>, etc.
+        linked = False
+        for cand in (scratch / rel, scratch / Path(rel).name):
+            if cand.is_dir():
+                trial_dir.parent.mkdir(parents=True, exist_ok=True)
+                if not trial_dir.exists():
+                    cand.rename(trial_dir)
+                linked = True
+                ok += 1
+                break
+        if linked:
             continue
         src = f"{osd_gg}/raw/{rel}?recursive"
         if _osdf_copy(src, trial_dir, recursive=True):

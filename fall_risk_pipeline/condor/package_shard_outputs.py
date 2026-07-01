@@ -76,17 +76,25 @@ def main(argv: list[str] | None = None) -> int:
             pid = manifest.get("held_out_participant_id", "fold")
             safe = str(pid).replace("/", "_")
             osd_dest = f"{osd_gg}/hpc/oof/anomaly/fold_{safe}.tar.gz"
-        else:
-            chunk_id = manifest["chunk_id"]
-            osd_dest = f"{osd_gg}/hpc/shards/{args.stage}/{chunk_id}.tar.gz"
+            _push_osdf(tar_path, osd_dest)
+            print(f"uploaded {tar_path} -> {osd_dest}")
+            if args.error:
+                return 1
+            return 0
 
-        _push_osdf(tar_path, osd_dest)
-        print(f"uploaded {tar_path} -> {osd_dest}")
+        chunk_id = manifest["chunk_id"]
+        osd_dest = f"{osd_gg}/hpc/shards/{args.stage}/{chunk_id}.tar.gz"
+        out_name = scratch / "shard_out.tar.gz"
+        if out_name.exists():
+            out_name.unlink(missing_ok=True)
+        tar_path.rename(out_name)
+        print(f"packaged {out_name} for condor upload -> {osd_dest}")
         if args.error:
             return 1
         return 0
     finally:
-        tar_path.unlink(missing_ok=True)
+        if tar_path.exists():
+            tar_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

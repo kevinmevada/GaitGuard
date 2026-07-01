@@ -15,6 +15,7 @@ Usage (on ap40, after discover):
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import yaml
@@ -55,8 +56,24 @@ def _chunk_id_from_manifest(path: Path, kind: str) -> str:
     return stem
 
 
+def _ingest_osdf_inputs(manifest_path: Path, cfg: dict) -> str:
+    """Comma-separated osdf:// URLs for HTCondor transfer_input_files (per trial dir)."""
+    with open(manifest_path, encoding="utf-8") as f:
+        man = json.load(f)
+    hpc = cfg.get("hpc") or {}
+    staging = str(hpc.get("staging_root", "/ospool/ap40/data/kevin.mevada")).rstrip("/")
+    base = f"osdf://{staging}/gaitguard/raw"
+    urls: list[str] = []
+    for rel in (man.get("trial_source_paths") or {}).values():
+        rel = str(rel).strip("/")
+        urls.append(f"{base}/{rel}?recursive")
+    return ", ".join(urls)
+
+
 def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
     ingest_m = _manifests(config_path, "ingest")
     pre_m = _manifests(config_path, "preprocess")
     feat_m = _manifests(config_path, "features")
@@ -75,8 +92,12 @@ def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> N
         lines.extend(
             _job_block(
                 name,
-                "condor/hpc_shard_cpu.sub",
-                {"stage": "ingest", "shard_manifest": rel, "chunk_id": cid},
+                "condor/hpc_shard_ingest.sub",
+                {
+                    "shard_manifest": rel,
+                    "chunk_id": cid,
+                    "osdf_inputs": _ingest_osdf_inputs(m, cfg),
+                },
             )
         )
         ingest_jobs.append(name)
