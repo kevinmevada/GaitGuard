@@ -85,7 +85,15 @@ echo "  running: hpc.py manifests features ..."
 python hpc.py manifests features
 echo "  manifests: $(ls condor/manifests/*.json 2>/dev/null | wc -l) files"
 
-echo "=== 5. Regenerate DAG and submit ==="
+echo "=== 5. OSDF OAuth token (required for stashcp on workers) ==="
+if ! condor_store_cred query-oauth -s scitokens >/dev/null 2>&1; then
+  echo "No scitokens credential stored. Run this ONCE (browser login), then re-run this script:"
+  echo "  condor_vault_storer -v scitokens"
+  exit 1
+fi
+echo "  scitokens credential OK"
+
+echo "=== 6. Regenerate DAG and submit ==="
 python hpc/submit/generate_dag.py --config configs/pipeline_config.yaml
 condor_submit_dag -f condor/dags/gaitguard_sharded.dag
 

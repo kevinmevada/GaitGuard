@@ -16,6 +16,28 @@ on_worker() {
   [[ -n "${_CONDOR_SCRATCH_DIR:-}" ]]
 }
 
+# Forward HTCondor OAuth token to stashcp/pelican on workers.
+setup_osdf_auth() {
+  if ! on_worker; then
+    return 0
+  fi
+  local cred_dir="${_CONDOR_CREDS:-}"
+  if [[ -z "${cred_dir}" || ! -d "${cred_dir}" ]]; then
+    echo "ERROR: _CONDOR_CREDS missing — cannot access private OSDF (run condor_vault_storer scitokens on ap40)" >&2
+    return 1
+  fi
+  local tok
+  for tok in "${cred_dir}/scitokens.use" "${cred_dir}/osg.use"; do
+    if [[ -f "${tok}" ]]; then
+      export BEARER_TOKEN_FILE="${tok}"
+      echo "=== OSDF auth: BEARER_TOKEN_FILE=${tok} ==="
+      return 0
+    fi
+  done
+  echo "ERROR: no scitokens.use in ${cred_dir}" >&2
+  return 1
+}
+
 # HTCondor may flatten transfer_input_files; resolve script/manifest paths.
 resolve_path() {
   local name="$1"
@@ -68,6 +90,7 @@ if on_worker; then
   cd "${_CONDOR_SCRATCH_DIR}"
   export TMPDIR="${_CONDOR_SCRATCH_DIR}/tmp"
   mkdir -p "${TMPDIR}" data/hpc/shards data/processed data/raw
+  setup_osdf_auth || exit 1
 else
   export TMPDIR="${STAGING}/tmp"
   export PIP_CACHE_DIR="${STAGING}/pip-cache"

@@ -33,6 +33,9 @@ transfer_input_files    = \
 
 getenv = True
 environment = "HPC_WORKER_STAGE=$(stage)"
+
+use_oauth_services = scitokens
+
 +ProjectName = "IIT_Rosa"
 
 queue

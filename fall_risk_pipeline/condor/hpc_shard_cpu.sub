@@ -34,6 +34,10 @@ transfer_input_files    = \
 
 getenv = True
 environment = "HPC_WORKER_STAGE=$(stage)"
+
+# Required for stashcp/pelican to private OSDF (/ospool/ap40/data/...).
+use_oauth_services = scitokens
+
 +ProjectName = "IIT_Rosa"
 
 queue
