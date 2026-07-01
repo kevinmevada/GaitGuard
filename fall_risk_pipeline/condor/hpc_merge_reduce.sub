@@ -1,4 +1,4 @@
-# Merge / reduce — shard inputs via osdf transfer; bundle output via transfer_output_remaps.
+# Anomaly reduce — no OSDF shard tarball inputs (OOF folds use stashcp until migrated).
 OSDF_BASE = osdf:///ospool/ap40/data/kevin.mevada
 OSDF_GAITGUARD = $(OSDF_BASE)/gaitguard
 
@@ -16,13 +16,9 @@ request_disk   = 50 GB
 
 max_retries = 10
 
-should_transfer_files    = YES
-when_to_transfer_output  = ON_EXIT
-transfer_output_files    = merge_out.tar.gz
-transfer_output_remaps   = "merge_out.tar.gz = $(OSDF_GAITGUARD)/hpc/merge_bundles/$(stage).tar.gz"
-
+should_transfer_files   = YES
+when_to_transfer_output = NEVER
 transfer_input_files    = \
-    $(osdf_shard_inputs), \
     condor/run_hpc.sh, \
     condor/ospool_paths.sh, \
     condor/bootstrap_worker_env.sh, \

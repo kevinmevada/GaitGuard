@@ -1,0 +1,17 @@
+# Unpack merge bundle on ap40 (local universe — no worker OSDF credentials).
+OSDF_BASE = osdf:///ospool/ap40/data/kevin.mevada
+OSDF_GAITGUARD = $(OSDF_BASE)/gaitguard
+
+universe   = local
+executable = condor/extract_merge_bundle.py
+arguments  = $(stage)
+
+log    = condor/logs/extract_$(stage)_$(Cluster).log
+output = condor/logs/extract_$(stage)_$(Cluster).out
+error  = condor/logs/extract_$(stage)_$(Cluster).err
+
+getenv = True
+environment = "OSDF_GAITGUARD=$(OSDF_GAITGUARD)"
++ProjectName = "IIT_Rosa"
+
+queue

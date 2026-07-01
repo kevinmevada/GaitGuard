@@ -85,16 +85,7 @@ echo "  running: hpc.py manifests features ..."
 python hpc.py manifests features
 echo "  manifests: $(ls condor/manifests/*.json 2>/dev/null | wc -l) files"
 
-echo "=== 5. OSDF OAuth (required for stashcp on workers) ==="
-if condor_store_cred query-oauth -s scitokens >/dev/null 2>&1; then
-  echo "  scitokens credential OK (query-oauth)"
-else
-  echo "  NOTE: query-oauth failed (common on ap40 local credmon — bare token, not JSON)."
-  echo "  If you already ran: condor_submit ~/test-oauth.sub  (use_oauth_services = scitokens)"
-  echo "  and that job is NOT held, continuing is OK."
-fi
-
-echo "=== 6. Regenerate DAG and submit ==="
+echo "=== 5. Regenerate DAG and submit (HTCondor osdf transfers — no worker oauth) ==="
 python hpc/submit/generate_dag.py --config configs/pipeline_config.yaml
 condor_submit_dag -f condor/dags/gaitguard_sharded.dag
 

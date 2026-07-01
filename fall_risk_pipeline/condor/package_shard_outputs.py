@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tar shard output and upload to OSDF via stashcp (no HTCondor output remap)."""
+"""Tar shard output; upload via HTCondor remap (or stashcp for anomaly)."""
 
 from __future__ import annotations
 
