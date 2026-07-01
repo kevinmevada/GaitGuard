@@ -25,7 +25,7 @@ confirm() {
   echo "  - git pull latest code"
   echo "  - condor_rm ALL jobs for ${OWNER}"
   echo "  - delete condor/logs/* and condor/dags/*.{rescue*,condor.sub,dagman.*,lib.*}"
-  echo "  - delete ${GG}/hpc/{shards,merge,oof}/*"
+  echo "  - delete ${GG}/hpc/{shards,merge,merge_bundles,oof}/*"
   echo "  - delete processed parquets (keep dataset_inventory.csv)"
   echo "  - delete ${GG}/features/* and ${GG}/results/*"
   echo "  - regenerate manifests + DAG and condor_submit_dag"
@@ -43,7 +43,13 @@ cd "${PROJECT}"
 echo "=== 1. Remove all HTCondor jobs ==="
 condor_rm "${OWNER}" 2>/dev/null || true
 sleep 2
-remaining="$(condor_q "${OWNER}" 2>/dev/null | tail -1 | awk '{print $1}')"
+remaining="$(condor_q "${OWNER}" 2>/dev/null | awk 'NR>2 && NF {c++} END {print c+0}')"
+if [[ "${remaining}" -gt 0 ]]; then
+  echo "WARNING: ${remaining} jobs still in queue; forcing remove ..."
+  condor_rm -forcex "${OWNER}" 2>/dev/null || true
+  sleep 2
+fi
+remaining="$(condor_q "${OWNER}" 2>/dev/null | awk 'NR>2 && NF {c++} END {print c+0}')"
 echo "Queue after rm: ${remaining:-empty}"
 
 echo "=== 2. Clean local condor artifacts ==="
@@ -55,8 +61,8 @@ rm -f condor/dags/*.rescue* \
       condor/dags/*.lib.*
 
 echo "=== 3. Clean OSDF partial pipeline outputs ==="
-rm -rf "${GG}/hpc/shards"/* "${GG}/hpc/merge"/* "${GG}/hpc/oof"/* 2>/dev/null || true
-mkdir -p "${GG}/hpc"/{shards,merge,oof}
+rm -rf "${GG}/hpc/shards"/* "${GG}/hpc/merge"/* "${GG}/hpc/merge_bundles"/* "${GG}/hpc/oof"/* 2>/dev/null || true
+mkdir -p "${GG}/hpc"/{shards,merge,merge_bundles,oof}
 
 # Processed: keep discover inventory only
 if [[ -d "${GG}/processed" ]]; then
