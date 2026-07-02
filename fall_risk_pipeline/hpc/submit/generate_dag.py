@@ -104,7 +104,27 @@ def _merge_osdf_shard_inputs(config_path: Path, cfg: dict, stage: str) -> str:
     return ", ".join(urls)
 
 
-def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> None:
+def _completed_ingest_chunks(cfg: dict) -> set[str]:
+    """Chunk IDs that already have shard tarballs on the OSDF staging mount."""
+    hpc = cfg.get("hpc") or {}
+    staging = Path(str(hpc.get("staging_root", "/ospool/ap40/data/kevin.mevada")))
+    shard_dir = staging / "gaitguard" / "hpc" / "shards" / "ingest"
+    if not shard_dir.is_dir():
+        return set()
+    return {
+        p.name[: -len(".tar.gz")]
+        for p in shard_dir.glob("chunk_*.tar.gz")
+        if p.is_file() and p.name.endswith(".tar.gz")
+    }
+
+
+def write_dag(
+    config_path: Path,
+    output: Path,
+    *,
+    include_downstream: bool,
+    skip_existing_ingest: bool = False,
+) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with open(config_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
@@ -119,10 +139,15 @@ def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> N
     lines: list[str] = ["# Auto-generated sharded GaitGuard DAG"]
 
     ingest_jobs: list[str] = []
+    completed_ingest = _completed_ingest_chunks(cfg) if skip_existing_ingest else set()
+    skipped_ingest = 0
     for i, m in enumerate(ingest_m):
         name = f"ing_{i}"
         rel = m.relative_to(REPO).as_posix()
         cid = _chunk_id_from_manifest(m, "ingest")
+        if cid in completed_ingest:
+            skipped_ingest += 1
+            continue
         lines.extend(
             _job_block(
                 name,
@@ -135,6 +160,13 @@ def write_dag(config_path: Path, output: Path, *, include_downstream: bool) -> N
             )
         )
         ingest_jobs.append(name)
+    if skip_existing_ingest and skipped_ingest:
+        lines.insert(1, f"# Skipped {skipped_ingest} ingest shards already on OSDF")
+    if not ingest_jobs:
+        raise SystemExit(
+            "No ingest jobs to submit — all shard tarballs already on OSDF "
+            f"({len(completed_ingest)} found) or no manifests."
+        )
 
     lines.extend(
         _job_block(
@@ -302,8 +334,18 @@ def main() -> None:
     parser.add_argument("--config", default="configs/pipeline_config.yaml")
     parser.add_argument("--output", default=str(DAG_OUT))
     parser.add_argument("--full", action="store_true", help="Append single-job downstream stages")
+    parser.add_argument(
+        "--skip-existing-ingest",
+        action="store_true",
+        help="Omit ingest DAG nodes whose shard tarball already exists on OSDF",
+    )
     args = parser.parse_args()
-    write_dag(Path(args.config), Path(args.output), include_downstream=args.full)
+    write_dag(
+        Path(args.config),
+        Path(args.output),
+        include_downstream=args.full,
+        skip_existing_ingest=args.skip_existing_ingest,
+    )
 
 
 if __name__ == "__main__":

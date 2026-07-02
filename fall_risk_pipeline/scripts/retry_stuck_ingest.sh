@@ -34,7 +34,7 @@ if [[ "$(condor_q "${OWNER}" 2>/dev/null | awk 'NR>2 && NF {c++} END {print c+0}
 fi
 
 echo "=== regenerate DAG (updated bootstrap in transfer_input_files) ==="
-python hpc/submit/generate_dag.py --config configs/pipeline_config.yaml
+python hpc/submit/generate_dag.py --config configs/pipeline_config.yaml --skip-existing-ingest
 
 echo "=== resubmit DAG (rescue file skips finished ing_* nodes) ==="
 condor_submit_dag -f "${DAG}"
