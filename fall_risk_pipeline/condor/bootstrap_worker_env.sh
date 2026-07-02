@@ -118,13 +118,38 @@ _create_venv "${PY}" "${VENV_DIR}"
 export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-180}"
 export PIP_PREFER_BINARY="${PIP_PREFER_BINARY:-1}"
 
-echo "pip install: upgrading pip/setuptools/wheel ..."
-"${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel
+# --- Verify the venv's ACTUAL interpreter matches what we asked for. ---
+# Some OSPool execute nodes symlink/alias pythonX.Y binaries inconsistently
+# across the pool; if the venv ends up on the wrong interpreter (e.g. 3.13),
+# fail loudly here instead of discovering it via a confusing pip error later.
+_venv_py_version="$(${VENV_DIR}/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+if ! "${VENV_DIR}/bin/python" -c "
+import sys
+vi = sys.version_info
+lo = (${MIN_PY_MAJOR}, ${MIN_PY_MINOR})
+hi = (${MAX_PY_MAJOR}, ${MAX_PY_MINOR})
+sys.exit(0 if lo <= (vi.major, vi.minor) <= hi else 1)"; then
+  echo "ERROR: venv interpreter is Python ${_venv_py_version}, outside allowed ${MIN_PY_MAJOR}.${MIN_PY_MINOR}-${MAX_PY_MAJOR}.${MAX_PY_MINOR} (stage=${STAGE})." >&2
+  echo "  requested via: ${PY} -> $(command -v "${PY}" 2>/dev/null)" >&2
+  echo "  resolved real path: $(readlink -f "$(command -v "${PY}" 2>/dev/null)" 2>/dev/null || echo unknown)" >&2
+  rm -rf "${VENV_DIR}"
+  exit 1
+fi
+echo "venv interpreter confirmed: Python ${_venv_py_version}"
+
+echo "pip install: upgrading pip/wheel and pinning setuptools (keep pkg_resources) ..."
+# setuptools>=81 dropped pkg_resources, which pyarrow's build backend still
+# imports on sdist fallback ("Getting requirements to build wheel" step).
+# Pin below that so pkg_resources stays available.
+"${VENV_DIR}/bin/pip" install --upgrade pip wheel "setuptools<81"
 
 echo "pip install: requirements from ${REQ} (timeout=${PIP_BOOTSTRAP_TIMEOUT:-900}s) ..."
 _pip_install_reqs() {
   local pip="${VENV_DIR}/bin/pip"
-  local args=(install --no-cache-dir -r "${REQ}")
+  # Force wheels only for pyarrow specifically: if no matching wheel exists
+  # for this interpreter/arch, fail fast with a clear message instead of
+  # silently falling back to a source build that needs pkg_resources/cmake/etc.
+  local args=(install --no-cache-dir --only-binary=pyarrow -r "${REQ}")
   if command -v timeout >/dev/null 2>&1; then
     timeout "${PIP_BOOTSTRAP_TIMEOUT:-900}" "${pip}" "${args[@]}"
   else
@@ -134,8 +159,10 @@ _pip_install_reqs() {
 if ! _pip_install_reqs; then
   echo "ERROR: pip install failed for ${REQ}" >&2
   "${VENV_DIR}/bin/pip" --version >&2 || true
+  echo "hint: if this is '--only-binary=pyarrow' rejecting a missing wheel," >&2
+  echo "      check that ${REQ} pins a pyarrow version with wheels for Python ${_venv_py_version}." >&2
   exit 1
 fi
 
 export PATH="${VENV_DIR}/bin:${PATH}"
-"${VENV_DIR}/bin/python" -c "import pandas, numpy, pyarrow, scipy, yaml; print('worker venv OK [${STAGE}]')"
+"${VENV_DIR}/bin/python" -c "import pandas, numpy, pyarrow, scipy, yaml; print('worker venv OK [${STAGE}] python=${_venv_py_version}')"
