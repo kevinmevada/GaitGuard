@@ -12,11 +12,34 @@ from pathlib import Path
 
 from loguru import logger
 
+try:
+    from local_paths import (
+        gaitguard_root,
+        local_copy,
+        local_staging_enabled,
+        osd_uri_to_local_path,
+    )
+except ImportError:  # OSPool worker without local_paths.py — OSDF path only.
+    def local_staging_enabled() -> bool:
+        return False
+
+    def gaitguard_root():  # pragma: no cover
+        return Path(".")
+
+    def local_copy(*_a, **_k) -> bool:  # pragma: no cover
+        return False
+
+    def osd_uri_to_local_path(_uri):  # pragma: no cover
+        return None
+
 
 def _osdf_copy(src: str, dst: Path, *, recursive: bool = False) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
         return True
+    local_src = osd_uri_to_local_path(src)
+    if local_src is not None:
+        return local_copy(local_src, dst, recursive=recursive)
     flags = ["-r"] if recursive else []
     for url in (src, src if src.startswith("osdf://") else f"osdf://{src.lstrip('/')}"):
         try:
@@ -49,6 +72,11 @@ def _stage_ingest(manifest: dict, osd_gg: str, raw_root: Path) -> None:
                 break
         if linked:
             continue
+        if local_staging_enabled():
+            local_trial = gaitguard_root() / "raw" / rel
+            if local_copy(local_trial, trial_dir, recursive=True):
+                ok += 1
+                continue
         src = f"{osd_gg}/raw/{rel}?recursive"
         if _osdf_copy(src, trial_dir, recursive=True):
             ok += 1
@@ -96,6 +124,29 @@ def _stage_preprocess_or_features(
                 _osdf_copy(src, dst)
 
 
+def _config_data_roots() -> tuple[Path, Path]:
+    """Read paths.raw_data / paths.processed_data from the active config.
+
+    Falls back to the OSPool defaults (data/raw, data/processed) when the
+    config can't be read, so behavior on ap40 is unchanged.
+    """
+    raw = Path("data/raw")
+    proc = Path("data/processed")
+    cfg_path = os.environ.get("GAITGUARD_CONFIG")
+    if cfg_path and Path(cfg_path).is_file():
+        try:
+            import yaml
+
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            paths = cfg.get("paths") or {}
+            raw = Path(paths.get("raw_data", raw))
+            proc = Path(paths.get("processed_data", proc))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("could not read config paths, using defaults: {}", exc)
+    return raw, proc
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("stage", choices=["ingest", "preprocess", "features"])
@@ -107,8 +158,9 @@ def main(argv: list[str] | None = None) -> int:
 
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     osd_gg = os.environ.get("OSDF_GAITGUARD", "osdf:///ospool/ap40/data/kevin.mevada/gaitguard")
-    raw_root = Path("data/raw")
-    proc_root = Path("data/processed")
+    # Stage into the SAME dirs the shard job reads from (config paths), so the
+    # staging target and DataLoader input never drift apart.
+    raw_root, proc_root = _config_data_roots()
     raw_root.mkdir(parents=True, exist_ok=True)
     proc_root.mkdir(parents=True, exist_ok=True)
 

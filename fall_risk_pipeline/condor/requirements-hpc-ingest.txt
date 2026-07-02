@@ -8,3 +8,4 @@ scikit-learn==1.5.2
 PyYAML==6.0.2
 loguru==0.7.3
 tqdm==4.67.1
+ahrs==0.3.1          # Madgwick orientation in preprocess (shares this venv); pure-python

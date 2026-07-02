@@ -16,6 +16,10 @@ on_worker() {
   [[ -n "${_CONDOR_SCRATCH_DIR:-}" ]]
 }
 
+log_worker() {
+  echo "=== [$1] pid=$$ pwd=$(pwd) host=$(hostname 2>/dev/null || echo unknown) ==="
+}
+
 if on_worker; then
   export PYTHONUNBUFFERED=1
 fi
@@ -82,7 +86,8 @@ setup_python() {
   if on_worker; then
     # shellcheck disable=SC1091
     source "${SCRIPT_DIR}/bootstrap_worker_env.sh"
-  else    mkdir -p "${TMPDIR}" "${PIP_CACHE_DIR}" "${XDG_CACHE_HOME}"
+  else
+    mkdir -p "${TMPDIR}" "${PIP_CACHE_DIR}" "${XDG_CACHE_HOME}"
     if [[ -x "${STAGING}/miniforge3/envs/gaitguard/bin/python" ]]; then
       # shellcheck source=/dev/null
       source "${STAGING}/miniforge3/bin/activate" "${STAGING}/miniforge3/envs/gaitguard"
@@ -168,7 +173,10 @@ esac
 
 setup_python
 if on_worker; then
-  echo "=== worker: $(hostname) pwd=$(pwd) scratch=${_CONDOR_SCRATCH_DIR} ==="
+  log_worker "START"
+  echo "python=$(python --version 2>&1)"
+  echo "scratch=${_CONDOR_SCRATCH_DIR}"
+  echo "stage=${HPC_WORKER_STAGE}"
 else
   echo "=== ap40 local: $(hostname) ==="
   cd "${PROJECT}"
@@ -195,6 +203,8 @@ esac
 
 if [[ "${JOB_RC}" -ne 0 ]]; then
   echo "=== failed (rc=${JOB_RC}) ===" >&2
+  on_worker && log_worker "FAIL rc=${JOB_RC}"
   exit "${JOB_RC}"
 fi
+on_worker && log_worker "DONE"
 echo "=== done ==="

@@ -6,11 +6,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 from pathlib import Path
+
+try:
+    from local_paths import gaitguard_root, local_staging_enabled
+except ImportError:  # OSPool worker without local_paths.py.
+    def local_staging_enabled() -> bool:
+        return False
+
+    def gaitguard_root():  # pragma: no cover
+        return Path(".")
 
 
 def _scratch_root() -> Path:
@@ -89,6 +99,11 @@ def main(argv: list[str] | None = None) -> int:
             out_name.unlink(missing_ok=True)
         tar_path.rename(out_name)
         print(f"packaged {out_name} for condor upload -> {osd_dest}")
+        if local_staging_enabled():
+            local_dest = gaitguard_root() / "hpc" / "shards" / args.stage / f"{chunk_id}.tar.gz"
+            local_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(out_name, local_dest)
+            print(f"local staging copy -> {local_dest}")
         if args.error:
             return 1
         return 0

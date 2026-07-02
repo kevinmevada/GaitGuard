@@ -5,9 +5,19 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 import tarfile
 from pathlib import Path
+
+try:
+    from local_paths import gaitguard_root, local_staging_enabled
+except ImportError:  # OSPool worker without local_paths.py.
+    def local_staging_enabled() -> bool:
+        return False
+
+    def gaitguard_root():  # pragma: no cover
+        return Path(".")
 
 
 def _add_tree(tf: tarfile.TarFile, src: Path, arc_prefix: str) -> None:
@@ -55,11 +65,17 @@ def main(argv: list[str] | None = None) -> int:
                 for f in sorted(clean.glob("*.parquet")):
                     tf.add(f, arcname=f"processed/signals_clean/{f.name}")
         else:
-            feat = Path("data/features/trial_features.parquet")
-            if feat.is_file():
-                tf.add(feat, arcname="features/trial_features.parquet")
+            for name in ("trial_features.parquet", "patient_features.parquet"):
+                feat = Path("data/features") / name
+                if feat.is_file():
+                    tf.add(feat, arcname=f"features/{name}")
 
     print(f"packaged {out} ({out.stat().st_size} bytes)")
+    if local_staging_enabled():
+        bundle = gaitguard_root() / "hpc" / "merge_bundles" / f"{args.stage}.tar.gz"
+        bundle.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(out, bundle)
+        print(f"local merge bundle -> {bundle}")
     return 0 if out.is_file() and out.stat().st_size > 0 else 1
 
 

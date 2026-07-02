@@ -125,10 +125,20 @@ class SignalProcessor:
         logger.info(f"Saved cleaned signals → {self.out_dir}")
 
     def run_shard(self, trial_ids: list[str], shard_out: Path) -> dict:
-        """Preprocess manifest chunk; writes directly to ``signals_clean/``."""
+        """Preprocess manifest chunk.
+
+        Cleaned signals are written INTO the shard output dir
+        (``shard_out/signals_clean/``) so ``package_shard_outputs`` tars them and
+        the merge job can reassemble ``processed/signals_clean/``. Writing to the
+        worker's ``processed/signals_clean`` instead would be discarded when the
+        job's scratch is reclaimed (they were never in the output tarball).
+        """
         meta_path = self.proc_dir / "trial_metadata.csv"
         if not meta_path.exists():
             raise FileNotFoundError("trial_metadata.csv not found")
+        shard_out.mkdir(parents=True, exist_ok=True)
+        self.out_dir = shard_out / "signals_clean"
+        self.out_dir.mkdir(parents=True, exist_ok=True)
         meta = pd.read_csv(meta_path)
         meta_by_id = {str(r.trial_id): r for r in meta.itertuples(index=False)}
         if "cohort" in meta.columns:

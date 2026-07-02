@@ -30,7 +30,9 @@ VENV_DIR="${WORKER_VENV:-${PWD}/.worker-venv-${VENV_TAG}}"
 
 if [[ -x "${VENV_DIR}/bin/python" ]]; then
   export PATH="${VENV_DIR}/bin:${PATH}"
-  exit 0
+  # This script is sourced by run_hpc.sh — `exit` here would kill the caller
+  # and the job would "succeed" without running the payload (no shard_out.tar.gz).
+  return 0 2>/dev/null || exit 0
 fi
 
 if [[ ! -f "${REQ}" ]]; then

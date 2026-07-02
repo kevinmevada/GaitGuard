@@ -81,16 +81,26 @@ def merge_ingest_shards(config: dict, *, include_daphnet: bool = True) -> Path:
 
 
 def merge_preprocess_shards(config: dict) -> None:
-    """Preprocess shards write directly to ``signals_clean/``; merge uturn reports only."""
+    """Collect per-chunk ``signals_clean/`` + uturn reports into processed paths."""
     root = shard_root(config) / "preprocess"
     metrics_dir = Path(config["paths"]["metrics"])
     metrics_dir.mkdir(parents=True, exist_ok=True)
+    processed = Path(config["paths"]["processed_data"])
+    clean_dir = processed / "signals_clean"
+    clean_dir.mkdir(parents=True, exist_ok=True)
     rows: list[pd.DataFrame] = []
+    n_clean = 0
     if root.is_dir():
         for chunk_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            chunk_clean = chunk_dir / "signals_clean"
+            if chunk_clean.is_dir():
+                for src in chunk_clean.glob("*.parquet"):
+                    shutil.copy2(src, clean_dir / src.name)
+                    n_clean += 1
             uturn = chunk_dir / "uturn_exclusion_chunk.csv"
             if uturn.is_file():
                 rows.append(pd.read_csv(uturn))
+    logger.info("Merged {} cleaned signal files → {}", n_clean, clean_dir)
     if rows:
         pd.concat(rows, ignore_index=True).to_csv(
             metrics_dir / "uturn_exclusion_report.csv", index=False

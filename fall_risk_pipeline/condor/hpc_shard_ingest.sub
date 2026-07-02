@@ -25,6 +25,7 @@ transfer_input_files    = \
     $(osdf_inputs), \
     condor/run_hpc.sh, \
     condor/ospool_paths.sh, \
+    condor/local_paths.py, \
     condor/bootstrap_worker_env.sh, \
     condor/requirements-hpc-ingest.txt, \
     condor/requirements-hpc-cpu.txt, \
