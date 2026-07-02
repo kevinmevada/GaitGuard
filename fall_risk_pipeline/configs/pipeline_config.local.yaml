@@ -1,0 +1,26 @@
+# Local worker simulation overrides (use with --config configs/pipeline_config.local.yaml).
+# Extends pipeline_config.yaml via deep-merge in scripts/run_local_hpc_pipeline.sh.
+
+paths:
+  raw_data: "data/raw_local"
+  processed_data: "data/processed"
+  features: "data/features"
+  results: "results"
+
+ingestion:
+  daphnet:
+    enabled: false
+
+preprocessing:
+  min_trial_length_s: 1.0
+
+hpc:
+  trials_per_chunk: 2
+  staging_root: ".local_staging"
+  manifests_dir: "condor/manifests/local"
+
+discovery:
+  sources: ["voisard"]
+
+validation:
+  fail_on_error: false
