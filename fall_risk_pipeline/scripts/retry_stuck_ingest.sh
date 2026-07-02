@@ -21,6 +21,7 @@ source /ospool/ap40/data/kevin.mevada/miniforge3/bin/activate \
   /ospool/ap40/data/kevin.mevada/miniforge3/envs/gaitguard
 export TMPDIR=/ospool/ap40/data/kevin.mevada/tmp
 
+mkdir -p "${GG}/hpc/shards/ingest"
 done_shards="$(find "${GG}/hpc/shards/ingest" -maxdepth 1 -name '*.tar.gz' 2>/dev/null | wc -l | tr -d ' ')"
 echo "=== ingest shards on OSDF: ${done_shards} / 68 ==="
 

@@ -21,8 +21,8 @@ case "${STAGE}" in
     MAX_PY_MAJOR=3
     MAX_PY_MINOR=12
     VENV_TAG="ingest"
-    # Prefer 3.9/3.10 (widest pyarrow wheels on OSPool); never bare python3 (3.13+).
-    PY_CANDIDATES=(python3.9 python3.10 python3.11)
+    # Prefer 3.9/3.10; allow 3.11/3.12 only with venv (never bare python3 → 3.13+).
+    PY_CANDIDATES=(python3.9 python3.10 python3.11 python3.12)
     ;;
 esac
 
