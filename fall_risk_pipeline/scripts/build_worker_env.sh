@@ -12,9 +12,13 @@
 #   bash scripts/build_worker_env.sh 2          # builds v2
 set -euo pipefail
 
+# Python 3.12: newest interpreter with cp312 wheels for every pin, and the
+# minimum version where nolds 0.6.3 imports (its importlib.resources.files()
+# module-anchor usage raises TypeError on <=3.11). 3.13 has no numpy 1.26.4 /
+# numba 0.60 wheels, so 3.12 is the ceiling.
 VERSION="${1:-1}"
-PY_VERSION="3.11"
-NAME="gg-worker-py311-v${VERSION}"
+PY_VERSION="3.12"
+NAME="gg-worker-py312-v${VERSION}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT="$(cd "${SCRIPT_DIR}/.." && pwd)"

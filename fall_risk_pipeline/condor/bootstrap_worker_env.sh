@@ -7,12 +7,14 @@ STAGE="${HPC_WORKER_STAGE:-ingest}"
 case "${STAGE}" in
   features)
     REQ="${SCRIPT_DIR}/requirements-hpc-cpu.txt"
+    # nolds 0.6.3 only imports on Python 3.12+ (module-anchor importlib
+    # resources), so the features venv fallback requires exactly 3.12.
     MIN_PY_MAJOR=3
-    MIN_PY_MINOR=10
+    MIN_PY_MINOR=12
     MAX_PY_MAJOR=3
     MAX_PY_MINOR=12
     VENV_TAG="features"
-    PY_CANDIDATES=(python3.10 python3.11 python3.12)
+    PY_CANDIDATES=(python3.12)
     ;;
   *)
     REQ="${SCRIPT_DIR}/requirements-hpc-ingest.txt"
@@ -40,7 +42,7 @@ fi
 # Python interpreter itself). Removes ALL dependence on worker system Python
 # and on PyPI reachability from execute nodes. The venv path below remains as
 # a fallback for local simulation or when the tarball is not transferred.
-PREBUILT_TARBALL="${WORKER_ENV_TARBALL:-gg-worker-py311-v1.tar.gz}"
+PREBUILT_TARBALL="${WORKER_ENV_TARBALL:-gg-worker-py312-v1.tar.gz}"
 PREBUILT_DIR="${PWD}/.worker-prebuilt-env"
 if [[ -x "${PREBUILT_DIR}/bin/python" ]]; then
   export PATH="${PREBUILT_DIR}/bin:${PATH}"

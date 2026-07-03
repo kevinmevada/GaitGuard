@@ -3,7 +3,7 @@ OSDF_BASE = osdf:///ospool/ap40/data/kevin.mevada
 OSDF_GAITGUARD = $(OSDF_BASE)/gaitguard
 # Prebuilt relocatable Python env (scripts/build_worker_env.sh). Bump the
 # version here AND there together — OSDF objects are cached immutably.
-WORKER_ENV = gg-worker-py311-v1
+WORKER_ENV = gg-worker-py312-v1
 
 universe   = vanilla
 executable = condor/run_hpc.sh
