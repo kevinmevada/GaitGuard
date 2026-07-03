@@ -53,6 +53,10 @@ echo "=== [2/4] pip install pinned worker requirements (ingest + features) ==="
   -r "${PROJECT}/condor/requirements-hpc-ingest.txt" \
   -r "${PROJECT}/condor/requirements-hpc-cpu.txt"
 
+# Pip must not own setuptools — re-sync conda metadata before conda-pack.
+echo "=== [2b/4] re-sync setuptools (conda-owned) ==="
+conda install -y -p "${BUILD_ENV}" -c conda-forge --force-reinstall "setuptools<81"
+
 echo "=== [3/4] verify imports ==="
 "${BUILD_ENV}/bin/python" - <<'PY'
 import importlib
