@@ -21,6 +21,15 @@ source /ospool/ap40/data/kevin.mevada/miniforge3/bin/activate \
   /ospool/ap40/data/kevin.mevada/miniforge3/envs/gaitguard
 export TMPDIR=/ospool/ap40/data/kevin.mevada/tmp
 
+# Jobs transfer the prebuilt env from OSDF; without it every node holds on
+# input transfer. Build once with: bash scripts/build_worker_env.sh
+WORKER_ENV_TARBALL="$(grep -m1 -oP 'WORKER_ENV\s*=\s*\K\S+' condor/hpc_shard_ingest.sub || true)"
+if [[ -n "${WORKER_ENV_TARBALL}" && ! -f "${GG}/worker-env/${WORKER_ENV_TARBALL}.tar.gz" ]]; then
+  echo "ERROR: ${GG}/worker-env/${WORKER_ENV_TARBALL}.tar.gz not found."
+  echo "Build it first:  bash scripts/build_worker_env.sh"
+  exit 1
+fi
+
 mkdir -p "${GG}/hpc/shards/ingest"
 done_shards="$(find "${GG}/hpc/shards/ingest" -maxdepth 1 -name '*.tar.gz' 2>/dev/null | wc -l | tr -d ' ')"
 echo "=== ingest shards on OSDF: ${done_shards} / 68 ==="

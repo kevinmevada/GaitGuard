@@ -35,6 +35,37 @@ if [[ -x "${VENV_DIR}/bin/python" ]]; then
   return 0 2>/dev/null || exit 0
 fi
 
+# ---- Preferred: prebuilt relocatable env transferred via OSDF ----
+# Built once on ap40 by scripts/build_worker_env.sh (conda-pack, bundles the
+# Python interpreter itself). Removes ALL dependence on worker system Python
+# and on PyPI reachability from execute nodes. The venv path below remains as
+# a fallback for local simulation or when the tarball is not transferred.
+PREBUILT_TARBALL="${WORKER_ENV_TARBALL:-gg-worker-py311-v1.tar.gz}"
+PREBUILT_DIR="${PWD}/.worker-prebuilt-env"
+if [[ -x "${PREBUILT_DIR}/bin/python" ]]; then
+  export PATH="${PREBUILT_DIR}/bin:${PATH}"
+  return 0 2>/dev/null || exit 0
+fi
+if [[ -f "${PREBUILT_TARBALL}" ]]; then
+  echo "Extracting prebuilt worker env ${PREBUILT_TARBALL} ..."
+  mkdir -p "${PREBUILT_DIR}"
+  if tar -xzf "${PREBUILT_TARBALL}" -C "${PREBUILT_DIR}"; then
+    # conda-pack ships a prefix-rewriter; harmless to skip if absent.
+    if [[ -x "${PREBUILT_DIR}/bin/conda-unpack" ]]; then
+      "${PREBUILT_DIR}/bin/conda-unpack" || true
+    fi
+    if "${PREBUILT_DIR}/bin/python" -c "import pandas, numpy, pyarrow, scipy, yaml" 2>/dev/null; then
+      export PATH="${PREBUILT_DIR}/bin:${PATH}"
+      echo "prebuilt worker env OK [${STAGE}] ($("${PREBUILT_DIR}/bin/python" --version 2>&1))"
+      return 0 2>/dev/null || exit 0
+    fi
+    echo "WARNING: prebuilt env failed import check; falling back to venv bootstrap" >&2
+  else
+    echo "WARNING: could not extract ${PREBUILT_TARBALL}; falling back to venv bootstrap" >&2
+  fi
+  rm -rf "${PREBUILT_DIR}"
+fi
+
 if [[ ! -f "${REQ}" ]]; then
   echo "ERROR: missing ${REQ}" >&2
   exit 1

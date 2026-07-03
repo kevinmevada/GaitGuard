@@ -1,6 +1,9 @@
 # Merge / reduce — shard inputs via osdf transfer; bundle output via transfer_output_remaps.
 OSDF_BASE = osdf:///ospool/ap40/data/kevin.mevada
 OSDF_GAITGUARD = $(OSDF_BASE)/gaitguard
+# Prebuilt relocatable Python env (scripts/build_worker_env.sh). Bump the
+# version here AND there together — OSDF objects are cached immutably.
+WORKER_ENV = gg-worker-py311-v1
 
 universe   = vanilla
 executable = condor/run_hpc.sh
@@ -26,6 +29,7 @@ transfer_output_files    = merge_out.tar.gz
 transfer_output_remaps   = "merge_out.tar.gz = $(OSDF_GAITGUARD)/hpc/merge_bundles/$(stage).tar.gz"
 
 transfer_input_files    = \
+    $(OSDF_GAITGUARD)/worker-env/$(WORKER_ENV).tar.gz, \
     $(osdf_shard_inputs), \
     condor/run_hpc.sh, \
     condor/ospool_paths.sh, \
@@ -41,7 +45,7 @@ transfer_input_files    = \
     src
 
 getenv = True
-environment = "HPC_WORKER_STAGE=$(stage)"
+environment = "PYTHONUNBUFFERED=1 HPC_WORKER_STAGE=$(stage) WORKER_ENV_TARBALL=$(WORKER_ENV).tar.gz"
 +ProjectName = "IIT_Rosa"
 
 queue
