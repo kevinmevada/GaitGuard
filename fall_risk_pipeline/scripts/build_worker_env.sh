@@ -67,7 +67,9 @@ echo "=== [4/4] conda-pack -> ${DEST} ==="
 if ! command -v conda-pack >/dev/null 2>&1; then
   pip install --no-cache-dir conda-pack
 fi
-conda pack -p "${BUILD_ENV}" -o "${DEST}" --compress-level 5
+# Use the standalone conda-pack executable, not "conda pack" — the latter needs
+# conda-pack registered as a conda plugin, which it is not under miniforge here.
+conda-pack -p "${BUILD_ENV}" -o "${DEST}" --compress-level 5
 
 rm -rf "${BUILD_ENV}"
 ls -lh "${DEST}"
