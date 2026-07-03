@@ -33,6 +33,11 @@ except ImportError:  # OSPool worker without local_paths.py — OSDF path only.
         return None
 
 
+# Hard cap per stashcp transfer. Without this, a wedged OSDF cache hangs the
+# job until OSPool kills it at the 20h execute-duration limit (hold code 47).
+_STASHCP_TIMEOUT_S = int(os.environ.get("GAITGUARD_STASHCP_TIMEOUT", "900"))
+
+
 def _osdf_copy(src: str, dst: Path, *, recursive: bool = False) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
@@ -43,14 +48,20 @@ def _osdf_copy(src: str, dst: Path, *, recursive: bool = False) -> bool:
     flags = ["-r"] if recursive else []
     for url in (src, src if src.startswith("osdf://") else f"osdf://{src.lstrip('/')}"):
         try:
-            subprocess.run(["stashcp", *flags, url, str(dst)], check=True)
+            subprocess.run(
+                ["stashcp", *flags, url, str(dst)],
+                check=True,
+                timeout=_STASHCP_TIMEOUT_S,
+            )
             return True
+        except subprocess.TimeoutExpired:
+            logger.warning("stashcp timed out after {}s: {} -> {}", _STASHCP_TIMEOUT_S, url, dst)
         except (FileNotFoundError, subprocess.CalledProcessError) as exc:
             logger.warning("stashcp failed {} -> {}: {}", url, dst, exc)
     return False
 
 
-def _stage_ingest(manifest: dict, osd_gg: str, raw_root: Path) -> None:
+def _stage_ingest(manifest: dict, osd_gg: str, raw_root: Path) -> int:
     paths = manifest.get("trial_source_paths") or {}
     ok = 0
     scratch = Path.cwd()
@@ -83,6 +94,12 @@ def _stage_ingest(manifest: dict, osd_gg: str, raw_root: Path) -> None:
         else:
             logger.warning("ingest staging miss: trial {} ({})", trial_id, rel)
     logger.info("ingest staging: {}/{} trial dirs ready", ok, len(paths))
+    if ok < len(paths):
+        # Fail LOUDLY: a partial chunk would be packaged, uploaded, and then
+        # counted as done by --skip-existing-ingest -> silent data loss.
+        logger.error("ingest staging incomplete ({}/{}); failing job for retry", ok, len(paths))
+        return 2
+    return 0
 
 
 _SENSORS = ("head", "lower_back", "left_foot", "right_foot")
@@ -165,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
     proc_root.mkdir(parents=True, exist_ok=True)
 
     if args.stage == "ingest":
-        _stage_ingest(manifest, osd_gg, raw_root)
+        return _stage_ingest(manifest, osd_gg, raw_root)
     elif args.stage == "preprocess":
         _stage_preprocess_or_features(manifest, osd_gg, proc_root, signals=True)
     else:

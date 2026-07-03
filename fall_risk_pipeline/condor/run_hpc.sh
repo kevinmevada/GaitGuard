@@ -69,7 +69,15 @@ condor_py() {
 }
 
 hpc_py() {
-  python "$(resolve_path hpc.py)" --config "${PIPELINE_CONFIG}" "$@"
+  # On workers, cap payload runtime well below OSPool's 20h execute-duration
+  # kill (hold 47). A hung transfer/compute then fails fast and retries on
+  # another site instead of burning a full day per attempt.
+  if on_worker && command -v timeout >/dev/null 2>&1; then
+    timeout "${HPC_PAYLOAD_TIMEOUT:-10800}" \
+      python "$(resolve_path hpc.py)" --config "${PIPELINE_CONFIG}" "$@"
+  else
+    python "$(resolve_path hpc.py)" --config "${PIPELINE_CONFIG}" "$@"
+  fi
 }
 
 if on_worker; then

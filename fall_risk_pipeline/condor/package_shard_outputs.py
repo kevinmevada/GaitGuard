@@ -45,6 +45,15 @@ def main(argv: list[str] | None = None) -> int:
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     osd_gg = os.environ.get("OSDF_GAITGUARD", "osdf:///ospool/ap40/data/kevin.mevada/gaitguard")
 
+    # NEVER package/upload anything on failure. Uploading an error/partial
+    # tarball poisons OSDF: the retry hits "remote object already exists" and
+    # --skip-existing-ingest then counts the chunk as done. Instead leave
+    # shard_out.tar.gz missing -> HTCondor holds on output transfer ->
+    # periodic_release in the .sub re-runs the job on another site.
+    if args.error:
+        print(f"shard failed, not packaging output: {args.error}", file=sys.stderr)
+        return 1
+
     with tempfile.NamedTemporaryFile(suffix=".tar.gz", dir=scratch, delete=False) as tmp:
         tar_path = Path(tmp.name)
 
@@ -54,33 +63,28 @@ def main(argv: list[str] | None = None) -> int:
                 pid = manifest.get("held_out_participant_id", "fold")
                 safe = str(pid).replace("/", "_")
                 src = scratch / "data/hpc/oof/anomaly" / f"fold_{safe}.parquet"
-                if src.is_file():
-                    tf.add(src, arcname=src.relative_to(scratch).as_posix())
+                if not src.is_file():
+                    raise SystemExit(f"anomaly fold output missing: {src}")
+                tf.add(src, arcname=src.relative_to(scratch).as_posix())
             else:
                 chunk_id = manifest.get("chunk_id")
                 if not chunk_id:
                     raise SystemExit("manifest missing chunk_id")
                 src = scratch / "data/hpc/shards" / args.stage / chunk_id
-                if src.is_dir():
-                    for f in sorted(src.rglob("*")):
-                        if f.is_file():
-                            tf.add(f, arcname=f.relative_to(scratch).as_posix())
-                elif args.error:
-                    err = scratch / "shard_error.json"
-                    err.write_text(
-                        json.dumps(
-                            {
-                                "stage": args.stage,
-                                "chunk_id": chunk_id,
-                                "error": args.error,
-                            },
-                            indent=2,
-                        ),
-                        encoding="utf-8",
-                    )
-                    tf.add(err, arcname="shard_error.json")
-                else:
+                if not src.is_dir():
                     raise SystemExit(f"shard output missing: {src}")
+                # Refuse to mark a chunk "done" without its stage's key artifact
+                # (e.g. an ingest run that skipped every trial).
+                required = {
+                    "ingest": src / "trial_metadata_chunk.csv",
+                    "preprocess": src / "signals_clean",
+                    "features": src / "trial_features_chunk.parquet",
+                }[args.stage]
+                if not required.exists():
+                    raise SystemExit(f"shard output incomplete, missing {required}")
+                for f in sorted(src.rglob("*")):
+                    if f.is_file():
+                        tf.add(f, arcname=f.relative_to(scratch).as_posix())
 
         if args.stage == "anomaly":
             pid = manifest.get("held_out_participant_id", "fold")

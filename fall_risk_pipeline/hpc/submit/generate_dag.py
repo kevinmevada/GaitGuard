@@ -104,18 +104,45 @@ def _merge_osdf_shard_inputs(config_path: Path, cfg: dict, stage: str) -> str:
     return ", ".join(urls)
 
 
+def _tarball_has_ingest_data(path: Path) -> bool:
+    """True if the shard tarball contains real ingest output (not an error marker)."""
+    import tarfile
+
+    try:
+        with tarfile.open(path, "r:gz") as tf:
+            names = tf.getnames()
+    except (tarfile.TarError, OSError):
+        return False
+    if any(n.endswith("shard_error.json") for n in names):
+        return False
+    return any(n.endswith("trial_metadata_chunk.csv") for n in names)
+
+
 def _completed_ingest_chunks(cfg: dict) -> set[str]:
-    """Chunk IDs that already have shard tarballs on the OSDF staging mount."""
+    """Chunk IDs with VALID shard tarballs on the OSDF staging mount.
+
+    Validates content because failed jobs previously uploaded error tarballs;
+    counting those as done would silently drop their trials. Invalid tarballs
+    are reported so they can be deleted and re-run.
+    """
     hpc = cfg.get("hpc") or {}
     staging = Path(str(hpc.get("staging_root", "/ospool/ap40/data/kevin.mevada")))
     shard_dir = staging / "gaitguard" / "hpc" / "shards" / "ingest"
     if not shard_dir.is_dir():
         return set()
-    return {
-        p.name[: -len(".tar.gz")]
-        for p in shard_dir.glob("chunk_*.tar.gz")
-        if p.is_file() and p.name.endswith(".tar.gz")
-    }
+    done: set[str] = set()
+    for p in sorted(shard_dir.glob("chunk_*.tar.gz")):
+        if not p.is_file():
+            continue
+        cid = p.name[: -len(".tar.gz")]
+        if _tarball_has_ingest_data(p):
+            done.add(cid)
+        else:
+            print(
+                f"WARNING: {p} is not valid ingest output (error/partial tarball). "
+                f"Delete it so {cid} re-runs:  rm {p}"
+            )
+    return done
 
 
 def write_dag(

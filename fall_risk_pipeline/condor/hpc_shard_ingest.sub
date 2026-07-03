@@ -16,6 +16,12 @@ request_disk   = 20 GB
 
 max_retries = 10
 
+# Auto-release holds that are retryable on another site:
+#   12 = output transfer failed (job failed -> no shard_out.tar.gz)
+#   13 = input transfer failed (flaky OSDF cache)
+#   47 = exceeded execute duration (hung payload, now capped by HPC_PAYLOAD_TIMEOUT)
+periodic_release = (HoldReasonCode =?= 12 || HoldReasonCode =?= 13 || HoldReasonCode =?= 47) && (NumJobStarts < 8) && ((time() - EnteredCurrentStatus) > 120)
+
 should_transfer_files    = YES
 when_to_transfer_output  = ON_EXIT
 transfer_output_files    = shard_out.tar.gz

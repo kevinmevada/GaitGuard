@@ -16,6 +16,10 @@ request_disk   = 50 GB
 
 max_retries = 10
 
+# Auto-release retryable holds: 12=output transfer (failed job), 13=input
+# transfer (flaky OSDF cache), 47=execute-duration kill (hung payload).
+periodic_release = (HoldReasonCode =?= 12 || HoldReasonCode =?= 13 || HoldReasonCode =?= 47) && (NumJobStarts < 8) && ((time() - EnteredCurrentStatus) > 120)
+
 should_transfer_files    = YES
 when_to_transfer_output  = ON_EXIT
 transfer_output_files    = merge_out.tar.gz
