@@ -43,10 +43,12 @@ source "${MINIFORGE}/bin/activate"
 
 echo "=== [1/4] create build env (python ${PY_VERSION}) ==="
 rm -rf "${BUILD_ENV}"
-conda create -y -p "${BUILD_ENV}" "python=${PY_VERSION}" pip
+# Pin setuptools via conda, not pip — pip downgrading conda's setuptools leaves
+# orphaned egg-info files and conda-pack refuses to pack the prefix.
+conda create -y -p "${BUILD_ENV}" \
+  "python=${PY_VERSION}" pip wheel "setuptools<81"
 
 echo "=== [2/4] pip install pinned worker requirements (ingest + features) ==="
-"${BUILD_ENV}/bin/pip" install --no-cache-dir "setuptools<81" wheel
 "${BUILD_ENV}/bin/pip" install --no-cache-dir \
   -r "${PROJECT}/condor/requirements-hpc-ingest.txt" \
   -r "${PROJECT}/condor/requirements-hpc-cpu.txt"
