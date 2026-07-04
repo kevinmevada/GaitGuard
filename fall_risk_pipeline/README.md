@@ -76,42 +76,40 @@ $env:PYTHONHASHSEED = "42"
 
 Linux/macOS: `export PYTHONHASHSEED=42` or `make pipeline` (Makefile exports it).
 
-### OSPool (ap40) — sharded HTCondor (Path B — recommended)
+### Local execution
 
-**One-time on ap40** (after `discover` + staging symlinks):
+From the repository root:
 
 ```bash
-bash ../scripts/setup_ospool_staging.sh
-conda activate gaitguard
-export TMPDIR=/ospool/ap40/data/kevin.mevada/tmp
+bash setup_local.sh          # one-time setup
+source .venv/bin/activate    # Windows: .\.venv\Scripts\Activate.ps1
+export PYTHONHASHSEED=42
 
+python run_local.py
+```
+
+Single stage:
+
+```bash
+python run_local.py --stage evaluate
+```
+
+Smoke test with synthetic data:
+
+```bash
+python run_local.py --use-local-config --seed-data --trials 6
+```
+
+Or run `main.py` directly:
+
+```bash
 cd fall_risk_pipeline
-chmod +x condor/*.sh
-python hpc.py init
-python hpc.py manifests ingest
-python hpc.py manifests preprocess
-python hpc.py manifests features
-python hpc.py manifests anomaly   # after trial_metadata exists; re-run after ingest merge if needed
-python hpc/submit/generate_dag.py --config configs/pipeline_config.yaml --full
-condor_submit_dag condor/dags/gaitguard_sharded.dag
-condor_q
+PYTHONHASHSEED=42 python main.py --config configs/pipeline_config.yaml
 ```
 
-This fans out **~68 ingest shards** (20 trials/job), **~260 GPU anomaly folds**, then runs remaining stages. Merge jobs stitch parquets and OOF scores.
+Or: `make local` / `make pipeline`
 
-**Manual shard** (debug one chunk):
-
-```bash
-python hpc.py shard ingest --manifest data/hpc/manifests/ingest_chunk_0000.json
-python hpc.py merge ingest
-```
-
-**Legacy whole-stage** (slower): `condor_submit condor/ingest.sub` or `condor/cpu_stage.sub`.
-
-Set `+ProjectName` / `hpc.osg_project` to your OSG project (e.g. `IIT_Rosa`).
-
-
-From repo root:
+### Docker
 
 ```bash
 make docker-build

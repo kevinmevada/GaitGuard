@@ -22,7 +22,6 @@ def test_pipeline_requirements_include_api_and_download_deps():
     assert "scipy" in req
     assert "joblib" in req
     assert "fastapi" in req
-    assert "requests" in req
     assert "huggingface_hub" in req
 
 

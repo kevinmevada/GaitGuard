@@ -5,11 +5,12 @@ STAGE ?= all
 # REP-010: match CI reproducibility (lockfiles + hash seed before Python starts).
 export PYTHONHASHSEED ?= 42
 
-.PHONY: help install pipeline stage api docker-build docker-run docker-stage docker-api clean
+.PHONY: help install local pipeline stage api docker-build docker-run docker-stage docker-api clean
 
 help:
 	@echo "Targets:"
 	@echo "  make install       Install pipeline + API dependencies (lockfiles)"
+	@echo "  make local         Run full pipeline via run_local.py"
 	@echo "  make pipeline      Run full pipeline locally (PYTHONHASHSEED=$(PYTHONHASHSEED))"
 	@echo "  make stage STAGE=evaluate   Run a single stage locally"
 	@echo "  make api           Start API locally on port 8001"
@@ -22,6 +23,9 @@ install:
 	pip install -r fall_risk_pipeline/requirements-lock.txt \
 		--extra-index-url https://download.pytorch.org/whl/cpu
 	pip install -r fall_risk_pipeline/requirements-dev-lock.txt
+
+local:
+	PYTHONHASHSEED=$(PYTHONHASHSEED) python run_local.py
 
 pipeline:
 	cd fall_risk_pipeline && PYTHONHASHSEED=$(PYTHONHASHSEED) python main.py --config $(CONFIG)

@@ -40,7 +40,6 @@ tqdm>=4.66.0
 joblib>=1.3.0
 loguru>=0.7.0
 rich>=13.0.0
-requests>=2.31.0
 huggingface_hub>=0.20.0
 
 # API / deployment (consolidated from api/requirements.txt)

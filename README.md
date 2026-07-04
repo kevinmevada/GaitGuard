@@ -356,12 +356,19 @@ make docker-stage STAGE=evaluate
 ### Environment Setup
 
 ```bash
-cd c:\Users\mevad\Desktop\GI
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r fall_risk_pipeline/requirements-lock.txt \
-  --extra-index-url https://download.pytorch.org/whl/cpu
-pip install -r fall_risk_pipeline/requirements-dev-lock.txt
+# Recommended: one-command setup (Linux/macOS/Git Bash)
+bash setup_local.sh
+
+# Windows PowerShell
+.\setup_local.ps1
+```
+
+Or manually:
+
+```bash
+python -m venv .venv
+.\venv\Scripts\Activate.ps1   # Windows
+pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
 ### Configuration File
@@ -395,18 +402,35 @@ Classification `.pkl` files and anomaly models under `fall_risk_pipeline/results
 
 ## Running the System
 
-### Option 1: Run Training Pipeline
+### Option 1: Run full pipeline (recommended)
+
+From the repository root:
+
+```bash
+export PYTHONHASHSEED=42   # Linux/macOS
+python run_local.py
+```
+
+PowerShell: `$env:PYTHONHASHSEED = "42"; python run_local.py`
+
+Or: `make local`
+
+Smoke test with synthetic data:
+
+```bash
+python run_local.py --use-local-config --seed-data --trials 6
+```
+
+### Option 1b: Run via fall_risk_pipeline/main.py
 
 ```bash
 cd fall_risk_pipeline
 PYTHONHASHSEED=42 python main.py --config configs/pipeline_config.yaml
 ```
 
-PowerShell: `$env:PYTHONHASHSEED = "42"; python main.py --config configs/pipeline_config.yaml`
-
 Or use `make pipeline` from the repo root (Makefile sets `PYTHONHASHSEED=42` before Python starts).
 
-### Option 1b: Run with Makefile (local or Docker)
+### Option 1c: Run with Makefile (local or Docker)
 
 ```bash
 # Local

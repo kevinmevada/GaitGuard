@@ -1,0 +1,3 @@
+# GaitGuard — local development and pipeline execution.
+# Pinned lockfile for CI/repro: fall_risk_pipeline/requirements-lock.txt
+-r fall_risk_pipeline/requirements.txt
