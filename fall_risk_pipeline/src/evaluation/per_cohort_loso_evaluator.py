@@ -93,15 +93,30 @@ def render_per_cohort_results_md(
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
 
+    any_suppressed = False
     for row in metrics_df.itertuples(index=False):
+        n_participants = int(getattr(row, "n_participants_pathological", row.n_trials_pathological))
+        is_suppressed = getattr(row, "auc_status", "stable") == "unstable_small_n"
+        any_suppressed = any_suppressed or is_suppressed
+        cohort_label = f"{row.cohort_display} †" if is_suppressed else row.cohort_display
         lines.append(
-            f"| **{row.cohort_display}** | {row.comparison} | {int(row.n_trials_pathological)} | "
-            f"{int(getattr(row, 'n_participants_pathological', row.n_trials_pathological))} | "
+            f"| **{cohort_label}** | {row.comparison} | {int(row.n_trials_pathological)} | "
+            f"{n_participants} | "
             f"{_fmt(row.auroc)} | {_fmt(row.f1_binary)} | {_fmt(row.mcc)} | "
             f"{_fmt(row.sensitivity)} | {_fmt(row.specificity)} | "
             f"{_fmt(row.anomaly_rate_pct, 1)} | {_fmt(row.reference_fall_probability_pct, 1)} | "
             f"{_fmt(row.score_gap_vs_healthy)} |"
         )
+
+    if any_suppressed:
+        min_n_note = (
+            "† AUROC/F1/MCC/sensitivity/specificity suppressed (`auc_status: unstable_small_n`): "
+            "cohort has fewer participants than `models.evaluation.cohort_auc_min_n` "
+            "(default 25) and cannot support a stable point estimate. Do not cite these cells; "
+            "see `docs/paper/methods.md` §10 for the rule this mirrors."
+        )
+        lines.append("")
+        lines.append(min_n_note)
 
     lines.extend(
         [
@@ -207,6 +222,19 @@ def run_per_cohort_loso_results(config: dict) -> pd.DataFrame:
         row["n_participants_pathological"] = int(len(np.unique(pids[mask])))
         row["model"] = model
         row["score_column"] = score_col
+
+        min_n = int(
+            config.get("models", {}).get("evaluation", {}).get("cohort_auc_min_n", 25)
+        )
+        unstable = row["n_participants_pathological"] < min_n
+        row["auc_status"] = "unstable_small_n" if unstable else "stable"
+        if unstable:
+            # Mirror evaluator.py's cohort-level suppression rule (ML-044/MED-003):
+            # do not report point-estimate discriminative metrics for cohorts too
+            # small to support a stable AUROC/F1/MCC estimate.
+            for suppressed_field in ("auroc", "f1_binary", "f1_weighted", "mcc", "sensitivity", "specificity", "balanced_accuracy"):
+                row[suppressed_field] = float("nan")
+
         metric_rows.append(row)
 
     if not metric_rows:

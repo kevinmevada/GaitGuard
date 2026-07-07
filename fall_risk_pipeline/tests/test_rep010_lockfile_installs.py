@@ -21,7 +21,7 @@ def test_api_static_readme_documents_canonical_ui():
 
 
 def test_dockerfile_uses_lockfiles():
-    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (REPO_ROOT / "Dockerfile.pipeline").read_text(encoding="utf-8")
     assert "requirements-lock.txt" in dockerfile
     assert "fall_risk_pipeline/requirements.txt" not in dockerfile
 

@@ -19,6 +19,7 @@ from loguru import logger
 from sklearn.metrics import average_precision_score, roc_auc_score
 
 from src.dataset.train_fit_mask import healthy_train_fit_mask
+from src.evaluation.metrics_ci import grouped_bootstrap_binary_auc_ci
 from src.ingestion.daphnet_label_mapping import FOG_LABEL_MANIFEST, fog_labels_path, load_fog_labels_npz
 from src.models.bilstm_ae_scoring import (
     METHOD_AE_RECON,
@@ -28,13 +29,13 @@ from src.models.bilstm_ae_scoring import (
     combine_ensemble_scores,
     fit_latent_one_class_models,
     lb_slice_from_slices,
-    load_voisard_trial_windows,
     score_latent_one_class,
     score_windows,
     train_healthy_ae,
 )
 from src.models.deep_models import CHANNEL_ORDER, trial_to_tensor
 from src.preprocessing.windowing import parse_window_spec, window_single_trial
+from src.utils.reproducibility import get_pipeline_seed
 
 SEALED_OUTPUT_NAME = "daphnet_bilstm_ae_fog_auroc.json"
 
@@ -201,6 +202,7 @@ def run_daphnet_bilstm_ae_fog_eval(config: dict, *, force: bool = False) -> dict
     processed = Path(config["paths"]["processed_data"])
 
     all_y: list[np.ndarray] = []
+    all_groups: list[np.ndarray] = []
     scores_by_method: dict[str, list[np.ndarray]] = {m: [] for m in (*ref.keys(), METHOD_ENSEMBLE)}
 
     for subject_id, y_true in sorted(y_by_subject.items()):
@@ -230,10 +232,12 @@ def run_daphnet_bilstm_ae_fog_eval(config: dict, *, force: bool = False) -> dict
         methods[METHOD_ENSEMBLE] = ens
 
         all_y.append(y_true)
+        all_groups.append(np.full(len(y_true), subject_id, dtype=object))
         for m, s in methods.items():
             scores_by_method[m].append(s)
 
     y_cat = np.concatenate(all_y)
+    groups_cat = np.concatenate(all_groups)
     result: dict[str, Any] = {
         "endpoint": "daphnet_fog_bilstm_ae_auroc",
         "protocol": "sealed_lb_reconstruction",
@@ -248,14 +252,23 @@ def run_daphnet_bilstm_ae_fog_eval(config: dict, *, force: bool = False) -> dict
             continue
         sc = np.concatenate(chunks)
         if len(np.unique(y_cat)) >= 2:
+            auc_full, ci_low, ci_high, ci_status = grouped_bootstrap_binary_auc_ci(
+                y_cat, sc, groups_cat, seed=get_pipeline_seed(config)
+            )
             result["per_method"][method] = {
                 "auc": float(roc_auc_score(y_cat, sc)),
                 "auc_pr": float(average_precision_score(y_cat, sc)),
+                "auc_ci_low": ci_low,
+                "auc_ci_high": ci_high,
+                "auc_ci_method": ci_status,
             }
     primary = result["per_method"].get(METHOD_AE_RECON) or result["per_method"].get(METHOD_ENSEMBLE)
     if primary:
         result["auc"] = primary["auc"]
         result["auc_pr"] = primary["auc_pr"]
+        result["auc_ci_low"] = primary["auc_ci_low"]
+        result["auc_ci_high"] = primary["auc_ci_high"]
+        result["auc_ci_method"] = primary["auc_ci_method"]
     result["n_samples"] = int(len(y_cat))
     result["n_fog_positive"] = int((y_cat == 1).sum())
 

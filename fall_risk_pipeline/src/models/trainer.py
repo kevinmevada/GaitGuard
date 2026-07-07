@@ -28,11 +28,11 @@ warnings.filterwarnings("ignore", module="lightgbm")
 console = Console()
 
 from src.features.feature_missingness import warn_high_missingness_features
+from src.dataset.label_balance import balanced_scale_pos_weight
 from src.dataset.label_policy import is_binary_task, label_mode_description
 from src.dataset.subject_split import ensure_subject_split_manifest
 from src.evaluation.roc_auc_scoring import roc_auc_from_proba, roc_auc_scoring_name
 from src.features.feature_matrix import (
-    NON_FEATURE_COLS,
     load_patient_feature_matrix,
     nested_rfecv_column_indices,
 )

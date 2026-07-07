@@ -336,7 +336,6 @@ def _benchmark_deep_classifier(
 ) -> dict[str, Any] | None:
     import copy
 
-    from src.evaluation.dl_baseline_evaluator import _NullProgress
     from src.models.deep_trainer import DeepLearningPipeline
 
     ocfg = _overhead_cfg(config)

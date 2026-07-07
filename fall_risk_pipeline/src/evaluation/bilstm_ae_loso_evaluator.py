@@ -29,10 +29,7 @@ from src.evaluation.primary_endpoint import (
 from src.models.anomaly_scoring import eval_binary_labels
 from src.models.bilstm_ae_scoring import (
     ENSEMBLE_METHODS,
-    METHOD_AE_RECON,
     METHOD_ENSEMBLE,
-    METHOD_IF_LATENT,
-    METHOD_OCSVM_LATENT,
     build_fold_trial_scores,
     load_voisard_trial_windows,
 )

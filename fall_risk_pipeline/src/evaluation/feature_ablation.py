@@ -29,7 +29,6 @@ from src.dataset.label_policy import is_binary_task, label_mode_description
 from src.evaluation.clinical_threshold import (
     fixed_threshold_when_inner_cv_unavailable,
     threshold_from_inner_oof,
-    youden_threshold,
 )
 from src.evaluation.multiclass_metrics import build_multiclass_metric_payload, predict_multiclass
 from src.evaluation.shap_multiclass import global_mean_abs_importance, split_shap_by_class

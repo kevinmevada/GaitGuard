@@ -5,7 +5,7 @@ STAGE ?= all
 # REP-010: match CI reproducibility (lockfiles + hash seed before Python starts).
 export PYTHONHASHSEED ?= 42
 
-.PHONY: help install local pipeline stage api docker-build docker-run docker-stage docker-api clean
+.PHONY: help install local pipeline stage api docker-build docker-build-api docker-run docker-stage docker-api clean
 
 help:
 	@echo "Targets:"
@@ -37,7 +37,10 @@ api:
 	cd api && python -m uvicorn main:app --host 0.0.0.0 --port 8001
 
 docker-build:
-	docker build -t $(IMAGE) .
+	docker build -f Dockerfile.pipeline -t $(IMAGE) .
+
+docker-build-api:
+	docker build -f Dockerfile.api -t $(IMAGE)-api .
 
 docker-run:
 	docker run --rm -it \
@@ -54,10 +57,10 @@ docker-stage:
 		$(IMAGE) python main.py --config $(CONFIG) --stage $(STAGE)
 
 docker-api:
-	docker run --rm -it -p 8001:8001 \
+	docker run --rm -it -p 8001:8000 \
 		-v "$(CURDIR)/fall_risk_pipeline/data:/app/fall_risk_pipeline/data" \
 		-v "$(CURDIR)/fall_risk_pipeline/results:/app/fall_risk_pipeline/results" \
-		$(IMAGE) bash -lc "cd /app/api && python -m uvicorn main:app --host 0.0.0.0 --port 8001"
+		$(IMAGE)-api
 
 clean:
 	rm -rf fall_risk_pipeline/__pycache__ api/__pycache__

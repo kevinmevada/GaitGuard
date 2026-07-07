@@ -13,8 +13,6 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
-from src.evaluation.competitor_metrics import DISCRIMINATIVE_COLUMNS
-from src.evaluation.dl_baseline_evaluator import DISPLAY_NAMES as DL_DISPLAY
 from src.evaluation.primary_endpoint import ENDPOINT_BILSTM_AE_ENSEMBLE
 
 METRIC_COLS = [

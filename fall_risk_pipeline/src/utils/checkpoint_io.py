@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+from loguru import logger
 
 MANIFEST_FILENAME = "checkpoint_manifest.json"
 _MANIFEST_VERSION = 1
@@ -163,6 +164,10 @@ def _verify_checkpoint_bytes(
                 f"Checkpoint '{filename}' is not listed in {MANIFEST_FILENAME} "
                 f"under {manifest_dir}"
             )
+        logger.warning(
+            f"Checkpoint '{filename}' has no manifest entry — loading WITHOUT "
+            "integrity verification"
+        )
         return
 
     digest = _sha256_hex(data)
@@ -195,6 +200,31 @@ def _verify_checkpoint_bytes(
             raise CheckpointIntegrityError(
                 f"Checkpoint '{filename}' failed HMAC verification"
             )
+
+
+def verify_checkpoint_bytes(
+    filename: str,
+    data: bytes,
+    manifest_dir: Path,
+    *,
+    require_manifest: bool = False,
+    require_hmac: bool | None = None,
+) -> None:
+    """Public entry point for verifying raw checkpoint bytes against the manifest.
+
+    Intended for checkpoint formats other than joblib/sklearn (e.g. torch ``.pt``
+    files) that want the same SHA-256/HMAC integrity guarantees as
+    :func:`load_checkpoint` without going through joblib deserialization here.
+    """
+    if require_hmac is None:
+        require_hmac = is_production_environment()
+    _verify_checkpoint_bytes(
+        filename,
+        data,
+        manifest_dir,
+        require_manifest=require_manifest,
+        require_hmac=require_hmac,
+    )
 
 
 def save_checkpoint(

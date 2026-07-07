@@ -183,7 +183,7 @@ def test_docker_non_root_and_slim_inference_deps():
 
 
 def test_training_dockerfile_hash_seed_matches_pipeline():
-    docker = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    docker = (REPO_ROOT / "Dockerfile.pipeline").read_text(encoding="utf-8")
     assert "PYTHONHASHSEED=42" in docker
     assert "PYTHONHASHSEED=0" not in docker
 

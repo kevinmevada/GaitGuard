@@ -414,7 +414,6 @@ python main.py --config configs/pipeline_config.yaml
         if not md_path.exists():
             return ""
 
-        text = md_path.read_text(encoding="utf-8")
         lines = [
             "## Class distribution (training labels)",
             "",
@@ -489,7 +488,8 @@ python main.py --config configs/pipeline_config.yaml
             import json
 
             data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+            logger.warning(f"Could not read/parse {path} for clinical threshold section: {exc}")
             return ""
         pc = data.get("primary_cutoff", {})
         morse = data.get("clinical_screening_tools", {}).get("morse_fall_scale", {})

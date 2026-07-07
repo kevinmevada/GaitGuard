@@ -30,6 +30,7 @@ from rich.table import Table
 
 from src.utils.pipeline_stages import PIPELINE_STAGES, resolve_stages, validate_stage_order
 from src.utils.reproducibility import get_pipeline_seed, set_global_seed
+from src.utils.config_schema import validate_config_or_raise
 
 console = Console()
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(os.cpu_count() or 1))
@@ -44,6 +45,8 @@ def load_config(path: str) -> dict:
 
         if not isinstance(config, dict):
             raise ValueError("Invalid config format")
+
+        validate_config_or_raise(config)
 
         config["_pipeline_meta"] = {
             "config_path": str(Path(path).resolve()),
@@ -161,6 +164,9 @@ def run_stage(stage: str, config: dict) -> float:
     elif stage == "predict":
         from src.evaluation.predictions import PredictionGenerator
         PredictionGenerator(config).run()
+    elif stage == "fit_uncertainty":
+        from src.evaluation.fit_uncertainty import run_fit_uncertainty
+        run_fit_uncertainty(config)
     elif stage == "anomaly":
         from src.models.anomaly_detector import detect_anomalies
         detect_anomalies(config)

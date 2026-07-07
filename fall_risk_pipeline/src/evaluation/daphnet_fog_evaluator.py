@@ -47,7 +47,7 @@ def _is_daphnet_trial(trial_id: str) -> bool:
     return str(trial_id).startswith("daphnet_")
 
 
-def load_voisard_healthy_lb_samples(processed_dir: Path) -> np.ndarray:
+def load_voisard_healthy_lb_samples(processed_dir: Path, config: dict | None = None) -> np.ndarray:
     """Concatenate Voisard Healthy lower-back acc rows (excludes DAPHNET trials)."""
     meta = pd.read_csv(processed_dir / "trial_metadata.csv")
     signals_dir = processed_dir / "signals"
@@ -70,7 +70,7 @@ def load_voisard_healthy_lb_samples(processed_dir: Path) -> np.ndarray:
         raise DaphnetSealedEvalError("No Voisard Healthy lower_back signals for anomaly fit")
     X = np.vstack(chunks)
     if len(X) > MAX_HEALTHY_FIT_SAMPLES:
-        rng = np.random.default_rng(42)
+        rng = np.random.default_rng(get_pipeline_seed(config) if config is not None else 42)
         X = X[rng.choice(len(X), MAX_HEALTHY_FIT_SAMPLES, replace=False)]
     return X
 
@@ -257,7 +257,7 @@ def run_daphnet_sealed_fog_eval(config: dict, *, force: bool = False) -> dict[st
 
     labels_path = Path(sealed_cfg.get("labels_path") or fog_labels_path(processed_dir))
     y_by_subject = load_fog_labels_npz(labels_path)
-    X_healthy = load_voisard_healthy_lb_samples(processed_dir)
+    X_healthy = load_voisard_healthy_lb_samples(processed_dir, config)
     rs = get_pipeline_seed(config)
 
     all_y: list[np.ndarray] = []

@@ -20,7 +20,6 @@ import numpy as np
 import pandas as pd
 import torch
 from loguru import logger
-from sklearn.metrics import average_precision_score, roc_auc_score
 
 from src.dataset.subject_split import assert_loso_fold_disjoint
 from src.evaluation.anomaly_loso_evaluator import _score_block

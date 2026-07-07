@@ -5,7 +5,7 @@ from __future__ import annotations
 import platform
 import time
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import TypeVar
 
 import torch
 

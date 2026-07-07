@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 
 
 def resolve_trial_cohort(
@@ -47,7 +48,8 @@ def load_trial_metadata_json(trial_dir: Path) -> dict[str, Any]:
         try:
             with open(path, encoding="utf-8") as fh:
                 return json.load(fh)
-        except Exception:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+            logger.debug(f"Skipping unreadable/malformed metadata file {path}: {exc}")
             continue
     return {}
 

@@ -6,6 +6,7 @@ Encoder produces bottleneck activations h_t; decoder reconstructs per-sensor cha
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from src.utils.checkpoint_io import register_checkpoint_file, verify_checkpoint_bytes
 from src.utils.reproducibility import get_pipeline_seed
 
 
@@ -181,12 +183,26 @@ def train_bilstm_autoencoder(
         },
         checkpoint_path,
     )
+    register_checkpoint_file(checkpoint_path, manifest_dir=checkpoint_path.parent)
     return model
 
 
-def load_bilstm_autoencoder(checkpoint_path: Path, device: torch.device | None = None) -> BiLSTMAutoencoder:
+def load_bilstm_autoencoder(
+    checkpoint_path: Path,
+    device: torch.device | None = None,
+    *,
+    require_manifest: bool = False,
+) -> BiLSTMAutoencoder:
     device = device or torch.device("cpu")
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    checkpoint_path = Path(checkpoint_path)
+    raw_bytes = checkpoint_path.read_bytes()
+    verify_checkpoint_bytes(
+        checkpoint_path.name,
+        raw_bytes,
+        checkpoint_path.parent,
+        require_manifest=require_manifest,
+    )
+    ckpt = torch.load(io.BytesIO(raw_bytes), map_location=device, weights_only=False)
     slices = [
         SensorChannelSlice(s["name"], s["start"], s["end"])
         for s in ckpt.get("sensor_slices", [])

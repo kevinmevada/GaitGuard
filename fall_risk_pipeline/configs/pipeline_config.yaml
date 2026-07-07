@@ -624,6 +624,13 @@ explainability:
   shap_background_samples: 100
   top_features_plot: 20
 
+# Post-hoc calibration + split-conformal prediction sets (fit_uncertainty stage).
+# Wraps existing OOF predictions from the 'evaluate' stage — does not retrain anything.
+calibration:
+  enabled: true
+  model: null              # null => model with the most OOF rows
+  conformal_alpha: 0.1      # target miscoverage rate (default: 90% coverage)
+
 # Reporting
 reporting:
   save_all_figures: true

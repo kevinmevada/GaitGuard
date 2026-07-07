@@ -18,18 +18,15 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import shap
 from joblib import Parallel, delayed
 from loguru import logger
-from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
     classification_report,
     confusion_matrix,
     f1_score,
-    precision_recall_curve,
     roc_auc_score,
     roc_curve,
 )
@@ -37,15 +34,16 @@ from sklearn.model_selection import StratifiedGroupKFold
 from tqdm import tqdm
 
 from src.dataset.label_policy import (
-    MULTICLASS_NAMES,
     get_dataset_label_config,
     is_binary_task,
     label_mode_description,
 )
 from src.dataset.subject_split import assert_loso_fold_disjoint, ensure_subject_split_manifest
 from src.evaluation.auc_significance import pairwise_auc_significance
+from src.evaluation.evaluation_plots import EvaluationPlotter
 from src.evaluation.clinical_threshold import (
     FIXED_THRESHOLD_FALLBACK_STRATEGIES,
+    THRESHOLD_STRATEGY_INNER_GROUP_OOF,
     THRESHOLD_STRATEGY_INNER_GROUP_SOFT_VOTING_OOF,
     build_clinical_threshold_artifact,
     fixed_threshold_when_inner_cv_unavailable,
@@ -109,6 +107,15 @@ class Evaluator:
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
         self.fig_models.mkdir(parents=True, exist_ok=True)
         self.fig_shap.mkdir(parents=True, exist_ok=True)
+
+        # First slice of decomposing this class (previously 70 methods /
+        # 2,500+ lines): matplotlib/seaborn-only plotting extracted to its
+        # own stateless, independently-testable module. See
+        # evaluation_plots.py's module docstring for what's still here
+        # (the SHAP plots) and why.
+        self._plotter = EvaluationPlotter(
+            fig_dir=self.fig_models, metrics_dir=self.metrics_dir, fmt=self.fmt, dpi=self.dpi
+        )
 
         self.trainer = ModelTrainer(config)
         self.seed = get_pipeline_seed(config)
@@ -680,7 +687,6 @@ class Evaluator:
         top_models = self._tune_top_k_base_models(
             model_names, X_fold, y, groups, train_idx, top_k
         )
-        ens_cfg = self.config["models"]["ensemble"]
         cv_folds = self._ensemble_cv_folds()
         rs = self.config["models"]["evaluation"]["random_state"]
 
@@ -1280,8 +1286,11 @@ class Evaluator:
         y_prob: np.ndarray,
         *,
         z: float = 1.96,
-    ) -> tuple[float, float, str]:
-        """Delegate to shared subject-bootstrap CI (MET-005)."""
+    ) -> tuple[float, float, float, str]:
+        """Delegate to shared subject-bootstrap CI (MET-005).
+
+        Returns ``(auc_full, ci_low, ci_high, status)``.
+        """
         del z
         return subject_bootstrap_binary_auc_ci(
             y_true, y_prob, seed=self.seed, n_bootstrap=self.auc_ci_bootstrap_n
@@ -1314,7 +1323,7 @@ class Evaluator:
             auc_roc     = roc_auc_score(y_true, y_prob)
             auc_pr      = average_precision_score(y_true, y_prob)
             fpr, tpr, _ = roc_curve(y_true, y_prob)
-            auc_ci_low, auc_ci_high, auc_ci_method = subject_bootstrap_binary_auc_ci(
+            _, auc_ci_low, auc_ci_high, auc_ci_method = subject_bootstrap_binary_auc_ci(
                 y_true,
                 y_prob,
                 seed=self.seed,
@@ -1435,216 +1444,29 @@ class Evaluator:
     # ------------------------------------------------------------------
 
     def _plot_roc_all(self, results):
-        fig, ax = plt.subplots()
-        for name, res in results.items():
-            ax.plot(res["fpr"], res["tpr"], label=f"{name} (AUC={res['auc']:.3f})")
-        ax.plot([0, 1], [0, 1], "k--")
-        ax.legend()
-        ax.set_title("Nested Grouped ROC Curves")
-        self._save(fig, "roc")
+        """Delegates to EvaluationPlotter (extracted; see evaluation_plots.py)."""
+        self._plotter.plot_roc_all(results)
 
     def _plot_pr_curves(self, results):
-        fig, ax = plt.subplots()
-        for name, res in results.items():
-            if is_multiclass_metric_result(res) or "y_prob" not in res:
-                continue
-            prec, rec, _ = precision_recall_curve(res["y_true"], res["y_prob"])
-            ax.plot(rec, prec, label=name)
-        ax.legend()
-        ax.set_title("Nested Grouped PR Curves")
-        self._save(fig, "pr")
+        """Delegates to EvaluationPlotter (extracted; see evaluation_plots.py)."""
+        self._plotter.plot_pr_curves(results)
 
     def _plot_calibration(self, results):
-        fig, ax = plt.subplots()
-        for name, res in results.items():
-            if is_multiclass_metric_result(res) or "y_prob" not in res:
-                continue
-            try:
-                frac_pos, mean_pred = calibration_curve(
-                    res["y_true"], res["y_prob"], n_bins=10
-                )
-                ax.plot(mean_pred, frac_pos, label=name)
-            except Exception:
-                continue
-        ax.legend()
-        ax.set_title("Nested Grouped Calibration")
-        self._save(fig, "calibration")
+        """Delegates to EvaluationPlotter (extracted; see evaluation_plots.py)."""
+        self._plotter.plot_calibration(results)
 
     def _plot_multiclass_calibration(self, results: dict) -> None:
-        """Per-class OvR reliability diagrams + Brier score for multiclass."""
-        from src.dataset.label_policy import MULTICLASS_NAMES
-
-        for name, res in results.items():
-            y_true = np.asarray(res["y_true"]).astype(int)
-            y_proba = res.get("y_proba_full")
-            if y_proba is None:
-                continue
-            y_proba = np.asarray(y_proba, dtype=float)
-            labels = sorted(set(np.unique(y_true)))
-            n_classes = len(labels)
-
-            fig, axes = plt.subplots(1, n_classes, figsize=(5 * n_classes, 4.5), squeeze=False)
-            axes = axes[0]
-
-            brier_scores = {}
-            for i, lbl in enumerate(labels):
-                ax = axes[i]
-                class_name = MULTICLASS_NAMES.get(lbl, str(lbl))
-                y_bin = (y_true == lbl).astype(int)
-                p_bin = y_proba[:, lbl] if lbl < y_proba.shape[1] else np.zeros(len(y_true))
-
-                try:
-                    frac_pos, mean_pred = calibration_curve(y_bin, p_bin, n_bins=10)
-                    ax.plot(mean_pred, frac_pos, "s-", color=self._OVR_COLORS[i % len(self._OVR_COLORS)], lw=2)
-                except (ValueError, IndexError):
-                    pass
-
-                ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5)
-                ax.set_xlabel("Mean predicted probability")
-                ax.set_ylabel("Fraction of positives")
-                ax.set_title(class_name, fontsize=10)
-                ax.set_xlim(-0.02, 1.02)
-                ax.set_ylim(-0.02, 1.02)
-
-                brier = float(np.mean((p_bin - y_bin) ** 2))
-                ece = self._expected_calibration_error(y_bin, p_bin)
-                brier_scores[class_name] = brier
-                ax.text(0.05, 0.9, f"Brier={brier:.3f}\nECE={ece:.3f}", transform=ax.transAxes, fontsize=9)
-
-            fig.suptitle(f"{name} — per-class calibration (OvR)", fontsize=12)
-            fig.tight_layout()
-            self._save(fig, f"calibration_ovr_{name}")
-
-        best_name = max(results, key=lambda n: results[n]["auc"])
-        best_res = results[best_name]
-        y_true = np.asarray(best_res["y_true"]).astype(int)
-        y_proba = best_res.get("y_proba_full")
-        if y_proba is not None:
-            y_proba = np.asarray(y_proba, dtype=float)
-            labels = sorted(set(np.unique(y_true)))
-            brier_rows = []
-            for lbl in labels:
-                class_name = MULTICLASS_NAMES.get(lbl, str(lbl))
-                y_bin = (y_true == lbl).astype(int)
-                p_bin = y_proba[:, lbl] if lbl < y_proba.shape[1] else np.zeros(len(y_true))
-                brier_rows.append({
-                    "model": best_name,
-                    "class": class_name,
-                    "brier_score": float(np.mean((p_bin - y_bin) ** 2)),
-                    "ece": self._expected_calibration_error(y_bin, p_bin),
-                    "mean_predicted_prob": float(np.mean(p_bin)),
-                    "prevalence": float(np.mean(y_bin)),
-                })
-            if brier_rows:
-                pd.DataFrame(brier_rows).to_csv(
-                    self.metrics_dir / "calibration_brier_scores.csv", index=False
-                )
-                logger.info("Brier + ECE scores saved → calibration_brier_scores.csv")
+        """Delegates to EvaluationPlotter (extracted; see evaluation_plots.py)."""
+        top_k = int(self.config["explainability"].get("top_features_plot", 20))
+        self._plotter.plot_multiclass_calibration(results, top_features_plot=top_k)
 
     def _plot_confusion_matrices(self, results):
-        for name, res in results.items():
-            cm = np.asarray(res["confusion_matrix"])
-            is_mc = is_multiclass_metric_result(res)
-            class_names = self._confusion_matrix_tick_labels(cm.shape[0], multiclass=is_mc)
-            cm_norm = self._row_normalized_confusion_matrix(cm)
-
-            fig, ax = plt.subplots(figsize=(5, 4))
-            sns.heatmap(
-                cm_norm,
-                annot=True,
-                fmt=".2f",
-                cmap="Blues",
-                xticklabels=class_names,
-                yticklabels=class_names,
-                ax=ax,
-                vmin=0,
-                vmax=1,
-                cbar_kws={"label": "Row-normalized rate"},
-            )
-            ax.set_xlabel("Predicted")
-            ax.set_ylabel("Actual")
-            ax.set_title(f"{name} — normalized confusion matrix (LOSO OOF)")
-            fig.tight_layout()
-            self._save(fig, f"cm_{name}")
-
-    @staticmethod
-    def _row_normalized_confusion_matrix(cm: np.ndarray) -> np.ndarray:
-        cm = np.asarray(cm, dtype=float)
-        row_sums = cm.sum(axis=1, keepdims=True)
-        return np.divide(cm, np.maximum(row_sums, 1.0))
-
-    @staticmethod
-    def _confusion_matrix_tick_labels(n_cls: int, *, multiclass: bool) -> list[str]:
-        if multiclass:
-            return [MULTICLASS_NAMES.get(i, str(i)) for i in range(n_cls)]
-        if n_cls == 2:
-            return ["Low risk", "High risk"]
-        return [str(i) for i in range(n_cls)]
-
-    @staticmethod
-    def _expected_calibration_error(
-        y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10
-    ) -> float:
-        """Expected Calibration Error (Naeini et al., AAAI 2015)."""
-        bin_edges = np.linspace(0, 1, n_bins + 1)
-        ece = 0.0
-        n = len(y_true)
-        if n == 0:
-            return 0.0
-        for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
-            mask = (y_prob > lo) & (y_prob <= hi) if lo > 0 else (y_prob >= lo) & (y_prob <= hi)
-            count = mask.sum()
-            if count == 0:
-                continue
-            avg_conf = float(y_prob[mask].mean())
-            avg_acc = float(y_true[mask].mean())
-            ece += (count / n) * abs(avg_acc - avg_conf)
-        return float(ece)
-
-    _OVR_COLORS = ["#2196F3", "#FF9800", "#F44336", "#4CAF50", "#9C27B0"]
+        """Delegates to EvaluationPlotter (extracted; see evaluation_plots.py)."""
+        self._plotter.plot_confusion_matrices(results)
 
     def _plot_multiclass_roc(self, results: dict) -> None:
-        """Per-class OvR ROC curves for every model (multiclass)."""
-        for name, res in results.items():
-            per_class_roc = res.get("per_class_roc")
-            if not per_class_roc:
-                continue
-
-            fig, ax = plt.subplots(figsize=(7, 6))
-            for i, (lbl, roc_data) in enumerate(sorted(per_class_roc.items())):
-                c = self._OVR_COLORS[i % len(self._OVR_COLORS)]
-                ax.plot(
-                    roc_data["fpr"], roc_data["tpr"],
-                    color=c, lw=2,
-                    label=f"{roc_data['name']} (AUC={roc_data['auc']:.3f})",
-                )
-            ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5)
-            auc_macro = res.get("auc", float("nan"))
-            ax.set_xlabel("False Positive Rate")
-            ax.set_ylabel("True Positive Rate")
-            ax.set_title(f"{name} — OvR ROC (macro AUC={auc_macro:.3f})")
-            ax.legend(loc="lower right", fontsize=8)
-            fig.tight_layout()
-            self._save(fig, f"roc_ovr_{name}")
-
-        best_name = max(results, key=lambda n: results[n]["auc"])
-        best_roc = results[best_name].get("per_class_roc")
-        if best_roc:
-            fig, ax = plt.subplots(figsize=(7, 6))
-            for i, (lbl, roc_data) in enumerate(sorted(best_roc.items())):
-                c = self._OVR_COLORS[i % len(self._OVR_COLORS)]
-                ax.plot(
-                    roc_data["fpr"], roc_data["tpr"],
-                    color=c, lw=2,
-                    label=f"{roc_data['name']} (AUC={roc_data['auc']:.3f})",
-                )
-            ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5)
-            ax.set_xlabel("False Positive Rate")
-            ax.set_ylabel("True Positive Rate")
-            ax.set_title(f"Best model ({best_name}) — per-class OvR ROC")
-            ax.legend(loc="lower right", fontsize=8)
-            fig.tight_layout()
-            self._save(fig, "roc_ovr_best")
+        """Delegates to EvaluationPlotter (extracted; see evaluation_plots.py)."""
+        self._plotter.plot_multiclass_roc(results)
 
     def _save_per_class_auc_table(self, results: dict) -> None:
         """Save per-class AUC / sensitivity / specificity table for all models."""

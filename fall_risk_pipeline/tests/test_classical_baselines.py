@@ -109,3 +109,58 @@ def test_run_classical_baselines_exports_matrix(tmp_path):
         assert col in df.columns
         assert df[col].notna().any()
     assert "auroc" in df.columns
+
+
+def test_tune_random_forest_nested_cv_scoring_binary(tmp_path):
+    """Regression test for ISSUE-2 (NameError: roc_auc_score not imported).
+
+    ``test_run_classical_baselines_exports_matrix`` above mocks out
+    ``_tune_random_forest`` entirely, so it never actually executes the
+    nested-CV Optuna objective that calls ``roc_auc_score`` — this is the
+    exact reason the missing-import bug shipped without a failing test.
+    This test calls ``_tune_random_forest`` directly (unmocked) on a small
+    synthetic binary dataset to exercise that scoring path for real.
+    """
+    sys.path.insert(0, str(PIPELINE_ROOT))
+    from src.evaluation.classical_baseline_evaluator import _tune_random_forest
+
+    rng = np.random.default_rng(0)
+    n = 60
+    X = rng.normal(size=(n, 4))
+    y = np.zeros(n, dtype=int)
+    y[n // 2 :] = 1
+    X[y == 1] += 1.5  # separable-ish signal so AUROC is well-defined
+
+    config = {
+        "reproducibility": {"seed": 42},
+        "dataset": {"label_mode": "binary"},
+        "classical_baselines": {"random_forest": {"optuna_trials": 2}},
+    }
+
+    best_params = _tune_random_forest(X, y, config)
+    assert isinstance(best_params, dict)
+    assert "n_estimators" in best_params
+    assert "max_depth" in best_params
+
+
+def test_tune_random_forest_nested_cv_scoring_multiclass():
+    """Regression test for ISSUE-2, multiclass branch of the same objective."""
+    sys.path.insert(0, str(PIPELINE_ROOT))
+    from src.evaluation.classical_baseline_evaluator import _tune_random_forest
+
+    rng = np.random.default_rng(1)
+    n = 90
+    X = rng.normal(size=(n, 4))
+    y = np.repeat([0, 1, 2], n // 3)
+    X[y == 1] += 1.5
+    X[y == 2] += 3.0
+
+    config = {
+        "reproducibility": {"seed": 42},
+        "dataset": {"label_mode": "multiclass"},
+        "classical_baselines": {"random_forest": {"optuna_trials": 2}},
+    }
+
+    best_params = _tune_random_forest(X, y, config)
+    assert isinstance(best_params, dict)
+    assert "n_estimators" in best_params

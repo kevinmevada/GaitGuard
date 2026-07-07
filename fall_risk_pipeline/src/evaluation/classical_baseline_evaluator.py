@@ -25,6 +25,7 @@ from loguru import logger
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import LeaveOneGroupOut
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline

@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from scipy.stats import kruskal
-from sklearn.metrics import f1_score, roc_auc_score
+from sklearn.metrics import f1_score
 
 from src.evaluation.clinical_threshold import youden_threshold
 from src.evaluation.competitor_metrics import compute_discriminative_metrics

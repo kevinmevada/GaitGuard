@@ -99,6 +99,6 @@ The FastAPI service (`api/main.py`) does not retrain models; it loads fixed chec
 
 ## CI and Docker (`PYTHONHASHSEED`)
 
-GitHub Actions (`.github/workflows/ci.yml`), the training `Dockerfile`, and `Dockerfile.api` set **`PYTHONHASHSEED=42`**, matching `reproducibility.seed` in `pipeline_config.yaml`. Unit tests do not depend on hash iteration order, but aligning CI/Docker with the pipeline seed avoids environment drift.
+GitHub Actions (`.github/workflows/ci.yml`), the training `Dockerfile.pipeline`, and `Dockerfile.api` set **`PYTHONHASHSEED=42`**, matching `reproducibility.seed` in `pipeline_config.yaml`. Unit tests do not depend on hash iteration order, but aligning CI/Docker with the pipeline seed avoids environment drift.
 
 For bit-identical full pipeline reruns, still export `PYTHONHASHSEED=42` **before** starting Python (see above).

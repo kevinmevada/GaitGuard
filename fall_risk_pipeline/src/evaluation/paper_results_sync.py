@@ -69,7 +69,7 @@ def _git_sha() -> str:
             text=True,
         )
         return out.strip()
-    except Exception:
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
         return "unknown"
 
 
@@ -584,6 +584,7 @@ _Auto-updated from pipeline artifacts — do not edit manually._
 | Primary BiLSTM-AE PR-AUC | {anomaly_pr:.4f} |
 | Secondary deployable ensemble macro OvR AUC | {deploy_auc:.4f} ({deploy_model}) |
 | Best supervised single-model LOSO macro OvR AUC | {best_auc_str} |
+| MCC abstract-lead threshold | {mcc_threshold:.2f} |
 
 {headline_note}
 

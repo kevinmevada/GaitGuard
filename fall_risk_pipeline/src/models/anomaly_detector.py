@@ -22,13 +22,11 @@ from typing import Any, Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from loguru import logger
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from sklearn.decomposition import PCA
 from sklearn.ensemble import IsolationForest
-from sklearn.metrics import precision_recall_curve, roc_auc_score
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import OneClassSVM
@@ -37,7 +35,6 @@ from src.models.anomaly_feature_schema import save_trial_feature_schema
 from src.models.anomaly_scoring import ANOMALY_METHODS, normalise_scores
 from src.evaluation.anomaly_loso_evaluator import run_anomaly_loso_evaluation
 from src.evaluation.primary_endpoint import (
-    ENDPOINT_ANOMALY_ENSEMBLE,
     ENDPOINT_BILSTM_AE_ENSEMBLE,
     resolve_primary_endpoint,
 )

@@ -351,7 +351,7 @@ class GaitEventValidator:
                 "to reduce amplitude bias across pathologies; optional per-cohort "
                 "percentiles via `heel_strike_peak_percentile_by_cohort`."
             ),
-            f"Ground truth: Figshare `gait_events.csv` or `leftGaitEvents` / `rightGaitEvents` in trial metadata.",
+            "Ground truth: Figshare `gait_events.csv` or `leftGaitEvents` / `rightGaitEvents` in trial metadata.",
             f"Match tolerance: ±{self.tolerance_ms:.0f} ms (±{self.tolerance_samples} samples at {self.fs:.0f} Hz).",
             "",
             f"Trials evaluated: {detail_df['trial_id'].nunique()}",

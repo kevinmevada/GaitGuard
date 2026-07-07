@@ -21,8 +21,6 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
     matthews_corrcoef,
-    precision_score,
-    recall_score,
     roc_auc_score,
 )
 

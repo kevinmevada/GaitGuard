@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 import warnings
 import zipfile
@@ -57,6 +58,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from sklearn.utils.validation import check_is_fitted
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -177,6 +179,63 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+# ---------------------------------------------------------------------------
+# Lightweight, dependency-free request metrics (addresses "no API
+# observability" — a bare log file was previously the only signal available
+# for request volume, latency, or error rate). Intentionally NOT
+# Prometheus-format (that would require the `prometheus_client` package,
+# an extra dependency this API doesn't otherwise need) — a simple JSON
+# counter exposed at GET /metrics, consistent with how /health already
+# exposes operational state as JSON.
+# ---------------------------------------------------------------------------
+from collections import defaultdict as _defaultdict
+
+_METRICS_LOCK = threading.Lock()
+_METRICS_STATE: dict[str, dict[str, Any]] = _defaultdict(
+    lambda: {"count": 0, "total_latency_s": 0.0, "error_count": 0, "status_counts": _defaultdict(int)}
+)
+_METRICS_STARTED_AT = time.time()
+
+
+class MetricsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start = time.perf_counter()
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+        except Exception:
+            status_code = 500
+            raise
+        finally:
+            elapsed = time.perf_counter() - start
+            key = f"{request.method} {request.url.path}"
+            with _METRICS_LOCK:
+                bucket = _METRICS_STATE[key]
+                bucket["count"] += 1
+                bucket["total_latency_s"] += elapsed
+                bucket["status_counts"][str(status_code)] += 1
+                if status_code >= 500:
+                    bucket["error_count"] += 1
+        return response
+
+
+def _metrics_snapshot() -> dict[str, Any]:
+    with _METRICS_LOCK:
+        routes = {}
+        for key, bucket in _METRICS_STATE.items():
+            count = bucket["count"]
+            routes[key] = {
+                "request_count": count,
+                "error_count": bucket["error_count"],
+                "avg_latency_ms": round(1000 * bucket["total_latency_s"] / count, 2) if count else 0.0,
+                "status_counts": dict(bucket["status_counts"]),
+            }
+    return {
+        "uptime_seconds": round(time.time() - _METRICS_STARTED_AT, 1),
+        "routes": routes,
+    }
+
+
 def rate_limit_client_key(request: Request) -> str:
     """Per-client slowapi key; uses leftmost X-Forwarded-For when proxy headers are trusted."""
     if _trust_proxy_headers():
@@ -232,6 +291,12 @@ from src.evaluation.research_disclaimers import (  # type: ignore
 )
 from src.preprocessing.signal_processor import SignalProcessor  # type: ignore
 from src.utils.checkpoint_io import CheckpointIntegrityError, assert_production_checkpoint_policy, load_checkpoint  # type: ignore
+from src.evaluation.uncertainty import (  # type: ignore
+    CalibrationArtifact,
+    ConformalArtifact,
+    apply_calibrator,
+    conformal_prediction_set,
+)
 
 
 def parse_cors_origins(value: str | None) -> list[str]:
@@ -301,6 +366,12 @@ CLINICAL_THRESHOLD_PATH = Path(
         PIPELINE_ROOT / "results" / "metrics" / "clinical_threshold.json",
     )
 )
+CALIBRATION_ARTIFACT_PATH = Path(
+    os.getenv("CALIBRATION_ARTIFACT_PATH", METRICS_DIR / "calibration_artifact.json")
+)
+CONFORMAL_ARTIFACT_PATH = Path(
+    os.getenv("CONFORMAL_ARTIFACT_PATH", METRICS_DIR / "conformal_artifact.json")
+)
 
 REQUIRED_FILES = {
     "head_raw.csv": "head",
@@ -350,6 +421,8 @@ anomaly_threshold: dict[str, Any] = {}
 anomaly_deploy_calibration: dict[str, Any] = {}
 clinical_threshold: dict[str, Any] = {}
 runtime_dependencies: dict[str, dict[str, Any]] = {}
+calibration_artifact: CalibrationArtifact | None = None
+conformal_artifact: ConformalArtifact | None = None
 
 # Modules probed for /health; PyWavelets is mandatory at startup (fall_risk_pipeline/requirements.txt).
 _DEPENDENCY_MODULES: dict[str, str] = {
@@ -486,6 +559,7 @@ def load_resources() -> None:
     global anomaly_feature_schema, patient_schema_mismatch, trial_schema_mismatch
     global anomaly_schema_message, clinical_threshold, runtime_dependencies
     global anomaly_threshold, anomaly_deploy_calibration
+    global calibration_artifact, conformal_artifact
 
     config = load_config()
     deploy_env = os.getenv("ENVIRONMENT", os.getenv("ENV", "development")).lower()
@@ -538,6 +612,52 @@ def load_resources() -> None:
             anomaly_deploy_calibration = json.load(fh)
     else:
         anomaly_deploy_calibration = {}
+
+    if CALIBRATION_ARTIFACT_PATH.is_file():
+        try:
+            calibration_artifact = CalibrationArtifact.from_json(CALIBRATION_ARTIFACT_PATH)
+            logger.info("Post-hoc calibration artifact loaded from %s", CALIBRATION_ARTIFACT_PATH)
+        except Exception:
+            logger.exception(
+                "Failed to load calibration artifact at %s — serving uncalibrated "
+                "probabilities only.",
+                CALIBRATION_ARTIFACT_PATH,
+            )
+            calibration_artifact = None
+    else:
+        calibration_artifact = None
+        logger.info(
+            "No calibration artifact found at %s — /predict will serve raw "
+            "(uncalibrated) probabilities only. Run "
+            "`python main.py --stage fit_uncertainty` in fall_risk_pipeline "
+            "after `evaluate` to enable this.",
+            CALIBRATION_ARTIFACT_PATH,
+        )
+
+    if CONFORMAL_ARTIFACT_PATH.is_file():
+        try:
+            conformal_artifact = ConformalArtifact.from_json(CONFORMAL_ARTIFACT_PATH)
+            logger.info(
+                "Split-conformal artifact loaded from %s (alpha=%.2f, q_hat=%.4f)",
+                CONFORMAL_ARTIFACT_PATH,
+                conformal_artifact.alpha,
+                conformal_artifact.q_hat,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to load conformal artifact at %s — /predict will omit "
+                "prediction sets.",
+                CONFORMAL_ARTIFACT_PATH,
+            )
+            conformal_artifact = None
+    else:
+        conformal_artifact = None
+        logger.info(
+            "No conformal artifact found at %s — /predict will omit distribution-free "
+            "prediction sets. Run `python main.py --stage fit_uncertainty` in "
+            "fall_risk_pipeline after `evaluate` to enable this.",
+            CONFORMAL_ARTIFACT_PATH,
+        )
 
     signal_processor = SignalProcessor(config)
     feature_extractor = FeatureExtractor(config)
@@ -746,6 +866,7 @@ if RATE_LIMITING_AVAILABLE and limiter:
     app.add_exception_handler(RateLimitExceeded, rate_limit_exception_handler)  # type: ignore[arg-type]
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(MetricsMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
@@ -1197,6 +1318,65 @@ def build_trial_feature_vector(trial_features: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame([row], columns=trial_feature_columns)
 
 
+class UncertaintyFields(BaseModel):
+    """Documents the optional additive fields _uncertainty_fields() may add
+    to a /predict response. All Optional: every field is only present when
+    the corresponding artifact (see fit_uncertainty pipeline stage) has been
+    generated and loaded successfully."""
+
+    calibrated_class_probabilities: list[float] | None = None
+    calibrated_risk_probability: float | None = None
+    conformal_prediction_set_class_indices: list[int] | None = None
+    conformal_target_coverage: float | None = None
+    conformal_note: str | None = None
+
+
+def _uncertainty_fields(probabilities: np.ndarray) -> dict[str, Any]:
+    """Best-effort additive fields from the optional calibration/conformal
+    artifacts (see ``fit_uncertainty`` pipeline stage). Never raises — any
+    shape mismatch or loading problem just omits these fields so the core
+    prediction response is unaffected.
+    """
+    fields: dict[str, Any] = {}
+    probs = np.asarray(probabilities, dtype=float).reshape(1, -1)
+
+    if calibration_artifact is not None:
+        try:
+            if calibration_artifact.label_mode == "multiclass" and probs.shape[1] == calibration_artifact.n_classes:
+                calibrated = apply_calibrator(calibration_artifact, probs)[0]
+                fields["calibrated_class_probabilities"] = [float(p) for p in calibrated]
+            elif calibration_artifact.label_mode == "binary" and probs.shape[1] >= 2:
+                calibrated = apply_calibrator(calibration_artifact, probs[:, -1])[0]
+                fields["calibrated_risk_probability"] = float(calibrated)
+        except Exception:
+            logger.exception("Calibration step failed for this request — omitting calibrated fields.")
+
+    if conformal_artifact is not None:
+        try:
+            if probs.shape[1] > 1:
+                sets = conformal_prediction_set(conformal_artifact, probs)
+                fields["conformal_prediction_set_class_indices"] = sets[0]
+                fields["conformal_target_coverage"] = 1.0 - conformal_artifact.alpha
+                fields["conformal_note"] = (
+                    "The listed class indices are guaranteed to contain the true class "
+                    f"with approximately {100 * (1 - conformal_artifact.alpha):.0f}% probability "
+                    "on data similar to the pipeline's LOSO evaluation set (split-conformal; "
+                    "see docs/paper/methods.md). This is a coverage guarantee on the *set*, "
+                    "not a statement about any single class's probability."
+                )
+        except Exception:
+            logger.exception("Conformal step failed for this request — omitting prediction-set fields.")
+
+    try:
+        return UncertaintyFields(**fields).model_dump(exclude_none=True)
+    except Exception:
+        logger.exception(
+            "Uncertainty fields failed their own schema validation — omitting "
+            "all of them for this request rather than returning something malformed."
+        )
+        return {}
+
+
 def predict_risk(feature_vector: pd.DataFrame) -> tuple[dict[str, Any], str]:
     if patient_schema_mismatch:
         raise HTTPException(
@@ -1232,20 +1412,20 @@ def predict_risk(feature_vector: pd.DataFrame) -> tuple[dict[str, Any], str]:
 
     note = screening_note(elevated_prob, youden_prob)
 
-    return (
-        {
-            "risk_score": risk_score,
-            "risk_probability": elevated_prob,
-            "risk_level": risk_level,
-            "confidence": float(max(probabilities)),
-            "clinical_cutoff_probability": youden_prob,
-            "clinical_cutoff_risk_score": int(round(youden_prob * 100)),
-            "above_clinical_cutoff": elevated_prob >= youden_prob,
-            "screening_note": note,
-            "disclaimer": RESEARCH_PROTOTYPE_DISCLAIMER,
-        },
-        model_name,
-    )
+    payload = {
+        "risk_score": risk_score,
+        "risk_probability": elevated_prob,
+        "risk_level": risk_level,
+        "confidence": float(max(probabilities)),
+        "clinical_cutoff_probability": youden_prob,
+        "clinical_cutoff_risk_score": int(round(youden_prob * 100)),
+        "above_clinical_cutoff": elevated_prob >= youden_prob,
+        "screening_note": note,
+        "disclaimer": RESEARCH_PROTOTYPE_DISCLAIMER,
+    }
+    payload.update(_uncertainty_fields(probabilities))
+
+    return (payload, model_name)
 
 
 def _normalise_deploy_anomaly_score(raw_score: float, method_name: str) -> float:
@@ -1522,7 +1702,37 @@ async def serve_ui() -> FileResponse:
     return FileResponse(index)
 
 
-@app.get("/health")
+class HealthResponse(BaseModel):
+    """Documented shape of GET /health.
+
+    Every field is Optional because the endpoint has two code paths (normal
+    and a fallback if the health check itself errors) that return different
+    subsets of fields — see health_check() below. Making everything Optional
+    here means this model documents the contract (and validates it) without
+    risking a 500 on the exact request that's supposed to report "unhealthy".
+    """
+
+    status: str | None = None
+    models_loaded: int | None = None
+    anomaly_models_loaded: int | None = None
+    patient_feature_count: int | None = None
+    anomaly_trial_feature_count: int | None = None
+    feature_count: int | None = None  # only present on the exception-fallback path
+    expected_anomaly_n_features: int | None = None
+    patient_schema_mismatch: bool | None = None
+    trial_schema_mismatch: bool | None = None
+    anomaly_schema_message: str | None = None
+    dependencies: dict[str, Any] | None = None
+    missing_required_dependencies: list[str] | None = None
+    calibration_artifact_loaded: bool | None = None
+    conformal_artifact_loaded: bool | None = None
+    api_version: str | None = None
+
+
+HealthResponse.model_rebuild()
+
+
+@app.get("/health", response_model=HealthResponse)
 async def health_check() -> dict[str, Any]:
     try:
         deps = runtime_dependencies or _probe_runtime_dependencies()
@@ -1551,6 +1761,8 @@ async def health_check() -> dict[str, Any]:
             "anomaly_schema_message": anomaly_schema_message or None,
             "dependencies": deps,
             "missing_required_dependencies": missing_required,
+            "calibration_artifact_loaded": calibration_artifact is not None,
+            "conformal_artifact_loaded": conformal_artifact is not None,
             "api_version": "2.0.0",
         }
     except Exception:
@@ -1562,6 +1774,19 @@ async def health_check() -> dict[str, Any]:
             "dependencies": runtime_dependencies or {},
             "api_version": "2.0.0",
         }
+
+
+@app.get("/metrics")
+async def metrics() -> dict[str, Any]:
+    """Basic request-volume/latency/error-rate counters, in memory since
+    process start. Deliberately simple JSON (not Prometheus format, which
+    would need an extra dependency this API doesn't otherwise require) —
+    see the MetricsMiddleware definition above for what's tracked and why.
+    Counters reset on process restart; for durable metrics, scrape this
+    endpoint into an external time-series store rather than relying on it
+    as the system of record.
+    """
+    return _metrics_snapshot()
 
 
 @app.post("/app/predict")

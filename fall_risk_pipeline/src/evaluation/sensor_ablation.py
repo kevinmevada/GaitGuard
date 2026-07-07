@@ -361,6 +361,7 @@ class SensorAblationStudy:
         ax.set_xlabel("Macro OvR AUC (leave-one-subject-out)")
         ax.set_title("Sensor Position Ablation Study")
         ax.axvline(x=aucs[-1], color="gray", linestyle="--", alpha=0.5, label="All sensors")
+        ax.bar_label(bars, labels=[f"{v:.3f}" for v in aucs], padding=3, fontsize=7)
 
         from matplotlib.patches import Patch
         legend_elements = [

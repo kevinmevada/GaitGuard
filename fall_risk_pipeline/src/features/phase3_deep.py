@@ -18,6 +18,7 @@ from loguru import logger
 from tqdm import tqdm
 
 from src.features.rocket_features import MiniRocketTransform, RocketTransform
+from src.utils.reproducibility import get_pipeline_seed
 from src.models.bilstm_autoencoder import (
     BiLSTMAutoencoder,
     SensorChannelSlice,
@@ -100,7 +101,7 @@ def _collect_train_fit_windows(
 
     X = np.concatenate(windows, axis=0).astype(np.float32)
     if max_windows and len(X) > max_windows:
-        rng = np.random.default_rng(42)
+        rng = np.random.default_rng(get_pipeline_seed(config))
         X = X[rng.choice(len(X), max_windows, replace=False)]
     return X, ref_slices
 

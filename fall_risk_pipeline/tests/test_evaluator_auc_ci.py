@@ -41,8 +41,9 @@ def test_subject_bootstrap_auc_ci_contains_point_estimate():
     y_prob = np.clip(y_prob, 0.01, 0.99)
 
     auc = roc_auc_score(y_true, y_prob)
-    low, high, method = subject_bootstrap_binary_auc_ci(y_true, y_prob, seed=42)
+    auc_full, low, high, method = subject_bootstrap_binary_auc_ci(y_true, y_prob, seed=42)
     assert method == "subject_bootstrap"
+    assert auc_full == pytest.approx(auc)
     assert low <= auc <= high
     assert np.isfinite(low) and np.isfinite(high)
 

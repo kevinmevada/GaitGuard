@@ -27,7 +27,6 @@ from src.preprocessing.unified_bandpass import (
     apply_unified_acc_bandpass,
     lowpass_gyro_columns,
 )
-from tqdm import tqdm
 
 
 class SignalProcessor:
@@ -420,8 +419,9 @@ class SignalProcessor:
                     b, a = butter(grav_order, grav_cutoff / nyq, btype="low")
                     padlen = min(3 * (grav_order + 1), len(sig) - 1)
                     gravity = filtfilt(b, a, sig, padlen=padlen)
-                except Exception:
+                except (ValueError, np.linalg.LinAlgError) as exc:
                     # Fallback to the global median if filtering fails.
+                    logger.debug(f"Gravity low-pass filter failed for {ax}, using median fallback: {exc}")
                     gravity = np.full_like(sig, np.median(sig))
             else:
                 # Signal too short for 0.1 Hz filter — use robust median.

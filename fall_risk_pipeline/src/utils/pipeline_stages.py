@@ -36,6 +36,7 @@ PIPELINE_STAGES: tuple[str, ...] = (
     "fall_risk_spearman",
     "cross_cohort",
     "predict",
+    "fit_uncertainty",
     "report",
 )
 

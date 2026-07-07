@@ -38,12 +38,11 @@ def _conv1d_channel(
     """1D convolution for a single channel (valid + manual padding)."""
     if padding > 0:
         x = np.pad(x, (padding, padding), mode="edge")
-    out_len = _valid_length(len(x) - 2 * padding if padding else len(x), len(weights), dilation, padding)
-    # Recompute on padded x
+    # x is already padded above, so use padding=0 here to get the length of
+    # the padded signal directly (single source of truth for the formula).
     L = len(x)
     k = len(weights)
-    effective = (k - 1) * dilation + 1
-    n_out = L - effective + 1
+    n_out = _valid_length(L, k, dilation, padding=0)
     if n_out <= 0:
         return np.array([0.0], dtype=float)
     out = np.empty(n_out, dtype=float)

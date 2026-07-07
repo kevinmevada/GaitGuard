@@ -7,7 +7,6 @@ CD diagram follows Demšar (2006) / Nemenyi post-hoc on Friedman ranks.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -221,7 +220,7 @@ def plot_critical_difference_diagram(
                 else:
                     break
             if len(group) > 1:
-                y_lo, y_hi = min(group), max(group)
+                y_hi = max(group)
                 x_lo = ranks[i]
                 x_hi = min(ranks[i] + cd, ranks[y_hi] + cd * 0.1)
                 ax.plot([x_lo, x_hi], [bar_y, bar_y], color="#333333", linewidth=2.5, clip_on=False)

@@ -13,13 +13,15 @@ Each row is a **separate** binary task: cohort *c* (positive) vs Healthy (negati
 
 | Cohort | vs Healthy | n trials (path.) | n participants | AUROC | F1 | MCC | Sens. | Spec. | Anomaly rate (%) | Ref. fall prob. (%) | Mean score gap |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **PD** | PD vs Healthy | 6 | 2 | 0.8958 | 0.8333 | 0.7083 | 0.8333 | 0.8750 | 83.3 | 67.3 | 0.1039 |
-| **CVA** | CVA vs Healthy | 6 | 2 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 100.0 | 54.2 | 0.4534 |
-| **CIPN** | CIPN vs Healthy | 4 | 2 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 100.0 | 41.8 | 0.5725 |
-| **RIL** | RIL vs Healthy | 4 | 2 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 100.0 | 38.9 | 0.5434 |
-| **HOA** | HOA vs Healthy | 6 | 2 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 100.0 | 28.5 | 0.4475 |
-| **TKA** | TKA vs Healthy | 6 | 2 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 100.0 | 24.1 | 0.3602 |
-| **ACL** | ACL vs Healthy | 6 | 2 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 100.0 | 18.7 | 0.3741 |
+| **PD †** | PD vs Healthy | 6 | 2 | — | — | — | — | — | 83.3 | 67.3 | 0.1039 |
+| **CVA †** | CVA vs Healthy | 6 | 2 | — | — | — | — | — | 100.0 | 54.2 | 0.4534 |
+| **CIPN †** | CIPN vs Healthy | 4 | 2 | — | — | — | — | — | 100.0 | 41.8 | 0.5725 |
+| **RIL †** | RIL vs Healthy | 4 | 2 | — | — | — | — | — | 100.0 | 38.9 | 0.5434 |
+| **HOA †** | HOA vs Healthy | 6 | 2 | — | — | — | — | — | 100.0 | 28.5 | 0.4475 |
+| **TKA †** | TKA vs Healthy | 6 | 2 | — | — | — | — | — | 100.0 | 24.1 | 0.3602 |
+| **ACL †** | ACL vs Healthy | 6 | 2 | — | — | — | — | — | 100.0 | 18.7 | 0.3741 |
+
+† AUROC/F1/MCC/sensitivity/specificity suppressed (`auc_status: unstable_small_n`): cohort has fewer participants than `models.evaluation.cohort_auc_min_n` (default 25) and cannot support a stable point estimate. Do not cite these cells; see `docs/paper/methods.md` §10 for the rule this mirrors.
 
 ### Interpretation guide
 

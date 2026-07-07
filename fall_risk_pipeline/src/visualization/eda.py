@@ -13,10 +13,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from loguru import logger
 from scipy.signal import welch
-from tqdm import tqdm
 
 # Columns that are label-derived and must never enter feature-space analysis.
 from src.ingestion.data_loader import METADATA_ONLY_COLS

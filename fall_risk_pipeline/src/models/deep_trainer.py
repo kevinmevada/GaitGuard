@@ -750,6 +750,7 @@ class DeepLearningPipeline:
         all_results: dict[str, dict] = {}
         rows = []
         oof_rows: list[dict] = []
+        failures: list[dict] = []
 
         for model_name in models:
             logger.info(f"Evaluating DL model: {model_name}")
@@ -803,6 +804,11 @@ class DeepLearningPipeline:
                         oof_rows.append(row)
             except Exception as exc:
                 logger.error(f"DL model {model_name} failed: {exc}")
+                failures.append({
+                    "model": f"dl_{model_name}",
+                    "status": "failed",
+                    "error": str(exc),
+                })
 
         bar.close()
 
@@ -836,6 +842,19 @@ class DeepLearningPipeline:
             )
             if not pval_df.empty:
                 self._merge_dl_significance_into_metrics(pval_df)
+
+        if failures:
+            failures_df = pd.DataFrame(failures)
+            failures_path = self.metrics_dir / "dl_model_failures.csv"
+            failures_df.to_csv(failures_path, index=False)
+            logger.warning(f"DL model failures recorded → {failures_path}")
+
+        if len(all_results) != len(models):
+            missing = sorted(set(models) - set(all_results))
+            logger.warning(
+                f"DL sweep incomplete: {len(all_results)}/{len(models)} models scored "
+                f"successfully; missing/failed: {missing}"
+            )
 
         elapsed = time.time() - t0
         logger.info(f"=== Deep Learning Pipeline complete in {elapsed:.1f}s ===")
