@@ -662,10 +662,40 @@ def load_resources() -> None:
     signal_processor = SignalProcessor(config)
     feature_extractor = FeatureExtractor(config)
 
+    missing_schema: list[str] = []
     if not PATIENT_FEATURES_PATH.exists():
-        raise RuntimeError(f"Missing feature schema: {PATIENT_FEATURES_PATH}")
+        missing_schema.append(str(PATIENT_FEATURES_PATH))
     if not TRIAL_FEATURES_PATH.exists():
-        raise RuntimeError(f"Missing trial feature schema: {TRIAL_FEATURES_PATH}")
+        missing_schema.append(str(TRIAL_FEATURES_PATH))
+    if missing_schema:
+        if _is_production_deployment():
+            raise RuntimeError(f"Missing feature schema: {', '.join(missing_schema)}")
+        logger.warning(
+            "Feature schema parquet not found (%s) — serving marketing UI only; "
+            "/predict stays disabled until you run the pipeline through the "
+            "features stage (e.g. python run_local.py --stage features).",
+            "; ".join(missing_schema),
+        )
+        if not models:
+            logger.warning(
+                "No classification checkpoints in %s — API /predict will fail until you "
+                "train (cd fall_risk_pipeline && python main.py --stage train) or download "
+                "(GAITGUARD_HF_REPO=your-org/gaitguard-models python scripts/download_models.py). "
+                "See docs/MODEL_CARD.md.",
+                MODEL_DIR,
+            )
+        if not anomaly_models:
+            logger.warning(
+                "No anomaly models in %s — train with python main.py --stage anomaly or use "
+                "scripts/download_models.py.",
+                ANOMALY_DIR,
+            )
+        logger.info(
+            "Resources loaded (UI-only) — models: %s | anomaly models: %s",
+            sorted(models.keys()),
+            sorted(anomaly_models.keys()),
+        )
+        return
 
     patient_df = pd.read_parquet(PATIENT_FEATURES_PATH)
     trial_df = pd.read_parquet(TRIAL_FEATURES_PATH)
