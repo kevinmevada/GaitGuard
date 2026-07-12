@@ -102,3 +102,27 @@ def test_band_peak_frequency_finds_5hz():
     sig = np.sin(2 * np.pi * 5.0 * t)
     peak = band_peak_frequency(sig, fs)
     assert 4.5 <= peak <= 5.5
+
+
+def test_psd_peak_stable_with_competing_peaks(tmp_path: Path):
+    """S05-like case: two close 3–8 Hz peaks; sample-based Welch flips argmax after resample."""
+    fs = 64.0
+    duration_s = 120.0
+    t = np.arange(0, duration_s, 1.0 / fs)
+    # Competing peaks near 4 Hz and 7 Hz (similar power).
+    trunk_z = (
+        np.sin(2 * np.pi * 4.0 * t)
+        + 0.98 * np.sin(2 * np.pi * 7.0 * t)
+        + 0.02 * np.random.default_rng(5).standard_normal(len(t))
+    )
+    trunk_z_100 = resample_axis(trunk_z)
+
+    result = verify_trunk_z_resample(
+        trunk_z,
+        trunk_z_100,
+        subject_id="S05_like",
+        figure_dir=tmp_path,
+        write_figure=False,
+    )
+    assert result.passed
+    assert result.peak_shift_hz <= 0.5

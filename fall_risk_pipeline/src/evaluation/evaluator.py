@@ -8,6 +8,31 @@ FIXES APPLIED:
   3. Replaced non-existent _tune_model_with_budget() call with _run_optuna() +
      _build_pipeline_from_params() — the correct public trainer API.
   4. SHAP aggregated across all LOSO held-out folds (mean |SHAP|), not a single patient.
+  5. _init_fold_feature_masks (nested per-fold RFECV) parallelized across LOSO
+     folds — previously a sequential Python for-loop (one RFECV fit per subject,
+     one core), the single largest unparallelized cost in this stage, running
+     before the (already-parallel) model-tuning loop even started.
+  6. _fast_evaluate_model parallelized across folds — this is a second,
+     independent LOSO sweep (used by the deploy-schema gap check) that was
+     still fully sequential after fix 5, effectively doubling total runtime.
+  7. _fast_evaluate_ensembles parallelized across folds — same issue as 6,
+     for the ensemble variant of the deploy-schema gap check.
+  8. _ungrouped_kfold_auc parallelized across folds — the leakage-comparison
+     baseline, which also recomputes RFECV per fold when nested_fs is
+     enabled; this was the most expensive of the three remaining sequential
+     sweeps. Note: _shap_loso_aggregate's per-fold model refit loop is
+     STILL sequential (not fixed here) — see the note where it's called for
+     why, and its cost is naturally bounded by n_shap_samples rather than
+     scaling with the full participant count like the other four sweeps.
+  9. _tune_top_k_base_models (called from the ensemble LOSO sweep) now
+     reuses each fold's already-tuned hyperparameters from the single-model
+     sweep (_nested_group_evaluate_model), cached by (model_name, subject)
+     in self._fold_best_params, instead of re-running the full per-fold
+     Optuna search a second time for every base model in every ensemble
+     fold. This was pure duplicate compute — same fold, same model, same
+     search space — and with 5 base models was effectively re-doing the
+     entire single-model sweep's tuning cost again inside the ensemble
+     sweep on top of it.
 """
 
 from __future__ import annotations
@@ -31,7 +56,7 @@ from sklearn.metrics import (
     roc_curve,
 )
 from sklearn.model_selection import StratifiedGroupKFold
-from tqdm import tqdm
+from src.utils.progress import RED_BAR_FORMAT, progress_bar
 
 from src.dataset.label_policy import (
     get_dataset_label_config,
@@ -89,7 +114,6 @@ from src.models.trainer import ModelTrainer
 from src.utils.checkpoint_io import CheckpointIntegrityError, load_checkpoint
 from src.utils.reproducibility import get_pipeline_seed
 
-
 class Evaluator:
     """Nested grouped LOSO evaluation, calibration plots, SHAP, and metrics export."""
 
@@ -130,12 +154,47 @@ class Evaluator:
         self._feat_cols: list[str] = []
         self._fold_col_idx: dict[str, np.ndarray] = {}
         self._fold_feat_names: dict[str, list[str]] = {}
+        # (model_name, held_out_subject) -> best_params from _nested_group_evaluate_model's
+        # per-fold Optuna search. Populated once per model there, then reused by
+        # _nested_group_evaluate_ensembles so the ensemble sweep doesn't redundantly
+        # re-run the exact same per-fold Optuna search a second time (fix 9).
+        self._fold_best_params: dict[tuple[str, str], dict] = {}
 
         logger.info("Evaluator initialized — nested LOSO with per-fold Optuna retuning")
 
     def _nested_fs_enabled(self) -> bool:
         fscfg = self.config.get("feature_selection", {})
         return bool(fscfg.get("enabled", False) and fscfg.get("nested_in_evaluation", True))
+
+    def _fs_one_subject(
+        self,
+        subj,
+        X: np.ndarray,
+        y: np.ndarray,
+        groups: np.ndarray,
+        feat_cols: list[str],
+    ) -> tuple[str, np.ndarray, list[str]] | None:
+        """RFECV feature selection for a single LOSO train fold (all subjects
+        except `subj`). Returns (key, col_idx, selected_names), or None if
+        this fold's train split doesn't have both classes.
+
+        Split out of _init_fold_feature_masks so it can run under
+        joblib.Parallel — each fold's RFECV is fully independent of every
+        other fold's, exactly like the per-fold model tuning below.
+        """
+        train_idx = np.where(groups != subj)[0]
+        if len(np.unique(y[train_idx])) < 2:
+            return None
+        selector = FeatureSelector(self.config)
+        selected = selector.select_feature_names(
+            X[train_idx],
+            y[train_idx],
+            groups[train_idx],
+            feat_cols,
+            n_jobs=1,
+        )
+        col_idx = np.array([feat_cols.index(name) for name in selected], dtype=int)
+        return str(subj), col_idx, selected
 
     def _init_fold_feature_masks(
         self,
@@ -144,37 +203,37 @@ class Evaluator:
         groups: np.ndarray,
         feat_cols: list[str],
     ) -> None:
-        """Precompute per-LOSO-fold feature masks (train-only RFECV)."""
+        """Precompute per-LOSO-fold feature masks (train-only RFECV).
+
+        Parallelized across folds (previously a sequential Python for-loop —
+        one RFECV fit per subject, one core, before any model training even
+        began). Each fold's feature selection is independent of every other
+        fold's, same as the model-tuning loop already parallelizes below.
+        """
         self._fold_col_idx = {}
         self._fold_feat_names = {}
         if not self._nested_fs_enabled():
             logger.info("Nested in-evaluation feature selection disabled — using full matrix.")
             return
 
-        selector = FeatureSelector(self.config)
         unique_subjects = np.unique(groups)
         logger.info(
             f"Nested feature selection: RFECV on each LOSO train fold "
-            f"({len(unique_subjects)} folds, p={len(feat_cols)})"
+            f"({len(unique_subjects)} folds, p={len(feat_cols)}), parallel across folds"
         )
-        for subj in tqdm(
-            unique_subjects,
-            desc="  Nested FS folds",
-            leave=False,
-            colour="yellow",
-        ):
-            train_idx = np.where(groups != subj)[0]
-            if len(np.unique(y[train_idx])) < 2:
-                continue
-            selected = selector.select_feature_names(
-                X[train_idx],
-                y[train_idx],
-                groups[train_idx],
-                feat_cols,
-                n_jobs=1,
+        results = Parallel(n_jobs=-1, prefer="processes")(
+            delayed(self._fs_one_subject)(subj, X, y, groups, feat_cols)
+            for subj in progress_bar(
+                unique_subjects,
+                desc="  Nested FS folds",
+                leave=False,
+                colour="yellow",
             )
-            col_idx = np.array([feat_cols.index(name) for name in selected], dtype=int)
-            key = str(subj)
+        )
+        for result in results:
+            if result is None:
+                continue
+            key, col_idx, selected = result
             self._fold_col_idx[key] = col_idx
             self._fold_feat_names[key] = selected
 
@@ -215,11 +274,11 @@ class Evaluator:
         all_results: dict[str, dict] = {}
         cohort_rows: list[dict] = []
 
-        for name in tqdm(
+        for name in progress_bar(
             model_names,
             desc="Evaluating models",
             colour="red",
-            bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+            bar_format=RED_BAR_FORMAT,
         ):
             result = self._nested_group_evaluate_model(name, X, y, groups, cohorts)
 
@@ -298,6 +357,43 @@ class Evaluator:
     # Checkpoint LOSO refit (deploy-schema gap + internal helpers)
     # ------------------------------------------------------------------
 
+    def _fast_evaluate_one_subject(
+        self, subj, name, checkpoint, X, y, groups, cohorts, *, apply_nested_fs: bool
+    ):
+        """Single LOSO fold for the fast (no-Optuna-retuning) checkpoint refit.
+        Called in parallel — split out of _fast_evaluate_model for the same
+        reason _evaluate_one_subject is: each fold is independent."""
+        import sklearn.base as skbase
+
+        test_idx = np.where(groups == subj)[0]
+        train_idx = np.where(groups != subj)[0]
+        assert_loso_fold_disjoint(
+            groups[train_idx],
+            groups[test_idx],
+            held_out_subject=str(subj),
+            context=f"fast LOSO ({name})",
+        )
+        if len(np.unique(y[train_idx])) < 2:
+            return None
+
+        fold_model = skbase.clone(checkpoint)
+        X_fold = self._X_for_fold(X, subj) if apply_nested_fs else X
+        self._fit_fold_model(name, fold_model, X_fold[train_idx], y[train_idx])
+
+        test_prob, pred_ty, pred_05, thresh, thresh_strategy = self._loso_fold_classifications(
+            name, fold_model, X_fold, y, groups, train_idx, test_idx
+        )
+        return (
+            test_prob.tolist(),
+            y[test_idx].tolist(),
+            cohorts[test_idx].tolist(),
+            groups[test_idx].tolist(),
+            pred_ty.tolist(),
+            pred_05.tolist(),
+            thresh,
+            thresh_strategy,
+        )
+
     def _fast_evaluate_model(
         self, name: str, X, y, groups, cohorts, *, apply_nested_fs: bool = True
     ):
@@ -305,6 +401,11 @@ class Evaluator:
         Load a saved checkpoint to recover its hyperparameters, then re-fit it
         on each LOSO training fold and evaluate on the held-out subject.
         This avoids in-sample evaluation while skipping Optuna retuning.
+
+        Parallelized across folds (previously a sequential Python for-loop —
+        this is a *second*, independent LOSO sweep run on top of the primary
+        one in _nested_group_evaluate_model, used for the deploy-schema gap
+        check; it needs the same fix for the same reason).
         """
         checkpoint = self._load_checkpoint(name)
         if checkpoint is None:
@@ -313,40 +414,30 @@ class Evaluator:
 
         unique_subjects = np.unique(groups)
         binary_task = is_binary_task(y, self.config)
+
+        fold_results = Parallel(n_jobs=-1, prefer="processes")(
+            delayed(self._fast_evaluate_one_subject)(
+                subj, name, checkpoint, X, y, groups, cohorts, apply_nested_fs=apply_nested_fs
+            )
+            for subj in unique_subjects
+        )
+
         all_probs, all_true, all_cohorts, all_pids = [], [], [], []
         all_pred_ty, all_pred_05, fold_thresholds, fold_threshold_strategies = [], [], [], []
         all_proba_blocks: list[np.ndarray] = []
-
-        for subj in unique_subjects:
-            test_idx  = np.where(groups == subj)[0]
-            train_idx = np.where(groups != subj)[0]
-            assert_loso_fold_disjoint(
-                groups[train_idx],
-                groups[test_idx],
-                held_out_subject=str(subj),
-                context=f"fast LOSO ({name})",
-            )
-
-            if len(np.unique(y[train_idx])) < 2:
+        for fold in fold_results:
+            if fold is None:
                 continue
-
-            import sklearn.base as skbase
-            fold_model = skbase.clone(checkpoint)
-            X_fold = self._X_for_fold(X, subj) if apply_nested_fs else X
-            self._fit_fold_model(name, fold_model, X_fold[train_idx], y[train_idx])
-
-            test_prob, pred_ty, pred_05, thresh, thresh_strategy = self._loso_fold_classifications(
-                name, fold_model, X_fold, y, groups, train_idx, test_idx
-            )
+            probs, trues, fold_cohorts, fold_pids, pred_ty, pred_05, thresh, thresh_strategy = fold
             if binary_task:
-                all_probs.extend(test_prob.tolist())
+                all_probs.extend(probs)
             else:
-                all_proba_blocks.append(np.asarray(test_prob, dtype=float))
-            all_true.extend(y[test_idx].tolist())
-            all_cohorts.extend(cohorts[test_idx].tolist())
-            all_pids.extend(groups[test_idx].tolist())
-            all_pred_ty.extend(pred_ty.tolist())
-            all_pred_05.extend(pred_05.tolist())
+                all_proba_blocks.append(np.asarray(probs, dtype=float))
+            all_true.extend(trues)
+            all_cohorts.extend(fold_cohorts)
+            all_pids.extend(fold_pids)
+            all_pred_ty.extend(pred_ty)
+            all_pred_05.extend(pred_05)
             fold_thresholds.append(thresh)
             fold_threshold_strategies.append(thresh_strategy)
 
@@ -404,6 +495,98 @@ class Evaluator:
             )
         )
 
+    def _fast_evaluate_ensembles_one_subject(
+        self,
+        subj,
+        X,
+        y,
+        groups,
+        cohorts,
+        checkpoints: dict,
+        methods: list[str],
+        *,
+        apply_nested_fs: bool,
+        top_k: int,
+        cv_folds: int,
+        rs: int,
+        binary_task: bool,
+    ):
+        """Single LOSO fold for the fast (no-Optuna-retuning) ensemble refit.
+        Called in parallel — split out of _fast_evaluate_ensembles for the
+        same reason _evaluate_ensemble_one_subject is."""
+        import sklearn.base as skbase
+
+        test_idx = np.where(groups == subj)[0]
+        train_idx = np.where(groups != subj)[0]
+        assert_loso_fold_disjoint(
+            groups[train_idx],
+            groups[test_idx],
+            held_out_subject=str(subj),
+            context="ensemble fast LOSO",
+        )
+        if len(np.unique(y[train_idx])) < 2:
+            return None
+
+        tuned = []
+        X_fold = self._X_for_fold(X, subj) if apply_nested_fs else X
+        for name, ckpt in checkpoints.items():
+            fold_model = skbase.clone(ckpt)
+            self._fit_fold_model(name, fold_model, X_fold[train_idx], y[train_idx])
+            tuned.append((name, {"pipeline": fold_model, "cv_auc": 0.0}))
+        top_models = self._select_top_base_models(tuned, top_k)
+
+        fold_out = {}
+        for method in methods:
+            key = ensemble_model_name(method)
+            if method == "stacking":
+                test_prob = predict_ensemble_oof_proba(
+                    method, top_models, X_fold[train_idx], y[train_idx], groups[train_idx],
+                    X_fold[test_idx], cv_folds=cv_folds, random_state=rs,
+                )
+                train_prob = predict_ensemble_oof_proba(
+                    method, top_models, X_fold[train_idx], y[train_idx], groups[train_idx],
+                    X_fold[train_idx], cv_folds=cv_folds, random_state=rs,
+                )
+            else:
+                test_prob = predict_ensemble_oof_proba(
+                    method, top_models, X_fold[train_idx], y[train_idx], groups[train_idx],
+                    X_fold[test_idx], cv_folds=cv_folds, random_state=rs,
+                )
+                train_prob = predict_ensemble_oof_proba(
+                    method, top_models, X_fold[train_idx], y[train_idx], groups[train_idx],
+                    X_fold[train_idx], cv_folds=cv_folds, random_state=rs,
+                )
+
+            if binary_task:
+                train_sc = train_prob[:, 1] if np.ndim(train_prob) > 1 else train_prob
+                test_sc = test_prob[:, 1] if np.ndim(test_prob) > 1 else test_prob
+                if method == "stacking":
+                    thresh = self._youden_threshold(y[train_idx], train_sc)
+                else:
+                    thresh, _ = self._soft_voting_inner_oof_threshold(
+                        top_models, X_fold[train_idx], y[train_idx], groups[train_idx],
+                    )
+                pred_ty = (test_sc >= thresh).astype(int)
+                pred_05 = (test_sc >= 0.5).astype(int)
+                probs_out: Any = test_sc.tolist()
+            else:
+                pred = np.argmax(test_prob, axis=1).astype(int)
+                probs_out = np.asarray(test_prob, dtype=float)
+                pred_ty = pred
+                pred_05 = pred
+                thresh = float("nan")
+
+            fold_out[key] = (
+                probs_out,
+                y[test_idx].tolist(),
+                cohorts[test_idx].tolist(),
+                groups[test_idx].tolist(),
+                pred_ty.tolist() if hasattr(pred_ty, "tolist") else list(pred_ty),
+                pred_05.tolist() if hasattr(pred_05, "tolist") else list(pred_05),
+                thresh,
+            )
+        return fold_out
+
     def _fast_evaluate_ensembles(
         self,
         X,
@@ -415,8 +598,9 @@ class Evaluator:
         *,
         apply_nested_fs: bool = True,
     ) -> dict[str, dict]:
-        import sklearn.base as skbase
-
+        """Parallelized across folds — previously a sequential Python for-loop
+        (a second, independent LOSO sweep on top of the primary one, used for
+        the deploy-schema gap check)."""
         checkpoints = {}
         for name in model_names:
             m = self._load_checkpoint(name)
@@ -434,109 +618,45 @@ class Evaluator:
         cv_folds = self._ensemble_cv_folds()
         rs = self.config["models"]["evaluation"]["random_state"]
 
+        keys = [ensemble_model_name(m) for m in methods]
         accum = {
-            ensemble_model_name(m): {
+            k: {
                 "probs": [], "true": [], "cohorts": [], "pids": [],
                 "pred_ty": [], "pred_05": [], "thresh": [],
             }
-            for m in methods
+            for k in keys
         }
 
         binary_task = is_binary_task(y, self.config)
         unique_subjects = np.unique(groups)
-        for subj in unique_subjects:
-            test_idx = np.where(groups == subj)[0]
-            train_idx = np.where(groups != subj)[0]
-            assert_loso_fold_disjoint(
-                groups[train_idx],
-                groups[test_idx],
-                held_out_subject=str(subj),
-                context="ensemble fast LOSO",
+
+        fold_results = Parallel(n_jobs=-1, prefer="processes")(
+            delayed(self._fast_evaluate_ensembles_one_subject)(
+                subj, X, y, groups, cohorts, checkpoints, methods,
+                apply_nested_fs=apply_nested_fs, top_k=top_k, cv_folds=cv_folds,
+                rs=rs, binary_task=binary_task,
             )
-            if len(np.unique(y[train_idx])) < 2:
+            for subj in unique_subjects
+        )
+
+        for fold in fold_results:
+            if fold is None:
                 continue
-
-            tuned = []
-            X_fold = self._X_for_fold(X, subj) if apply_nested_fs else X
-            for name, ckpt in checkpoints.items():
-                fold_model = skbase.clone(ckpt)
-                self._fit_fold_model(name, fold_model, X_fold[train_idx], y[train_idx])
-                tuned.append((name, {"pipeline": fold_model, "cv_auc": 0.0}))
-            top_models = self._select_top_base_models(tuned, top_k)
-
-            for method in methods:
-                key = ensemble_model_name(method)
-                if method == "stacking":
-                    test_prob = predict_ensemble_oof_proba(
-                        method,
-                        top_models,
-                        X_fold[train_idx],
-                        y[train_idx],
-                        groups[train_idx],
-                        X_fold[test_idx],
-                        cv_folds=cv_folds,
-                        random_state=rs,
-                    )
-                    train_prob = predict_ensemble_oof_proba(
-                        method,
-                        top_models,
-                        X_fold[train_idx],
-                        y[train_idx],
-                        groups[train_idx],
-                        X_fold[train_idx],
-                        cv_folds=cv_folds,
-                        random_state=rs,
-                    )
-                else:
-                    test_prob = predict_ensemble_oof_proba(
-                        method,
-                        top_models,
-                        X_fold[train_idx],
-                        y[train_idx],
-                        groups[train_idx],
-                        X_fold[test_idx],
-                        cv_folds=cv_folds,
-                        random_state=rs,
-                    )
-                    train_prob = predict_ensemble_oof_proba(
-                        method,
-                        top_models,
-                        X_fold[train_idx],
-                        y[train_idx],
-                        groups[train_idx],
-                        X_fold[train_idx],
-                        cv_folds=cv_folds,
-                        random_state=rs,
-                    )
-
+            for key, pack in fold.items():
+                probs, trues, fold_cohorts, fold_pids, pred_ty, pred_05, thresh = pack
                 acc = accum[key]
                 if binary_task:
-                    train_sc = train_prob[:, 1] if np.ndim(train_prob) > 1 else train_prob
-                    test_sc = test_prob[:, 1] if np.ndim(test_prob) > 1 else test_prob
-                    if method == "stacking":
-                        thresh = self._youden_threshold(y[train_idx], train_sc)
-                    else:
-                        thresh, _ = self._soft_voting_inner_oof_threshold(
-                            top_models,
-                            X_fold[train_idx],
-                            y[train_idx],
-                            groups[train_idx],
-                        )
-                    acc["probs"].extend(test_sc.tolist())
-                    acc["pred_ty"].extend((test_sc >= thresh).astype(int).tolist())
-                    acc["pred_05"].extend((test_sc >= 0.5).astype(int).tolist())
-                    acc["thresh"].append(thresh)
+                    acc["probs"].extend(probs)
                 else:
-                    pred = np.argmax(test_prob, axis=1).astype(int)
                     if "blocks" not in acc:
                         acc["blocks"] = []
-                    acc["blocks"].append(np.asarray(test_prob, dtype=float))
-                    acc["pred_ty"].extend(pred.tolist())
-                    acc["pred_05"].extend(pred.tolist())
-                    acc["thresh"].append(float("nan"))
-                acc["true"].extend(y[test_idx].tolist())
-                acc["cohorts"].extend(cohorts[test_idx].tolist())
-                acc["pids"].extend(groups[test_idx].tolist())
+                    acc["blocks"].append(np.asarray(probs, dtype=float))
+                acc["true"].extend(trues)
+                acc["cohorts"].extend(fold_cohorts)
+                acc["pids"].extend(fold_pids)
+                acc["pred_ty"].extend(pred_ty)
+                acc["pred_05"].extend(pred_05)
+                acc["thresh"].append(thresh)
 
         out = {}
         for method in methods:
@@ -572,7 +692,7 @@ class Evaluator:
         )
 
         if len(np.unique(y[train_idx])) < 2:
-            return None, None, None, None, None, None, None, None
+            return None, None, None, None, None, None, None, None, None
 
         X_fold = self._X_for_fold(X, subj)
 
@@ -605,6 +725,7 @@ class Evaluator:
             pred_05.tolist(),
             thresh,
             thresh_strategy,
+            best_params,
         )
 
     def _nested_group_evaluate_model(self, name, X, y, groups, cohorts):
@@ -613,12 +734,12 @@ class Evaluator:
 
         fold_results = Parallel(n_jobs=-1, prefer="processes")(
             delayed(self._evaluate_one_subject)(subj, name, X, y, groups, cohorts)
-            for subj in tqdm(
+            for subj in progress_bar(
                 unique_subjects,
                 desc=f"  {name} folds",
                 leave=False,
                 colour="red",
-                bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+                bar_format=RED_BAR_FORMAT,
             )
         )
 
@@ -626,10 +747,12 @@ class Evaluator:
         all_probs, all_true, all_cohorts, all_pids = [], [], [], []
         all_pred_ty, all_pred_05, fold_thresholds, fold_threshold_strategies = [], [], [], []
         all_proba_blocks: list[np.ndarray] = []
-        for fold in fold_results:
+        # zip with unique_subjects: joblib.Parallel preserves input order in its
+        # returned list, so fold_results[i] corresponds to unique_subjects[i].
+        for subj, fold in zip(unique_subjects, fold_results, strict=True):
             if fold[0] is None:
                 continue
-            probs, trues, fold_cohorts, fold_pids, pred_ty, pred_05, thresh, thresh_strategy = fold
+            probs, trues, fold_cohorts, fold_pids, pred_ty, pred_05, thresh, thresh_strategy, best_params = fold
             if binary_task:
                 all_probs.extend(probs)
             else:
@@ -641,6 +764,8 @@ class Evaluator:
             all_pred_05.extend(pred_05)
             fold_thresholds.append(thresh)
             fold_threshold_strategies.append(thresh_strategy)
+            if best_params is not None:
+                self._fold_best_params[(name, str(subj))] = best_params
 
         if not binary_task:
             all_probs = np.vstack(all_proba_blocks).tolist() if all_proba_blocks else []
@@ -651,18 +776,43 @@ class Evaluator:
         )
 
     def _tune_top_k_base_models(
-        self, model_names: list[str], X, y, groups, train_idx: np.ndarray, top_k: int
+        self,
+        model_names: list[str],
+        X,
+        y,
+        groups,
+        train_idx: np.ndarray,
+        top_k: int,
+        *,
+        subj=None,
     ) -> list[tuple[str, dict]]:
+        """Tune (or reuse already-tuned) base models for one LOSO fold.
+
+        Fix 9: `_nested_group_evaluate_model` already ran a full per-fold
+        Optuna search for every (model, held-out subject) pair earlier in
+        `run()`. Re-running that exact same search here for the ensemble
+        sweep was pure duplicate work — same fold, same model, same search
+        space, same budget — that silently doubled (or worse, with 5+ base
+        models) the cost of the ensemble portion of this stage. If a cached
+        result exists for this (model, subj), reuse it instead of calling
+        Optuna again; only fall back to a fresh search when no cached entry
+        exists (e.g. a model wasn't part of the single-model sweep, or this
+        method is invoked standalone).
+        """
         tuned_results = []
         for name in model_names:
-            best_params, best_score = self.trainer._run_optuna(
-                name,
-                X[train_idx],
-                y[train_idx],
-                groups[train_idx],
-                n_trials=self.nested_trials,
-                timeout=self.nested_timeout,
-            )
+            cached = self._fold_best_params.get((name, str(subj))) if subj is not None else None
+            if cached is not None:
+                best_params, best_score = cached, float("nan")
+            else:
+                best_params, best_score = self.trainer._run_optuna(
+                    name,
+                    X[train_idx],
+                    y[train_idx],
+                    groups[train_idx],
+                    n_trials=self.nested_trials,
+                    timeout=self.nested_timeout,
+                )
             best_pipeline = self.trainer._build_pipeline_from_params(
                 name, best_params, y[train_idx]
             )
@@ -675,7 +825,9 @@ class Evaluator:
     def _evaluate_ensemble_one_subject(
         self, subj, model_names, X, y, groups, cohorts, methods: list[str]
     ):
-        """Single LOSO fold: tune bases once, evaluate all ensemble methods."""
+        """Single LOSO fold: tune bases once (reusing the single-model sweep's
+        cached per-fold hyperparameters where available — see fix 9 in
+        _tune_top_k_base_models), evaluate all ensemble methods."""
         test_idx = np.where(groups == subj)[0]
         train_idx = np.where(groups != subj)[0]
 
@@ -685,7 +837,7 @@ class Evaluator:
         X_fold = self._X_for_fold(X, subj)
         top_k = self.config["models"]["ensemble"]["top_k"]
         top_models = self._tune_top_k_base_models(
-            model_names, X_fold, y, groups, train_idx, top_k
+            model_names, X_fold, y, groups, train_idx, top_k, subj=subj
         )
         cv_folds = self._ensemble_cv_folds()
         rs = self.config["models"]["evaluation"]["random_state"]
@@ -771,12 +923,12 @@ class Evaluator:
             delayed(self._evaluate_ensemble_one_subject)(
                 subj, model_names, X, y, groups, cohorts, methods
             )
-            for subj in tqdm(
+            for subj in progress_bar(
                 unique_subjects,
                 desc="  ensemble folds",
                 leave=False,
                 colour="red",
-                bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+                bar_format=RED_BAR_FORMAT,
             )
         )
 
@@ -1615,7 +1767,7 @@ class Evaluator:
         fold_cohort_blocks: list[np.ndarray] = []
         n_explained = 0
 
-        for subj in tqdm(
+        for subj in progress_bar(
             subject_order,
             desc=f"  SHAP {name} LOSO",
             leave=False,
@@ -1928,6 +2080,50 @@ class Evaluator:
         if hasattr(est, "random_state"):
             est.random_state = int(seed)
 
+    def _ungrouped_kfold_one_fold(
+        self,
+        name: str,
+        checkpoint,
+        X: np.ndarray,
+        y: np.ndarray,
+        groups: np.ndarray,
+        train_idx: np.ndarray,
+        test_idx: np.ndarray,
+        *,
+        seed: int,
+        binary_task: bool,
+        nested_fs: bool,
+        feat_cols: list[str] | None,
+    ) -> tuple[list, Any] | None:
+        """Single StratifiedKFold fold for the leakage-comparison ungrouped
+        baseline. Called in parallel — split out of _ungrouped_kfold_auc for
+        the same reason the other fold loops are: each fold (including its
+        own RFECV refit, when nested_fs is enabled) is fully independent."""
+        import sklearn.base as skbase
+
+        if len(np.unique(y[train_idx])) < 2:
+            return None
+        if nested_fs and feat_cols:
+            col_idx = nested_rfecv_column_indices(
+                self.config, X, y, groups, feat_cols, train_idx
+            )
+            X_train = X[train_idx][:, col_idx]
+            X_test = X[test_idx][:, col_idx]
+        else:
+            X_train = X[train_idx]
+            X_test = X[test_idx]
+
+        fold_model = skbase.clone(checkpoint)
+        self._set_estimator_random_state(fold_model, seed)
+        self._fit_fold_model(name, fold_model, X_train, y[train_idx])
+
+        if binary_task:
+            proba = fold_model.predict_proba(X_test)[:, 1]
+            prob_out: Any = proba.tolist()
+        else:
+            prob_out = fold_model.predict_proba(X_test)
+        return y[test_idx].tolist(), prob_out
+
     def _ungrouped_kfold_auc(
         self,
         name: str,
@@ -1942,36 +2138,32 @@ class Evaluator:
         nested_fs: bool,
         feat_cols: list[str] | None,
     ) -> float | None:
+        """Parallelized across folds (previously a sequential Python for-loop
+        — the most expensive of the leftover sequential loops, since each
+        fold also recomputes RFECV from scratch when nested_fs is enabled)."""
         from sklearn.model_selection import StratifiedKFold
-        import sklearn.base as skbase
 
         skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        splits = list(skf.split(X, y))
+
+        fold_results = Parallel(n_jobs=-1, prefer="processes")(
+            delayed(self._ungrouped_kfold_one_fold)(
+                name, checkpoint, X, y, groups, train_idx, test_idx,
+                seed=seed, binary_task=binary_task, nested_fs=nested_fs, feat_cols=feat_cols,
+            )
+            for train_idx, test_idx in splits
+        )
+
         all_true, all_prob = [], []
-
-        for train_idx, test_idx in skf.split(X, y):
-            if len(np.unique(y[train_idx])) < 2:
+        for result in fold_results:
+            if result is None:
                 continue
-            if nested_fs and feat_cols:
-                col_idx = nested_rfecv_column_indices(
-                    self.config, X, y, groups, feat_cols, train_idx
-                )
-                X_train = X[train_idx][:, col_idx]
-                X_test = X[test_idx][:, col_idx]
-            else:
-                X_train = X[train_idx]
-                X_test = X[test_idx]
-
-            fold_model = skbase.clone(checkpoint)
-            self._set_estimator_random_state(fold_model, seed)
-            self._fit_fold_model(name, fold_model, X_train, y[train_idx])
-
+            trues, probs = result
+            all_true.extend(trues)
             if binary_task:
-                proba = fold_model.predict_proba(X_test)[:, 1]
-                all_prob.extend(proba.tolist())
+                all_prob.extend(probs)
             else:
-                proba = fold_model.predict_proba(X_test)
-                all_prob.append(proba)
-            all_true.extend(y[test_idx].tolist())
+                all_prob.append(probs)
 
         if not all_true:
             return None

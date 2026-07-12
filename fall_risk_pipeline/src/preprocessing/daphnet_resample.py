@@ -24,6 +24,8 @@ RESAMPLE_UP = 25
 RESAMPLE_DOWN = 16
 PSD_BAND_HZ = (3.0, 8.0)
 PSD_MAX_PEAK_SHIFT_HZ = 0.5
+# Welch segment length in seconds (not samples) so before/after PSD uses the same window.
+WELCH_WINDOW_S = 4.0
 
 ACC_COLUMNS = ("acc_x", "acc_y", "acc_z")
 
@@ -106,17 +108,26 @@ def resample_daphnet_signals(
     }
 
 
+def welch_nperseg(n_samples: int, fs_hz: float, *, window_s: float = WELCH_WINDOW_S) -> int:
+    """Segment length in samples for a fixed-duration Welch window."""
+    nperseg = int(round(window_s * fs_hz))
+    nperseg = min(nperseg, n_samples)
+    return max(16, nperseg)
+
+
 def band_peak_frequency(
     signal: np.ndarray,
     fs_hz: float,
     band_hz: tuple[float, float] = PSD_BAND_HZ,
+    *,
+    window_s: float = WELCH_WINDOW_S,
 ) -> float:
     """Dominant Welch PSD peak frequency inside ``band_hz``."""
     arr = np.asarray(signal, dtype=np.float64)
     if arr.size < 16 or not np.isfinite(fs_hz) or fs_hz <= 0:
         return float("nan")
 
-    nperseg = min(256, max(16, len(arr) // 4))
+    nperseg = welch_nperseg(len(arr), fs_hz, window_s=window_s)
     freqs, psd = welch(arr, fs=fs_hz, nperseg=nperseg)
     lo, hi = band_hz
     mask = (freqs >= lo) & (freqs <= hi)
@@ -147,8 +158,9 @@ def plot_trunk_z_psd_check(
     out_path = out_dir / f"psd_check_{subject_id}.png"
 
     def _psd(sig: np.ndarray, fs: float) -> tuple[np.ndarray, np.ndarray]:
-        nperseg = min(256, max(16, len(sig) // 4))
-        return welch(np.asarray(sig, dtype=np.float64), fs=fs, nperseg=nperseg)
+        arr = np.asarray(sig, dtype=np.float64)
+        nperseg = welch_nperseg(len(arr), fs)
+        return welch(arr, fs=fs, nperseg=nperseg)
 
     f_before, p_before = _psd(trunk_z_before, fs_before)
     f_after, p_after = _psd(trunk_z_after, fs_after)

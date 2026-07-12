@@ -48,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     os.environ.setdefault("PYTHONHASHSEED", "42")
+    os.environ.setdefault("GAITGUARD_FORCE_PROGRESS", "1")
     os.chdir(PIPELINE_ROOT)
 
     config = args.config

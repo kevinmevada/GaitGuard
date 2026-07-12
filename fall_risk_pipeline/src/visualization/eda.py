@@ -6,6 +6,7 @@ FINAL FIXED VERSION (robust + safe)
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 matplotlib.use("Agg")
@@ -15,6 +16,8 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from scipy.signal import welch
+
+from src.utils.progress import progress_bar
 
 # Columns that are label-derived and must never enter feature-space analysis.
 from src.ingestion.data_loader import METADATA_ONLY_COLS
@@ -68,22 +71,30 @@ class EDAAnalyzer:
 
         logger.info("Running EDA...")
 
-        self._plot_cohort_distribution(meta)
-        self._plot_label_distribution(meta)
-        self._plot_trial_duration(meta)
-        self._plot_signal_examples(meta)
-        self._plot_psd_by_cohort(meta)
-
+        plot_steps: list[tuple[str, Any]] = [
+            ("cohort distribution", lambda: self._plot_cohort_distribution(meta)),
+            ("label distribution", lambda: self._plot_label_distribution(meta)),
+            ("trial duration", lambda: self._plot_trial_duration(meta)),
+            ("signal examples", lambda: self._plot_signal_examples(meta)),
+            ("PSD by cohort", lambda: self._plot_psd_by_cohort(meta)),
+        ]
         trial_feat_path = self.feat_dir / "trial_features.parquet"
         patient_feat_path = self.feat_dir / "patient_features.parquet"
-        
         if patient_feat_path.exists():
-            self._plot_tsne(patient_feat_path, meta)
-        
+            plot_steps.append(
+                ("t-SNE", lambda: self._plot_tsne(patient_feat_path, meta))
+            )
         if trial_feat_path.exists():
-            self._plot_gait_cycle_features(trial_feat_path, meta)
+            plot_steps.append(
+                (
+                    "gait cycle features",
+                    lambda: self._plot_gait_cycle_features(trial_feat_path, meta),
+                )
+            )
+        plot_steps.append(("save graphs", self.save_all_graphs))
 
-        self.save_all_graphs()
+        for _label, plot_fn in progress_bar(plot_steps, desc="eda", unit="plot"):
+            plot_fn()
 
     # ─────────────────────────────────────────
 

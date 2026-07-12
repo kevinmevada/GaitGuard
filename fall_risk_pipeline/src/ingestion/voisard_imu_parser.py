@@ -181,6 +181,14 @@ def _repair_packet_gaps(
         if not gaps:
             break
         idx, _prev, _nxt, diff = gaps[0]
+        if diff == 0:
+            # Duplicate PacketCounter at consecutive rows — drop the later row.
+            drop_idx = idx + 1
+            if drop_idx < len(df):
+                df = df.drop(df.index[drop_idx]).reset_index(drop=True)
+                repaired = True
+                continue
+            break
         if diff > max_interpolate_gap:
             if gap_strategy == "truncate":
                 df = df.iloc[: idx + 1].reset_index(drop=True)

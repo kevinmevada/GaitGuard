@@ -38,7 +38,9 @@ from src.models.bilstm_ae_scoring import (
     train_healthy_ae,
 )
 from src.dataset.train_fit_mask import healthy_train_fit_mask
+from src.utils.progress import progress_bar
 from src.utils.reproducibility import get_pipeline_seed
+from src.utils.torch_device import resolve_torch_device
 
 MIN_HEALTHY_TRAIN_TRIALS = 3
 
@@ -188,7 +190,7 @@ def run_bilstm_ae_sensor_ablation(config: dict) -> pd.DataFrame:
         logger.warning("BiLSTM-AE primary model disabled — skipping sensor ablation")
         return pd.DataFrame()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device(config)
     rs = get_pipeline_seed(config)
     fit_config = _config_for_ablation_fit(config)
     metrics_dir = Path(config["paths"]["metrics"])
@@ -200,7 +202,11 @@ def run_bilstm_ae_sensor_ablation(config: dict) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     daphnet_4sensor_auc = float("nan")
 
-    for config_key, (label, active) in SENSOR_ABLATION_CONFIGS.items():
+    for config_key, (label, active) in progress_bar(
+        SENSOR_ABLATION_CONFIGS.items(),
+        desc="bilstm_ae_sensor_ablation",
+        unit="config",
+    ):
         logger.info("BiLSTM-AE sensor ablation: {} ({})", config_key, label)
         bundle = apply_sensor_mask_to_bundle(base_bundle, active)
         loso = _loso_ensemble_auc(bundle, fit_config, device=device, random_state=rs)

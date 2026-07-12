@@ -17,7 +17,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from loguru import logger
-from tqdm import tqdm
+from src.utils.progress import RED_BAR_FORMAT, progress_bar
 
 from src.ingestion.voisard_imu_parser import (
     DEG_TO_RAD,
@@ -343,17 +343,23 @@ class DataLoader:
         trial_dirs = self._find_trial_dirs()
 
         records: list[TrialRecord] = []
+        meta_rows: list[dict] = []
         skipped = 0
+        resumed = 0
 
         if not trial_dirs:
             logger.warning("No Voisard trials found.")
         else:
-            for td in tqdm(
+            for td in progress_bar(
                 trial_dirs,
-                desc="Loading trials",
+                desc="ingest voisard",
                 colour="red",
-                bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+                bar_format=RED_BAR_FORMAT,
+                unit="trial",
             ):
+                if self._is_trial_persisted(td.name):
+                    resumed += 1
+                    continue
                 try:
                     rec = self._load_trial(td)
 
@@ -361,15 +367,27 @@ class DataLoader:
                         skipped += 1
                         continue
 
-                    records.append(rec)
+                    self._persist_record(rec)
+                    meta_rows.append(rec.to_meta_dict())
 
                 except Exception as e:
                     logger.warning(f"Skipping {td.name}: {e}")
                     skipped += 1
 
-            logger.info(f"Loaded {len(records)} Voisard trials ({skipped} skipped)")
+            if resumed:
+                logger.info(
+                    f"Resumed ingest: {resumed} trials already on disk (skipped reload)"
+                )
+            logger.info(
+                f"Loaded {len(meta_rows)} Voisard trials this run "
+                f"({skipped} skipped, {resumed} resumed)"
+            )
 
+        daph_start = len(records)
         daphnet_added, daphnet_skipped = self._ingest_daphnet_subjects(records)
+        for rec in records[daph_start:]:
+            self._persist_record(rec)
+            meta_rows.append(rec.to_meta_dict())
         if daphnet_added:
             logger.info(
                 f"Ingested {daphnet_added} DAPHNET subject bundles "
@@ -378,9 +396,32 @@ class DataLoader:
 
         self._write_packet_gap_report(len(trial_dirs))
         self._write_daphnet_ingest_report()
-        if not records:
+
+        if trial_dirs:
+            known_ids = {str(m["trial_id"]) for m in meta_rows}
+            merged_meta: list[dict] = []
+            meta_path = self.out_dir / "trial_metadata.csv"
+            if meta_path.is_file():
+                for row in pd.read_csv(meta_path).to_dict(orient="records"):
+                    tid = str(row["trial_id"])
+                    if tid not in known_ids and self._is_trial_persisted(tid):
+                        merged_meta.append(row)
+                        known_ids.add(tid)
+            for td in trial_dirs:
+                if td.name in known_ids or not self._is_trial_persisted(td.name):
+                    continue
+                try:
+                    rec = self._load_trial(td)
+                    if rec.duration_s >= self.min_duration:
+                        merged_meta.append(rec.to_meta_dict())
+                        known_ids.add(td.name)
+                except Exception as exc:
+                    logger.warning("Metadata rebuild skip {}: {}", td.name, exc)
+            meta_rows = merged_meta + meta_rows
+
+        if not meta_rows:
             return []
-        self._save(records)
+        self._finalize_ingest(meta_rows)
 
         return records
 
@@ -669,7 +710,11 @@ class DataLoader:
         psd_queue: list[tuple[str, np.ndarray, np.ndarray]] = []
         pending_records: list[tuple[str, dict[str, pd.DataFrame], object]] = []
 
-        for subject_id, bundle in bundles.items():
+        for subject_id, bundle in progress_bar(
+            bundles.items(),
+            desc="ingest daphnet",
+            unit="subject",
+        ):
             if bundle.n_rows == 0:
                 skipped += 1
                 continue
@@ -803,6 +848,60 @@ class DataLoader:
                 self.daphnet_psd_figure_dir,
             )
 
+    def _is_trial_persisted(self, trial_id: str) -> bool:
+        """True when all expected sensor parquets for a trial already exist."""
+        signals_dir = self.out_dir / "signals"
+        if not signals_dir.is_dir():
+            return False
+        for pos in SENSOR_FILE_MAPPING:
+            if not (signals_dir / f"{trial_id}_{pos}.parquet").is_file():
+                return False
+        return True
+
+    def _persist_record(self, rec: TrialRecord) -> None:
+        """Write one trial's signals and gait events (streaming ingest)."""
+        signals_dir = self.out_dir / "signals"
+        signals_dir.mkdir(parents=True, exist_ok=True)
+        for pos, df in rec.signals.items():
+            if df is None or df.empty:
+                continue
+            path = signals_dir / f"{rec.trial_id}_{pos}.parquet"
+            df.to_parquet(path, index=False)
+
+        if rec.gait_events is not None and not rec.gait_events.empty:
+            ge_dir = self.out_dir / "gait_events"
+            ge_dir.mkdir(exist_ok=True)
+            rec.gait_events.to_csv(ge_dir / f"{rec.trial_id}.csv", index=False)
+
+    def _finalize_ingest(self, meta_rows: list[dict]) -> None:
+        """Write trial metadata and post-ingest reports after streaming saves."""
+        meta_df = pd.DataFrame(meta_rows)
+        meta_df.to_csv(self.out_dir / "trial_metadata.csv", index=False)
+
+        metrics_dir = Path(self.config["paths"]["metrics"])
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            from src.dataset.label_balance import save_class_distribution_reports
+
+            if "participant_id" in meta_df.columns:
+                participants = meta_df.drop_duplicates("participant_id")
+                save_class_distribution_reports(
+                    participants, metrics_dir, config=self.config
+                )
+            else:
+                save_class_distribution_reports(meta_df, metrics_dir, config=self.config)
+        except Exception as exc:
+            logger.warning(f"Class distribution report skipped: {exc}")
+
+        try:
+            from src.reporting.demographics_table import generate_demographics_table
+
+            generate_demographics_table(self.config)
+        except Exception as exc:
+            logger.warning(f"Demographics table skipped: {exc}")
+
+        logger.info("Data saved successfully")
+
     def _save(self, records: list[TrialRecord]):
         meta_df = pd.DataFrame([r.to_meta_dict() for r in records])
         meta_df.to_csv(self.out_dir / "trial_metadata.csv", index=False)
@@ -810,11 +909,12 @@ class DataLoader:
         signals_dir = self.out_dir / "signals"
         signals_dir.mkdir(exist_ok=True)
 
-        for rec in tqdm(
+        for rec in progress_bar(
             records,
-            desc="Saving signals",
+            desc="ingest save signals",
             colour="red",
-            bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+            bar_format=RED_BAR_FORMAT,
+            unit="trial",
         ):
             for pos, df in rec.signals.items():
                 if df is None or df.empty:

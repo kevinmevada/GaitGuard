@@ -1,6 +1,6 @@
 # Class distribution report
 
-**Level:** participant (N=260)
+**Level:** participant (N=269)
 **Label mode:** `multiclass` — Primary target: 3-class labels (0=Healthy, 1=orthopedic, 2=neurological). Preserves separation between OA/ACL and neurodegenerative/vascular cohorts.
 
 ## Cohort → label mapping
@@ -18,8 +18,8 @@
 
 ## Training label counts (`label_mode=multiclass`)
 
-- **low (Healthy)** (label=0): **73** (28.1%)
-- **moderate (orthopedic: HipOA/KneeOA/ACL)** (label=1): **44** (16.9%)
-- **high (neurological: PD/CVA/CIPN/RIL)** (label=2): **143** (55.0%)
+- **low (Healthy)** (label=0): **73** (27.1%)
+- **moderate (orthopedic: HipOA/KneeOA/ACL)** (label=1): **44** (16.4%)
+- **high (neurological: PD/CVA/CIPN/RIL)** (label=2): **152** (56.5%)
 
 Alternative binary collapses: see `binary_label_sensitivity.csv` and `docs/label_binning.md`.

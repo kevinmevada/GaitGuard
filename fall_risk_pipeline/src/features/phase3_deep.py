@@ -4,6 +4,36 @@ Phase 3 deep representation features.
   - BiLSTM-AE latent activations h_t + per-sensor reconstruction error
   - ROCKET / MINIROCKET convolution features (PPV + max)
   - InceptionTime multi-scale context maps (kernels 10/20/40)
+
+Perf note (batched extraction):
+
+The original extraction loop called `extract_phase3_trial_features()`
+once per trial, which meant:
+  - RocketTransform.transform() / MiniRocketTransform.transform() were
+    each invoked ~N_trials times, rebuilding per-group weight matrices
+    every time (fixed in rocket_features.py) AND paying Python/dispatch
+    overhead per call instead of amortizing it across many windows.
+  - The BiLSTM-AE and InceptionTime forward passes ran on tiny
+    per-trial batches (a few dozen windows) instead of large batches,
+    so kernel-launch / interpreter overhead dominated actual compute.
+
+`run_phase3_feature_extraction()` below still produces exactly one
+feature row per trial with the same columns and the same aggregation
+semantics (mean over a trial's own windows, matching std for the
+latent stats), but the raw per-window computation — ROCKET,
+MiniROCKET, AE, InceptionTime — is now run on large batches spanning
+many trials at once (`extraction_batch_trials` trials per batch,
+configurable), and results are aggregated back to per-trial rows with
+a single pandas groupby instead of a Python-level running mean. This
+does not change which trials/windows are used or how they're
+combined — it only changes how many transform()/forward() calls it
+takes to get there.
+
+The original single-trial helpers (`extract_phase3_trial_features`,
+`_ae_trial_features`, `_rocket_trial_features`,
+`_inception_trial_features`) are kept as-is for on-demand /
+single-trial inference (e.g. scoring one new trial at serve time),
+where batching across trials isn't applicable anyway.
 """
 
 from __future__ import annotations
@@ -15,7 +45,8 @@ import numpy as np
 import pandas as pd
 import torch
 from loguru import logger
-from tqdm import tqdm
+from src.utils.progress import progress_bar
+from src.utils.torch_device import resolve_torch_device
 
 from src.features.rocket_features import MiniRocketTransform, RocketTransform
 from src.utils.reproducibility import get_pipeline_seed
@@ -153,7 +184,7 @@ def fit_phase3_models(config: dict[str, Any]) -> Phase3ModelBundle:
     X_raw, sensor_slices = _collect_train_fit_windows(config, max_windows=max_fit)
     channel_norm = fit_per_channel_znorm(X_raw)
     X_norm = _normalize_windows(X_raw, channel_norm)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device(config)
     latent_export = int((p3.get("bilstm_autoencoder") or {}).get("latent_export_dims", 16))
 
     ae: BiLSTMAutoencoder | None = None
@@ -227,6 +258,12 @@ def fit_phase3_models(config: dict[str, Any]) -> Phase3ModelBundle:
         latent_export_dims=latent_export,
         device=device,
     )
+
+
+# --------------------------------------------------------------------------
+# Legacy single-trial helpers — kept for on-demand / single-trial inference.
+# Not used by the batched extraction path below (run_phase3_feature_extraction).
+# --------------------------------------------------------------------------
 
 
 def _ae_trial_features(
@@ -315,6 +352,10 @@ def extract_phase3_trial_features(
     bundle: Phase3ModelBundle,
     config: dict[str, Any],
 ) -> dict[str, float]:
+    """Single-trial extraction. Use for on-demand / serving-time scoring
+    of one new trial. Batch jobs over many trials should use
+    `run_phase3_feature_extraction()` instead, which is far faster for
+    the same result."""
     p3 = _phase3_cfg(config)
     spec = parse_window_spec(config)
 
@@ -343,8 +384,274 @@ def extract_phase3_trial_features(
     return feats
 
 
+# --------------------------------------------------------------------------
+# Batched extraction path — same features, same aggregation, far fewer
+# transform()/forward() calls. This is what run_phase3_feature_extraction
+# uses for full-dataset extraction.
+# --------------------------------------------------------------------------
+
+
+def _expected_n_channels(sensor_slices: list[SensorChannelSlice]) -> int:
+    return max((sl.end for sl in sensor_slices), default=0)
+
+
+def _trial_to_padded_tensor(
+    trial_id: str,
+    signals_dir: Path,
+    sensor_positions: list[str],
+    sensor_slices: list[SensorChannelSlice],
+    *,
+    n_channels: int,
+    channels: list[str] | None = None,
+) -> np.ndarray | None:
+    """Load trial IMU into a fixed (n_channels, T) layout using ``sensor_slices``.
+
+    Missing sensors are zero-padded so batched window concatenation and the
+  fitted AE/ROCKET transforms (trained on the full Voisard layout) see a
+    consistent channel dimension — same convention as DAPHNET LB zero-shot eval.
+    """
+    channels = channels or CHANNEL_ORDER
+    per_sensor: dict[str, np.ndarray] = {}
+    min_len = float("inf")
+
+    for pos in sensor_positions:
+        path = signals_dir / f"{trial_id}_{pos}.parquet"
+        if not path.is_file():
+            continue
+        df = pd.read_parquet(path)
+        usable = [c for c in channels if c in df.columns]
+        if not usable:
+            continue
+        arr = df[usable].values.T.astype(np.float32)
+        per_sensor[pos] = arr
+        min_len = min(min_len, arr.shape[1])
+
+    if not per_sensor or min_len < 64:
+        return None
+
+    t_len = int(min_len)
+    full = np.zeros((n_channels, t_len), dtype=np.float32)
+    for sl in sensor_slices:
+        arr = per_sensor.get(sl.name)
+        if arr is None:
+            continue
+        n_ch = sl.end - sl.start
+        full[sl.start : sl.start + min(n_ch, arr.shape[0]), :] = arr[:n_ch, :t_len]
+    return full
+
+
+def _load_trial_windows(
+    meta: pd.DataFrame,
+    signals_dir: Path,
+    sensor_positions: list[str],
+    spec,
+    bundle: Phase3ModelBundle,
+) -> tuple[list[str], np.ndarray, np.ndarray]:
+    """Load raw (unnormalized) windows for every trial in `meta` that has
+    enough signal, returning:
+      - trial_ids: list of trial ids actually kept (in order encountered)
+      - windows: concatenated (M, C, T) raw window array across all trials
+      - window_trial_idx: (M,) int array mapping each window row to an
+        index into trial_ids
+    """
+    trial_ids: list[str] = []
+    window_chunks: list[np.ndarray] = []
+    window_trial_idx_chunks: list[np.ndarray] = []
+
+    n_channels = _expected_n_channels(bundle.sensor_slices)
+    if n_channels <= 0:
+        return trial_ids, np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.int64)
+
+    for _, row in meta.iterrows():
+        tid = row["trial_id"]
+        arr = _trial_to_padded_tensor(
+            tid,
+            signals_dir,
+            sensor_positions,
+            bundle.sensor_slices,
+            n_channels=n_channels,
+        )
+        if arr is None or arr.shape[1] < spec.window_len:
+            continue
+        wins = window_single_trial(arr, spec)
+        if len(wins) == 0:
+            continue
+        trial_idx = len(trial_ids)
+        trial_ids.append(tid)
+        window_chunks.append(wins)
+        window_trial_idx_chunks.append(np.full(len(wins), trial_idx, dtype=np.int64))
+
+    if not window_chunks:
+        return trial_ids, np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.int64)
+
+    windows = np.concatenate(window_chunks, axis=0)
+    window_trial_idx = np.concatenate(window_trial_idx_chunks, axis=0)
+    return trial_ids, windows, window_trial_idx
+
+
+def _ae_window_batch_features(
+    windows_raw: np.ndarray,
+    bundle: Phase3ModelBundle,
+    *,
+    forward_batch_size: int,
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Per-window AE features for a (possibly multi-trial) batch of windows.
+
+    Returns:
+      - latent: (M, K) per-window latent means (h.mean over time)
+      - sensor_mse: dict sensor_name -> (M,) per-window MSE, including "total"
+    """
+    if bundle.ae is None or len(windows_raw) == 0:
+        return np.empty((0, 0)), {}
+
+    X = _normalize_windows(windows_raw, bundle.channel_norm)
+    sensor_mse: dict[str, list[np.ndarray]] = {s.name: [] for s in bundle.sensor_slices}
+    sensor_mse["total"] = []
+    latent_chunks: list[np.ndarray] = []
+
+    with torch.no_grad():
+        for start in range(0, len(X), forward_batch_size):
+            batch = torch.tensor(
+                X[start : start + forward_batch_size], dtype=torch.float32, device=bundle.device
+            )
+            recon, h = bundle.ae(batch)
+            per_mse = bundle.ae.per_sensor_mse(batch, recon)
+            for key, vals in per_mse.items():
+                if key in sensor_mse:
+                    sensor_mse[key].append(vals.cpu().numpy())
+            latent_chunks.append(h.mean(dim=1).cpu().numpy())
+
+    latent = np.concatenate(latent_chunks, axis=0)
+    sensor_mse_arr = {
+        k: (np.concatenate(v) if v else np.empty((0,))) for k, v in sensor_mse.items()
+    }
+    return latent, sensor_mse_arr
+
+
+def _inception_window_batch_features(
+    windows_raw: np.ndarray,
+    bundle: Phase3ModelBundle,
+    *,
+    forward_batch_size: int,
+) -> np.ndarray:
+    """Per-window InceptionTime features, shape (M, F)."""
+    if bundle.inception is None or len(windows_raw) == 0:
+        return np.empty((0, 0))
+    X = _normalize_windows(windows_raw, bundle.channel_norm)
+    out_chunks: list[np.ndarray] = []
+    with torch.no_grad():
+        for start in range(0, len(X), forward_batch_size):
+            batch = torch.tensor(
+                X[start : start + forward_batch_size], dtype=torch.float32, device=bundle.device
+            )
+            out_chunks.append(bundle.inception(batch).cpu().numpy())
+    return np.concatenate(out_chunks, axis=0)
+
+
+def _aggregate_batch_to_trial_rows(
+    trial_ids_in_batch: list[str],
+    window_trial_idx: np.ndarray,
+    *,
+    bundle: Phase3ModelBundle,
+    p3: dict[str, Any],
+    latent: np.ndarray,
+    sensor_mse: dict[str, np.ndarray],
+    rk_mat: np.ndarray | None,
+    mr_mat: np.ndarray | None,
+    inception_mat: np.ndarray | None,
+) -> list[dict[str, float]]:
+    """Collapse per-window arrays down to one feature row per trial,
+    reproducing exactly the same aggregation the single-trial helpers did
+    (mean over the trial's own windows; std for latent stats)."""
+    n_trials = len(trial_ids_in_batch)
+    rows: list[dict[str, float]] = [dict() for _ in range(n_trials)]
+
+    # --- AE latent mean/std + per-sensor reconstruction MSE ---
+    if latent.size:
+        k = min(bundle.latent_export_dims, latent.shape[1])
+        latent_df = pd.DataFrame(latent[:, :k], columns=[f"h{d:02d}" for d in range(k)])
+        latent_df["trial_idx"] = window_trial_idx
+        grouped = latent_df.groupby("trial_idx")
+        means = grouped.mean()
+        stds = grouped.std(ddof=0)
+        for trial_idx in means.index:
+            row = rows[trial_idx]
+            for dim in range(k):
+                col = f"h{dim:02d}"
+                row[f"ae_latent_h{dim:02d}_mean"] = float(means.loc[trial_idx, col])
+                row[f"ae_latent_h{dim:02d}_std"] = float(stds.loc[trial_idx, col])
+
+    if sensor_mse:
+        mse_df = pd.DataFrame({k: v for k, v in sensor_mse.items() if v.size})
+        if not mse_df.empty:
+            mse_df["trial_idx"] = window_trial_idx
+            mse_means = mse_df.groupby("trial_idx").mean()
+            for sl in bundle.sensor_slices:
+                short = sl.name.replace("_", "")
+                if sl.name in mse_means.columns:
+                    for trial_idx in mse_means.index:
+                        rows[trial_idx][f"ae_recon_mse_{short}"] = float(
+                            mse_means.loc[trial_idx, sl.name]
+                        )
+            if "total" in mse_means.columns:
+                for trial_idx in mse_means.index:
+                    rows[trial_idx]["ae_recon_mse_total"] = float(mse_means.loc[trial_idx, "total"])
+            if "lower_back" in mse_means.columns:
+                for trial_idx in mse_means.index:
+                    val = float(mse_means.loc[trial_idx, "lower_back"])
+                    rows[trial_idx]["ae_recon_mse_lowerback"] = val
+                    rows[trial_idx]["ae_lb_recon_error"] = val
+
+    if bundle.ae_recon_threshold is not None and np.isfinite(bundle.ae_recon_threshold):
+        for row in rows:
+            row["ae_recon_threshold_train_p90"] = float(bundle.ae_recon_threshold)
+
+    # --- ROCKET / MiniROCKET ---
+    for mat, prefix, cfg_key in (
+        (rk_mat, "rk", "rocket"),
+        (mr_mat, "mr", "minirocket"),
+    ):
+        if mat is None or mat.size == 0:
+            continue
+        max_export = int((p3.get(cfg_key) or {}).get("export_dims", 128))
+        mat_df = pd.DataFrame(mat)
+        mat_df["trial_idx"] = window_trial_idx
+        trial_vecs = mat_df.groupby("trial_idx").mean()
+        n_export = min(max_export, mat.shape[1])
+        for trial_idx in trial_vecs.index:
+            vec = trial_vecs.loc[trial_idx].to_numpy()
+            row = rows[trial_idx]
+            for i in range(n_export):
+                row[f"{prefix}_f{i:05d}"] = float(vec[i])
+            row[f"{prefix}_max_mean"] = float(np.mean(vec[0::2]))
+            row[f"{prefix}_ppv_mean"] = float(np.mean(vec[1::2]))
+
+    # --- InceptionTime ---
+    if inception_mat is not None and inception_mat.size:
+        names = InceptionMultiscaleExtractor.feature_names()
+        inc_df = pd.DataFrame(inception_mat, columns=names)
+        inc_df["trial_idx"] = window_trial_idx
+        inc_means = inc_df.groupby("trial_idx").mean()
+        for trial_idx in inc_means.index:
+            row = rows[trial_idx]
+            for name in names:
+                row[name] = float(inc_means.loc[trial_idx, name])
+
+    return rows
+
+
 def run_phase3_feature_extraction(config: dict[str, Any]) -> pd.DataFrame:
-    """Extract Phase 3 features for all trials; merge into trial_features.parquet."""
+    """Extract Phase 3 features for all trials; merge into trial_features.parquet.
+
+    Trials are processed in macro-batches of `extraction_batch_trials`
+    trials (config: features.phase3_deep.extraction_batch_trials,
+    default 200). Within each macro-batch, ROCKET/MiniROCKET/AE/
+    InceptionTime each run ONCE over all windows in the batch rather
+    than once per trial, then results are aggregated back to per-trial
+    rows via groupby-mean (matching the original per-trial mean/std
+    aggregation exactly). Larger macro-batches are faster but use more
+    memory; tune `extraction_batch_trials` to your available RAM/VRAM.
+    """
     p3 = _phase3_cfg(config)
     if not p3.get("enabled", True):
         logger.info("Phase 3 deep features disabled")
@@ -355,29 +662,68 @@ def run_phase3_feature_extraction(config: dict[str, Any]) -> pd.DataFrame:
     signals_dir = processed / "signals_clean"
     meta = pd.read_csv(processed / "trial_metadata.csv")
     sensor_positions = config["dataset"]["sensor_positions"]
+    spec = parse_window_spec(config)
 
     bundle = fit_phase3_models(config)
-    rows: list[dict[str, float]] = []
 
-    for _, row in tqdm(
-        meta.iterrows(),
-        total=len(meta),
-        desc="Phase 3 deep features",
+    batch_trials = int(p3.get("extraction_batch_trials", 200))
+    forward_batch_size = int(p3.get("forward_batch_size", 256))
+    rocket_batch_windows = int(p3.get("rocket_transform_batch_windows", 8192))
+
+    all_rows: list[dict[str, float]] = []
+    meta_chunks = [meta.iloc[i : i + batch_trials] for i in range(0, len(meta), batch_trials)]
+
+    for meta_chunk in progress_bar(
+        meta_chunks,
+        total=len(meta_chunks),
+        desc="phase3_features_batched",
         colour="magenta",
+        unit="trial_batch",
     ):
-        tid = row["trial_id"]
-        feats = extract_phase3_trial_features(
-            tid, signals_dir, sensor_positions, bundle, config
+        trial_ids, windows_raw, window_trial_idx = _load_trial_windows(
+            meta_chunk, signals_dir, sensor_positions, spec, bundle
         )
-        if feats:
-            feats["trial_id"] = tid
-            rows.append(feats)
+        if not trial_ids:
+            continue
 
-    if not rows:
+        latent, sensor_mse = _ae_window_batch_features(
+            windows_raw, bundle, forward_batch_size=forward_batch_size
+        )
+
+        rk_mat = (
+            bundle.rocket.transform(windows_raw, batch_size=rocket_batch_windows)
+            if bundle.rocket is not None
+            else None
+        )
+        mr_mat = (
+            bundle.minirocket.transform(windows_raw, batch_size=rocket_batch_windows)
+            if bundle.minirocket is not None
+            else None
+        )
+        inception_mat = _inception_window_batch_features(
+            windows_raw, bundle, forward_batch_size=forward_batch_size
+        )
+
+        batch_rows = _aggregate_batch_to_trial_rows(
+            trial_ids,
+            window_trial_idx,
+            bundle=bundle,
+            p3=p3,
+            latent=latent,
+            sensor_mse=sensor_mse,
+            rk_mat=rk_mat,
+            mr_mat=mr_mat,
+            inception_mat=inception_mat,
+        )
+        for tid, row in zip(trial_ids, batch_rows, strict=True):
+            row["trial_id"] = tid
+            all_rows.append(row)
+
+    if not all_rows:
         logger.warning("No Phase 3 features extracted")
         return pd.DataFrame()
 
-    phase3_df = pd.DataFrame(rows)
+    phase3_df = pd.DataFrame(all_rows)
     trial_path = features_dir / "trial_features.parquet"
     if trial_path.is_file():
         trial_df = pd.read_parquet(trial_path)

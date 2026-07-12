@@ -12,6 +12,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.utils.reproducibility import get_pipeline_seed
+from src.utils.torch_device import resolve_torch_device
 
 
 class LatentSeverityRegressor(nn.Module):
@@ -49,7 +50,7 @@ def train_latent_regression_head(
     seed = get_pipeline_seed(config)
 
     torch.manual_seed(seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device(config)
 
     model = LatentSeverityRegressor(latent_dim, hidden_dim=hidden, dropout=dropout).to(device)
     Z_t = torch.tensor(Z_train, dtype=torch.float32)
@@ -102,7 +103,7 @@ def predict_latent_regression(
     *,
     device: torch.device | None = None,
 ) -> np.ndarray:
-    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = device or resolve_torch_device()
     model = model.to(device)
     model.eval()
     with torch.no_grad():

@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from loguru import logger
-from tqdm import tqdm
+from src.utils.progress import RED_BAR_FORMAT, progress_bar
 
 from src.ingestion.data_loader import SENSOR_FILE_MAPPING
 from src.preprocessing.gait_events_gt import (
@@ -47,11 +47,12 @@ class GaitEventValidator:
         rows: list[dict] = []
         tune_cases: list[dict] = []
 
-        for trial_dir in tqdm(
+        for trial_dir in progress_bar(
             trial_dirs,
-            desc="Validating gait events",
+            desc="validate_gait_events",
             colour="red",
-            bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+            bar_format=RED_BAR_FORMAT,
+            unit="trial",
         ):
             gt_events = load_ground_truth_gait_events(trial_dir)
             if gt_events is None or gt_events.empty:

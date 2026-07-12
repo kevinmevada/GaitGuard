@@ -31,6 +31,7 @@ from src.ingestion.voisard_imu_parser import (
     is_packet_counter_wrap,
     read_voisard_txt_raw,
 )
+from src.utils.progress import progress_bar
 
 DAPHNET_VALID_LABELS = DAPHNET_RAW_ANNOTATIONS
 
@@ -97,7 +98,8 @@ class RawDataValidator:
         logger.info(f"Raw data validation on {len(inventory)} inventoried trials")
 
         rows: list[dict] = []
-        for record in inventory.to_dict(orient="records"):
+        records = inventory.to_dict(orient="records")
+        for record in progress_bar(records, desc="validate_raw", unit="trial"):
             dataset = str(record.get("dataset", "")).lower()
             if dataset == VOISARD_SOURCE:
                 rows.extend(self._validate_voisard_trial(record))

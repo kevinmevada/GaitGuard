@@ -38,6 +38,7 @@ from src.features.feature_matrix import (
 )
 from src.models.trainer import ModelTrainer
 from src.utils.checkpoint_io import load_checkpoint
+from src.utils.progress import progress_bar
 from src.utils.reproducibility import get_pipeline_seed
 
 
@@ -180,7 +181,9 @@ class CrossCohortTransfer:
 
         rows = []
 
-        for held_out in unique_cohorts:
+        for held_out in progress_bar(
+            unique_cohorts, desc="cross_cohort loco", unit="cohort"
+        ):
             train_mask = cohorts != held_out
             test_mask = cohorts == held_out
 
@@ -236,10 +239,15 @@ class CrossCohortTransfer:
             )
 
         pairwise_rows = []
-        for train_cohort in unique_cohorts:
-            for test_cohort in unique_cohorts:
-                if train_cohort == test_cohort:
-                    continue
+        pairwise_pairs = [
+            (train_cohort, test_cohort)
+            for train_cohort in unique_cohorts
+            for test_cohort in unique_cohorts
+            if train_cohort != test_cohort
+        ]
+        for train_cohort, test_cohort in progress_bar(
+            pairwise_pairs, desc="cross_cohort pairwise", unit="pair"
+        ):
                 train_mask = cohorts == train_cohort
                 test_mask = cohorts == test_cohort
 

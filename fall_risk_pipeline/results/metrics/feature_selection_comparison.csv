@@ -1,3 +1,3 @@
-stage,n_features,cv_auc_mean,cv_auc_std,cv_folds,validation
-before_all_features,464,0.935522415797263,0.012107227603497236,5,stratified_group_kfold
-after_selected_features,20,0.7950799927182055,0.03978274549804566,5,stratified_group_kfold
+stage,n_features,cv_auc_mean,cv_auc_std,cv_folds,validation,nested_selection,global_rfecv_mask
+before_all_features,2408,0.9415732711301329,0.014765084367331802,5,stratified_group_kfold,False,False
+after_global_selection_grouped_cv_exploratory,20,0.8541854887956115,0.019233357607233843,5,stratified_group_kfold,False,True

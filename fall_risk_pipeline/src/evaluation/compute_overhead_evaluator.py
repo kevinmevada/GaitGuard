@@ -51,7 +51,9 @@ from src.models.bilstm_ae_scoring import (
     train_healthy_ae,
     trial_mean_scores,
 )
+from src.utils.progress import progress_bar, stage_spinner
 from src.utils.reproducibility import get_pipeline_seed
+from src.utils.torch_device import resolve_torch_device
 
 DISPLAY = {
     **DISPLAY_NAMES,
@@ -138,7 +140,7 @@ def _benchmark_classical(
     models = list(_baseline_cfg(config).get("models") or DEFAULT_MODELS)
     rows: list[dict[str, Any]] = []
 
-    for model_name in models:
+    for model_name in progress_bar(models, desc="compute_overhead classical", unit="model"):
         rf_params = None
         if model_name == MODEL_RANDOM_FOREST and skip_rf_tuning:
             rf_params = (_baseline_cfg(config).get("random_forest") or {}).get("params") or {
@@ -243,7 +245,7 @@ def _benchmark_rocket_family(
 
 
 def _benchmark_bilstm_ae(config: dict[str, Any], *, n_warmup: int, n_repeat: int) -> dict[str, Any] | None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device(config)
     rs = get_pipeline_seed(config)
     bundle = load_voisard_trial_windows(config, require_all_sensors=True)
     fold = _select_loso_fold(bundle.participant_ids, bundle.cohorts, min_healthy_train=3)
@@ -439,7 +441,11 @@ def run_compute_overhead_benchmark(config: dict) -> pd.DataFrame:
             logger.warning("Classical overhead benchmark failed: {}", exc)
 
     if ocfg.get("dl_rocket", True) and _dl_cfg(config).get("enabled", True):
-        for model_key, cls in ((MODEL_MINIROCKET, MiniRocketTransform), (MODEL_ROCKET, RocketTransform)):
+        for model_key, cls in progress_bar(
+            ((MODEL_MINIROCKET, MiniRocketTransform), (MODEL_ROCKET, RocketTransform)),
+            desc="compute_overhead rocket",
+            unit="model",
+        ):
             try:
                 row = _benchmark_rocket_family(
                     config, model_key, cls, n_warmup=n_warmup, n_repeat=n_repeat
@@ -450,15 +456,20 @@ def run_compute_overhead_benchmark(config: dict) -> pd.DataFrame:
                 logger.warning("Rocket overhead benchmark {} failed: {}", model_key, exc)
 
     if ocfg.get("bilstm_ae", True):
-        try:
-            row = _benchmark_bilstm_ae(config, n_warmup=n_warmup, n_repeat=n_repeat)
-            if row:
-                rows.append(row)
-        except Exception as exc:
-            logger.warning("BiLSTM-AE overhead benchmark failed: {}", exc)
+        with stage_spinner("compute_overhead bilstm_ae"):
+            try:
+                row = _benchmark_bilstm_ae(config, n_warmup=n_warmup, n_repeat=n_repeat)
+                if row:
+                    rows.append(row)
+            except Exception as exc:
+                logger.warning("BiLSTM-AE overhead benchmark failed: {}", exc)
 
     if benchmark_deep and _dl_cfg(config).get("enabled", True):
-        for model_name in (MODEL_INCEPTION_TIME, MODEL_DEEP_CONV_LSTM):
+        for model_name in progress_bar(
+            (MODEL_INCEPTION_TIME, MODEL_DEEP_CONV_LSTM),
+            desc="compute_overhead deep",
+            unit="model",
+        ):
             try:
                 row = _benchmark_deep_classifier(
                     config, model_name, n_warmup=n_warmup, n_repeat=n_repeat

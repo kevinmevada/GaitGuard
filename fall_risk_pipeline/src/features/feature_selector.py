@@ -37,6 +37,7 @@ from src.features.feature_matrix import (
     load_patient_feature_matrix,
 )
 from src.features.feature_missingness import write_feature_missingness_report
+from src.utils.progress import blocking_progress, progress_bar
 
 
 class PermutationImportanceRandomForest(RandomForestClassifier):
@@ -158,10 +159,20 @@ class FeatureSelector:
             else []
         )
 
+        n_steps = 3 if self.compare_before_after else 2
+        selection_steps = progress_bar(
+            total=n_steps,
+            desc="select_features",
+            unit="step",
+        )
+
         rfecv_features, rfecv_detail = self._select_rfecv(
             X, y, groups, feat_cols, n_jobs=self.parallel_jobs
         )
+        selection_steps.update(1)
+
         shap_features, shap_detail = self._select_shap(X, y, feat_cols, groups=groups)
+        selection_steps.update(1)
 
         if self.primary_method == "shap":
             selected = shap_features
@@ -191,6 +202,8 @@ class FeatureSelector:
         comparison_rows = []
         if self.compare_before_after:
             comparison_rows = self._compare_before_after(X, y, groups, feat_cols, selected)
+            selection_steps.update(1)
+        selection_steps.close()
 
         payload = {
             "n_participants": n_participants,
@@ -345,7 +358,9 @@ class FeatureSelector:
             n_jobs=n_jobs,
             importance_getter=_rfe_pipeline_importance,
         )
-        selector.fit(X, y, groups=groups)
+        rfecv_desc = f"rfecv p={len(feat_cols)}"
+        with blocking_progress(rfecv_desc, unit="s", interval=30.0):
+            selector.fit(X, y, groups=groups)
 
         n_cv_optimal = int(selector.n_features_)
         support_idx = np.where(selector.support_)[0]

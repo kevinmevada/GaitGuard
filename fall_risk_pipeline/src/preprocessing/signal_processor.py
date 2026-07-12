@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from scipy.signal import butter, filtfilt, find_peaks
-from tqdm import tqdm
+from src.utils.progress import RED_BAR_FORMAT, progress_bar
 
 from src.preprocessing.unified_bandpass import (
     UnifiedBandpassConfig,
@@ -97,12 +97,13 @@ class SignalProcessor:
 
         signals_dir = self.proc_dir / "signals"
 
-        for row in tqdm(
+        for row in progress_bar(
             meta.itertuples(index=False),
             total=len(meta),
-            desc="Preprocessing",
+            desc="preprocess",
             colour="red",
-            bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+            bar_format=RED_BAR_FORMAT,
+            unit="trial",
         ):
             trial_id = row.trial_id
 

@@ -29,7 +29,9 @@ from rich.progress import (
 from rich.table import Table
 
 from src.utils.pipeline_stages import PIPELINE_STAGES, resolve_stages, validate_stage_order
+from src.utils.progress import stage_spinner
 from src.utils.reproducibility import get_pipeline_seed, set_global_seed
+from src.utils.torch_device import resolve_torch_device
 from src.utils.config_schema import validate_config_or_raise
 
 console = Console()
@@ -105,7 +107,8 @@ def run_stage(stage: str, config: dict) -> float:
             from src.models.deep_trainer import DeepLearningPipeline
             DeepLearningPipeline(config).run()
         else:
-            logger.info("Deep learning disabled in config — skipping train_deep.")
+            with stage_spinner("train_deep (skipped)"):
+                logger.info("Deep learning disabled in config — skipping train_deep.")
     elif stage == "evaluate":
         from src.evaluation.evaluator import Evaluator
         Evaluator(config).run()
@@ -216,6 +219,7 @@ def main():
     seed = get_pipeline_seed(config)
     hash_seed_before_start = os.environ.get("PYTHONHASHSEED")
     set_global_seed(seed, deterministic_torch=bool(rep_cfg.get("deterministic_torch", True)))
+    resolve_torch_device(config)
     logger.info(
         "Global RNG seed={} (reproducibility.seed / models.evaluation.random_state); "
         "see docs/reproducibility.md",
@@ -265,21 +269,20 @@ def main():
                 description=f"[{pct}%] Stage {i}/{n_stages}: [bold]{stage}[/bold]",
             )
 
-            progress.stop()
-            console.print(f"\n[bold cyan]▶ Stage {i}/{n_stages}: {stage}[/bold cyan]")
+            progress.console.print(
+                f"\n[bold cyan]▶ Stage {i}/{n_stages}: {stage}[/bold cyan]"
+            )
             try:
                 elapsed = run_stage(stage, config)
                 stage_timings.append((stage, elapsed, "[green]OK[/green]"))
-                console.print(
+                progress.console.print(
                     f"  [green][OK][/green] {stage} completed in {_fmt_time(elapsed)}"
                 )
             except Exception as exc:
                 stage_timings.append((stage, 0.0, "[red]FAILED[/red]"))
                 logger.exception(f"{stage} failed: {exc}")
-                console.print(f"  [red][FAIL] {stage}: {exc}[/red]")
+                progress.console.print(f"  [red][FAIL] {stage}: {exc}[/red]")
                 sys.exit(1)
-            finally:
-                progress.start()
 
             progress.advance(task_id)
 

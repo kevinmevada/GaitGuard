@@ -31,6 +31,7 @@ from src.evaluation.loso_oof_scores import (
     oof_scores_dir,
 )
 from src.evaluation.primary_endpoint import ENDPOINT_BILSTM_AE_ENSEMBLE
+from src.utils.progress import progress_bar
 
 DISPLAY_NAMES: dict[str, str] = {
     ENDPOINT_BILSTM_AE_ENSEMBLE: "BiLSTM-AE (GaitGuard)",
@@ -55,7 +56,7 @@ def _collect_jackknife_aurocs(
     models: list[str],
 ) -> tuple[list[str], dict[str, np.ndarray]]:
     model_aucs: dict[str, tuple[np.ndarray, list[str]]] = {}
-    for model in models:
+    for model in progress_bar(models, desc="statistical_benchmark", unit="model"):
         if model == ENDPOINT_BILSTM_AE_ENSEMBLE:
             df = load_bilstm_ae_oof(metrics_dir)
         else:

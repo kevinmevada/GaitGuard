@@ -2,7 +2,7 @@ cohort,n_participants,multiclass_label,multiclass_name,training_label,binary_at_
 Healthy,73,0,low (Healthy),0,0,0,5.2
 RIL,51,2,high (neurological: PD/CVA/CIPN/RIL),2,1,1,38.9
 CVA,49,2,high (neurological: PD/CVA/CIPN/RIL),2,1,1,54.2
-PD,24,2,high (neurological: PD/CVA/CIPN/RIL),2,1,1,67.3
+PD,33,2,high (neurological: PD/CVA/CIPN/RIL),2,1,1,67.3
 CIPN,19,2,high (neurological: PD/CVA/CIPN/RIL),2,1,1,41.8
 KneeOA,18,1,moderate (orthopedic: HipOA/KneeOA/ACL),1,1,0,24.1
 HipOA,15,1,moderate (orthopedic: HipOA/KneeOA/ACL),1,1,0,28.5

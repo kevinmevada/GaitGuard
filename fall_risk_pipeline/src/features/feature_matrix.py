@@ -139,23 +139,26 @@ def nested_rfecv_column_indices(
     y: np.ndarray,
     groups: np.ndarray,
     feat_cols: list[str],
-    train_mask: np.ndarray,
+    train_rows: np.ndarray,
 ) -> list[int]:
     """
     RFECV on train rows only (ML-014). Returns column indices into ``feat_cols``.
+
+  ``train_rows`` may be a boolean mask (length ``n_samples``) or integer indices
+    from ``sklearn`` ``split()`` (e.g. outer-CV train_idx).
     """
     from src.features.feature_selector import FeatureSelector
 
-    train_mask = np.asarray(train_mask, dtype=bool)
+    train_rows = np.asarray(train_rows)
     fscfg = config.get("feature_selection", {})
     if not fscfg.get("enabled", False):
         return list(range(len(feat_cols)))
 
     fs = FeatureSelector(config)
     selected = fs.select_feature_names(
-        X[train_mask],
-        y[train_mask],
-        groups[train_mask],
+        X[train_rows],
+        y[train_rows],
+        groups[train_rows],
         feat_cols,
         n_jobs=1,
     )

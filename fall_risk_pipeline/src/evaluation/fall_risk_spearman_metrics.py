@@ -20,6 +20,7 @@ from scipy.stats import spearmanr
 
 from src.ingestion.data_loader import COHORT_FALL_PROBABILITIES
 from src.evaluation.per_cohort_loso_metrics import HEALTHY, PATHOLOGICAL_COHORT_ORDER
+from src.utils.progress import progress_bar
 
 MIN_SPEARMAN_N = 3
 
@@ -168,7 +169,9 @@ def compute_fall_risk_spearman_table(
         )
     )
 
-    for cohort in PATHOLOGICAL_COHORT_ORDER:
+    for cohort in progress_bar(
+        PATHOLOGICAL_COHORT_ORDER, desc="fall_risk_spearman", unit="cohort"
+    ):
         mask = participants["cohort"].isin([HEALTHY, cohort])
         subset = participants.loc[mask].copy()
         if subset.empty:
@@ -189,7 +192,9 @@ def compute_fall_risk_spearman_table(
         )
 
     all_cohorts = [HEALTHY, *PATHOLOGICAL_COHORT_ORDER]
-    for cohort in all_cohorts:
+    for cohort in progress_bar(
+        all_cohorts, desc="fall_risk_spearman within", unit="cohort"
+    ):
         subset = participants.loc[participants["cohort"] == cohort]
         if subset.empty:
             continue

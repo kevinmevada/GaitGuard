@@ -14,6 +14,7 @@ import pandas as pd
 from loguru import logger
 
 from src.evaluation.primary_endpoint import ENDPOINT_BILSTM_AE_ENSEMBLE
+from src.utils.progress import stage_spinner
 
 METRIC_COLS = [
     "f1_weighted",
@@ -125,17 +126,18 @@ def run_competitor_discriminative_matrix(config: dict) -> pd.DataFrame:
     metrics_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
 
-    cl_path = metrics_dir / "classical_baseline_metrics.csv"
-    if cl_path.is_file():
-        rows.extend(_row_from_classical(pd.read_csv(cl_path)))
+    with stage_spinner("competitor_metrics"):
+        cl_path = metrics_dir / "classical_baseline_metrics.csv"
+        if cl_path.is_file():
+            rows.extend(_row_from_classical(pd.read_csv(cl_path)))
 
-    dl_path = metrics_dir / "dl_baseline_metrics.csv"
-    if dl_path.is_file():
-        rows.extend(_row_from_dl(pd.read_csv(dl_path)))
+        dl_path = metrics_dir / "dl_baseline_metrics.csv"
+        if dl_path.is_file():
+            rows.extend(_row_from_dl(pd.read_csv(dl_path)))
 
-    bilstm = _row_from_bilstm(metrics_dir)
-    if bilstm and not any(r["model"] == ENDPOINT_BILSTM_AE_ENSEMBLE for r in rows):
-        rows.append(bilstm)
+        bilstm = _row_from_bilstm(metrics_dir)
+        if bilstm and not any(r["model"] == ENDPOINT_BILSTM_AE_ENSEMBLE for r in rows):
+            rows.append(bilstm)
 
     if not rows:
         logger.warning("No baseline metrics found for competitor discriminative matrix")

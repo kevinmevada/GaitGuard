@@ -30,6 +30,7 @@ from src.evaluation.research_disclaimers import (
 from src.evaluation.primary_endpoint import resolve_inference_checkpoint_name
 from src.features.feature_matrix import load_patient_feature_matrix
 from src.utils.checkpoint_io import CheckpointIntegrityError, load_checkpoint
+from src.utils.progress import progress_bar
 
 
 class PredictionGenerator:
@@ -42,13 +43,16 @@ class PredictionGenerator:
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
     def run(self):
+        steps = progress_bar(total=2, desc="predict", unit="step")
         X, _, _, _, df = load_patient_feature_matrix(self.config)
         participant_ids = df["participant_id"].values
         cohorts = df["cohort"].values
 
         model = self._load_best_model()
+        steps.update(1)
         if model is None:
             logger.error("No model found")
+            steps.close()
             return
 
         proba = model.predict_proba(X)
@@ -57,6 +61,8 @@ class PredictionGenerator:
 
         self._save_predictions(participant_ids, cohorts, y_percent, y_prob)
         self._save_summary(df, y_prob)
+        steps.update(1)
+        steps.close()
 
     def _load_best_model(self):
         deploy_name = resolve_inference_checkpoint_name(self.config, self.results_dir)

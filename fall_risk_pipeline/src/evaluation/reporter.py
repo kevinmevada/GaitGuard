@@ -11,6 +11,7 @@ import pandas as pd
 from loguru import logger
 
 from src.utils.pipeline_version import write_pipeline_version
+from src.utils.progress import progress_bar
 
 
 LATEX_TEMPLATE = r"""
@@ -38,51 +39,63 @@ class ReportGenerator:
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
 
     def run(self):
-        version_path = write_pipeline_version(self.metrics_dir, self.config)
-        logger.info("Wrote pipeline provenance: {}", version_path.name)
+        report_steps = progress_bar(
+            total=4,
+            desc="report",
+            unit="step",
+        )
+        try:
+            version_path = write_pipeline_version(self.metrics_dir, self.config)
+            logger.info("Wrote pipeline provenance: {}", version_path.name)
+            report_steps.update(1)
 
-        self._regenerate_demographics()
-        self._ensure_significance_pvalues()
+            self._regenerate_demographics()
+            self._ensure_significance_pvalues()
+            report_steps.update(1)
 
-        metrics_path = self.metrics_dir / "metrics.csv"
-        if not metrics_path.exists():
-            logger.warning(f"{metrics_path} not found. Run evaluation first.")
-            return
+            metrics_path = self.metrics_dir / "metrics.csv"
+            if not metrics_path.exists():
+                logger.warning(f"{metrics_path} not found. Run evaluation first.")
+                return
 
-        df = pd.read_csv(metrics_path)
-        if df.empty:
-            logger.warning("metrics.csv is empty.")
-            return
+            df = pd.read_csv(metrics_path)
+            if df.empty:
+                logger.warning("metrics.csv is empty.")
+                return
 
-        required_cols = [
-            "model",
-            "auc",
-            "accuracy",
-            "f1",
-            "sensitivity",
-            "validation_strategy",
-            "participants",
-        ]
-        for col in required_cols:
-            if col not in df.columns:
-                df[col] = 0.0 if col not in ("model", "validation_strategy") else "unknown"
+            required_cols = [
+                "model",
+                "auc",
+                "accuracy",
+                "f1",
+                "sensitivity",
+                "validation_strategy",
+                "participants",
+            ]
+            for col in required_cols:
+                if col not in df.columns:
+                    df[col] = 0.0 if col not in ("model", "validation_strategy") else "unknown"
 
-        for col in ["auc", "accuracy", "f1", "sensitivity", "participants", "p_delong_vs_best"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+            for col in ["auc", "accuracy", "f1", "sensitivity", "participants", "p_delong_vs_best"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        if "p_delong_fmt" not in df.columns:
-            df["p_delong_fmt"] = df.get("p_delong_vs_best", pd.Series(dtype=float)).map(
-                self._format_pvalue_cell
-            )
-        if "p_mcnemar_fmt" not in df.columns:
-            df["p_mcnemar_fmt"] = df.get("p_mcnemar_vs_best", pd.Series(dtype=float)).map(
-                self._format_pvalue_cell
-            )
+            if "p_delong_fmt" not in df.columns:
+                df["p_delong_fmt"] = df.get("p_delong_vs_best", pd.Series(dtype=float)).map(
+                    self._format_pvalue_cell
+                )
+            if "p_mcnemar_fmt" not in df.columns:
+                df["p_mcnemar_fmt"] = df.get("p_mcnemar_vs_best", pd.Series(dtype=float)).map(
+                    self._format_pvalue_cell
+                )
 
-        df = df.sort_values("auc", ascending=False)
-        self._generate_latex_table(df)
-        self._generate_markdown_report(df)
+            df = df.sort_values("auc", ascending=False)
+            self._generate_latex_table(df)
+            report_steps.update(1)
+            self._generate_markdown_report(df)
+            report_steps.update(1)
+        finally:
+            report_steps.close()
 
     @staticmethod
     def _format_pvalue_cell(p: float) -> str:

@@ -1,6 +1,6 @@
 {
   "level": "participant",
-  "n_total": 260,
+  "n_total": 269,
   "label_mode": "multiclass",
   "label_mode_description": "Primary target: 3-class labels (0=Healthy, 1=orthopedic, 2=neurological). Preserves separation between OA/ACL and neurodegenerative/vascular cohorts.",
   "cohort_counts": {
@@ -10,18 +10,18 @@
     "Healthy": 73,
     "HipOA": 15,
     "KneeOA": 18,
-    "PD": 24,
+    "PD": 33,
     "RIL": 51
   },
   "multiclass_counts": {
     "0": 73,
     "1": 44,
-    "2": 143
+    "2": 152
   },
   "training_label_counts": {
     "0": 73,
     "1": 44,
-    "2": 143
+    "2": 152
   },
   "binary_class_names": {
     "0": "low_risk (Healthy)",
@@ -52,13 +52,13 @@
     "CIPN": 2,
     "RIL": 2
   },
-  "high_risk_threshold": 1,
-  "binary_strategy": "threshold_ge_1",
+  "high_risk_threshold": 2,
+  "binary_strategy": "threshold_ge_2",
   "imbalance_ratio_neg_to_pos": NaN,
   "balanced_scale_pos_weight": 1.0,
   "sklearn_balanced_weights": {
-    "0": 1.187214611872146,
-    "1": 1.9696969696969697,
-    "2": 0.6060606060606061
+    "0": 1.2283105022831051,
+    "1": 2.037878787878788,
+    "2": 0.5899122807017544
   }
 }

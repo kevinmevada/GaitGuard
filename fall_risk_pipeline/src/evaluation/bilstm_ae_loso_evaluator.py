@@ -35,6 +35,7 @@ from src.models.bilstm_ae_scoring import (
 )
 from src.utils.reproducibility import get_pipeline_seed
 from src.utils.progress import progress_bar
+from src.utils.torch_device import resolve_torch_device
 
 ALL_METHODS = (*ENSEMBLE_METHODS, METHOD_ENSEMBLE)
 MIN_HEALTHY_TRAIN_TRIALS = 3
@@ -46,7 +47,7 @@ def run_bilstm_ae_loso_evaluation(config: dict) -> pd.DataFrame:
         logger.info("BiLSTM-AE ensemble disabled in config")
         return pd.DataFrame()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device(config)
     rs = get_pipeline_seed(config)
     bundle = load_voisard_trial_windows(config, require_all_sensors=True)
 

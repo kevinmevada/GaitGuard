@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
-from typing import Any
+import threading
+from typing import Any, Iterator
 
 from tqdm import tqdm
+
+# Match legacy pipeline styling (ingest / preprocess / features).
+RED_BAR_FORMAT = "\033[31m{l_bar}{bar}{r_bar}\033[0m"
 
 
 def stderr_is_tty() -> bool:
@@ -32,12 +37,13 @@ class _NullProgress:
     def __init__(self, *args: Any, **kwargs: Any):
         self._iterable = _coerce_iterable(args[0] if args else None)
         self.total = kwargs.get("total")
+        self.n = 0
 
     def refresh(self) -> None:
         pass
 
     def update(self, n: int = 1) -> None:
-        pass
+        self.n += n
 
     def set_postfix(self, **kwargs: Any) -> None:
         pass
@@ -87,4 +93,56 @@ def progress_bar(*args: Any, **kwargs: Any):
     kwargs.setdefault("dynamic_ncols", True)
     kwargs.setdefault("mininterval", 0.25)
     kwargs.setdefault("smoothing", 0.05)
+    if not stderr_is_tty():
+        # Line-based updates survive Tee-Object / log capture (no in-place \\r).
+        kwargs.setdefault("ascii", True)
     return tqdm(*args, **kwargs)
+
+
+@contextlib.contextmanager
+def blocking_progress(
+    desc: str,
+    *,
+    unit: str = "s",
+    interval: float = 30.0,
+) -> Iterator[Any]:
+    """
+    Indeterminate bar that ticks every ``interval`` during blocking sklearn fits.
+
+    RFECV and similar estimators expose no per-iteration callbacks; this keeps
+    tqdm/log output moving until ``fit()`` returns.
+    """
+    if not progress_enabled():
+        yield _NullProgress()
+        return
+
+    bar = progress_bar(total=None, desc=desc, unit=unit)
+    stop = threading.Event()
+
+    def _tick() -> None:
+        tick = max(int(interval), 1)
+        while not stop.wait(interval):
+            bar.update(tick)
+
+    ticker = threading.Thread(target=_tick, daemon=True, name=f"progress:{desc}")
+    ticker.start()
+    try:
+        yield bar
+    finally:
+        stop.set()
+        ticker.join(timeout=1.0)
+        bar.close()
+
+
+@contextlib.contextmanager
+def stage_spinner(desc: str) -> Iterator[Any]:
+    """
+    Indeterminate bar for stages with no item loop (fast aggregation, I/O).
+
+    Closes automatically on exit.
+    """
+    bar = progress_bar(total=None, desc=desc, unit="it")
+    try:
+        yield bar
+    finally:
+        bar.close()

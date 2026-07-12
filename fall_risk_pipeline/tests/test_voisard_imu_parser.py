@@ -102,3 +102,23 @@ def test_find_packet_counter_gap():
     gaps = find_packet_counter_gaps(np.array([10, 11, 16, 17], dtype=np.int64))
     assert len(gaps) == 1
     assert gaps[0][3] == 5
+
+
+def test_duplicate_packet_counter_does_not_hang(tmp_path: Path):
+    """HS_19_4-style duplicate counters (diff=0) must not infinite-loop repair."""
+    path = tmp_path / "dup.txt"
+    lines = ["PacketCounter\tAcc_X\tAcc_Y\tAcc_Z\tGyr_X\tGyr_Y\tGyr_Z\tMag_X\tMag_Y\tMag_Z"]
+    for i in range(12):
+        counter = 5 if i in (5, 6) else i  # duplicate at rows 5-6
+        lines.append(
+            f"{counter}\t1\t2\t3\t4\t5\t6\t7\t8\t9"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    df, issues, gap = voisard_txt_to_imu_frame(
+        path, gap_strategy="interpolate", max_interpolate_gap=10
+    )
+    assert issues == []
+    assert gap.repaired
+    assert df is not None
+    assert len(df) >= 11

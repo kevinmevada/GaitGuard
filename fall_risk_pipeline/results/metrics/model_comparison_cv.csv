@@ -1,8 +1,8 @@
-model,cv_auc,cv_std,validation
-ensemble_soft_voting,0.8203987383462907,0.04935810792211716,nested_stratified_group_kfold
-ensemble_stacking,0.8089678324630999,0.062185642988928404,nested_stratified_group_kfold
-random_forest,0.7975110934136933,0.04954527382586825,nested_stratified_group_kfold
-svm,0.7948287965567216,0.05291040742255082,nested_stratified_group_kfold
-xgboost,0.7805836372345537,0.07434657872436205,nested_stratified_group_kfold
-lightgbm,0.770576215475516,0.04798589676265955,nested_stratified_group_kfold
-mlp,0.7612471764003862,0.0703465649508769,nested_stratified_group_kfold
+model,cv_auc,cv_std,tuning_cv_auc,deployed_params,validation,feature_selection_protocol,deploy_feature_selection,cv_auc_source
+ensemble_stacking,0.8256596305548719,0.02936334167161257,,"{""ensemble_method"": ""stacking"", ""feature_selection_protocol"": ""nested_rfecv_per_outer_fold"", ""top_models"": [""xgboost"", ""random_forest"", ""lightgbm""]}",nested_stratified_group_kfold,nested_rfecv_per_outer_fold,global_selected_features_json,nested_rfecv_ensemble_cv
+ensemble_soft_voting,0.8232382622703973,0.0212008900558445,,"{""ensemble_method"": ""soft_voting"", ""feature_selection_protocol"": ""nested_rfecv_per_outer_fold"", ""top_models"": [""xgboost"", ""random_forest"", ""lightgbm""]}",nested_stratified_group_kfold,nested_rfecv_per_outer_fold,global_selected_features_json,nested_rfecv_ensemble_cv
+xgboost,0.8229,0.029,0.8404,{},nested_stratified_group_kfold,nested_rfecv_per_outer_fold,global_selected_features_json,nested_cv
+random_forest,0.8191809600761152,0.023498436348605378,0.8516445775735656,"{""max_depth"": 12, ""max_features"": 0.30328381133447274, ""min_samples_leaf"": 1, ""min_samples_split"": 7, ""n_estimators"": 191}",nested_stratified_group_kfold,nested_rfecv_per_outer_fold,global_selected_features_json,nested_cv
+lightgbm,0.8024,0.0327,0.834,{},nested_stratified_group_kfold,nested_rfecv_per_outer_fold,global_selected_features_json,nested_cv
+svm,0.8009739857095564,0.027911837902253156,0.8397683564876383,"{""C"": 3.258120649172572, ""gamma"": ""auto""}",nested_stratified_group_kfold,nested_rfecv_per_outer_fold,global_selected_features_json,nested_cv
+mlp,0.7626353064546022,0.029261918221616397,0.8163812961079063,"{""alpha"": 4.207988669606632e-05, ""learning_rate_init"": 0.00020511104188433984, ""units"": 179}",nested_stratified_group_kfold,nested_rfecv_per_outer_fold,global_selected_features_json,nested_cv

@@ -31,6 +31,7 @@ from src.models.bilstm_ae_scoring import build_fold_trial_latents, load_voisard_
 from src.models.latent_severity_regressor import predict_latent_regression, train_latent_regression_head
 from src.utils.reproducibility import get_pipeline_seed
 from src.utils.progress import progress_bar
+from src.utils.torch_device import resolve_torch_device
 
 MODEL_LATENT_HEAD = "bilstm_ae_latent_regressor"
 MIN_HEALTHY_TRAIN_TRIALS = 3
@@ -91,7 +92,7 @@ def run_severity_regression_evaluation(config: dict) -> pd.DataFrame:
         logger.info("Severity regression disabled in config")
         return pd.DataFrame()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device(config)
     rs = get_pipeline_seed(config)
     bundle = load_voisard_trial_windows(config, require_all_sensors=True)
 

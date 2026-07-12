@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import warnings
 from pathlib import Path
@@ -11,8 +12,6 @@ import optuna
 import pandas as pd
 import xgboost as xgb
 from loguru import logger
-from rich.console import Console
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import StratifiedGroupKFold, cross_val_score
@@ -25,7 +24,19 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.utils.validation")
 warnings.filterwarnings("ignore", module="lightgbm")
-console = Console()
+
+
+def _cross_val_score_fit_kw(fit_params: dict[str, Any]) -> dict[str, Any]:
+    """sklearn >= 1.4 renamed ``fit_params`` → ``params`` on cross_val_score."""
+    if not fit_params:
+        return {}
+    key = (
+        "params"
+        if "params" in inspect.signature(cross_val_score).parameters
+        else "fit_params"
+    )
+    return {key: fit_params}
+
 
 from src.features.feature_missingness import warn_high_missingness_features
 from src.dataset.label_balance import balanced_scale_pos_weight
@@ -42,7 +53,13 @@ from src.models.ensemble_builder import (
     primary_ensemble_checkpoint_name,
     resolve_ensemble_methods,
 )
-from src.utils.checkpoint_io import refresh_manifest, save_checkpoint
+from src.utils.checkpoint_io import (
+    CheckpointIntegrityError,
+    load_checkpoint,
+    refresh_manifest,
+    save_checkpoint,
+)
+from src.utils.progress import progress_bar, progress_enabled
 
 
 class ModelTrainer:
@@ -149,18 +166,16 @@ class ModelTrainer:
 
         ensemble_methods = resolve_ensemble_methods(self.config)
         total_steps = len(models_to_run) + len(ensemble_methods)
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold magenta]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.completed}/{task.total} tasks"),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress:
-            task_id = progress.add_task("Preparing training...", total=total_steps)
-
+        train_bar = progress_bar(total=total_steps, desc="train", unit="model")
+        try:
             for model_name in models_to_run:
-                progress.update(task_id, description=f"Training model: {model_name}")
+                train_bar.set_postfix_str(model_name)
+                existing = self._try_load_existing_result(model_name)
+                if existing is not None:
+                    results[model_name] = existing
+                    train_bar.update(1)
+                    continue
+
                 logger.info(f"Tuning {model_name}...")
 
                 cv_mean, cv_std = self._nested_cv(
@@ -186,7 +201,8 @@ class ModelTrainer:
                     f"deployed tune AUC = {tuning_cv_auc:.4f}"
                 )
                 self._save_model(model_name, best_pipeline)
-                progress.advance(task_id)
+                self._save_comparison(results)
+                train_bar.update(1)
 
             if ensemble_methods:
                 ens_cfg = self.config["models"]["ensemble"]
@@ -198,9 +214,15 @@ class ModelTrainer:
 
                 for method in ensemble_methods:
                     model_key = ensemble_model_name(method)
-                    progress.update(
-                        task_id, description=f"Training model: {model_key}"
-                    )
+                    train_bar.set_postfix_str(model_key)
+                    existing = self._try_load_existing_result(model_key)
+                    if existing is not None:
+                        results[model_key] = existing
+                        if model_key == primary_ensemble_checkpoint_name(self.config):
+                            self._save_model("ensemble", existing["pipeline"])
+                        train_bar.update(1)
+                        continue
+
                     auc_mean, auc_std = self._nested_ensemble_cv(
                         method,
                         top_models,
@@ -240,13 +262,65 @@ class ModelTrainer:
                     self._save_model(model_key, ensemble)
                     if model_key == primary_ensemble_checkpoint_name(self.config):
                         self._save_model("ensemble", ensemble)
-                    progress.advance(task_id)
-
-            progress.update(task_id, description="Training complete")
+                    self._save_comparison(results)
+                    train_bar.update(1)
+        finally:
+            train_bar.close()
 
         self._save_comparison(results)
         refresh_manifest(self.ckpt_dir)
         return results
+
+    def _checkpoint_path(self, name: str) -> Path:
+        return self.ckpt_dir / f"{name}.pkl"
+
+    def _try_load_existing_result(self, name: str) -> dict | None:
+        """Reuse a manifest-verified checkpoint when resuming a partial train run."""
+        if not self._checkpoint_path(name).is_file():
+            return None
+        try:
+            pipeline = load_checkpoint(
+                self._checkpoint_path(name),
+                manifest_dir=self.ckpt_dir,
+                require_manifest=True,
+            )
+        except (CheckpointIntegrityError, OSError, ValueError) as exc:
+            logger.warning(f"Checkpoint {name}.pkl present but not loadable: {exc}")
+            return None
+
+        cv_auc = float("nan")
+        cv_std = float("nan")
+        tuning_cv_auc = float("nan")
+        params: dict = {}
+
+        comp_path = self.metrics_dir / "model_comparison_cv.csv"
+        if comp_path.is_file():
+            comp = pd.read_csv(comp_path)
+            row = comp.loc[comp["model"] == name]
+            if not row.empty:
+                cv_auc = float(row.iloc[0]["cv_auc"])
+                cv_std = float(row.iloc[0].get("cv_std", float("nan")))
+                tuning_cv_auc = float(row.iloc[0].get("tuning_cv_auc", float("nan")))
+
+        params_path = self.metrics_dir / "model_deployed_params.json"
+        if params_path.is_file():
+            try:
+                all_params = json.loads(params_path.read_text(encoding="utf-8"))
+                params = all_params.get(name, {})
+            except json.JSONDecodeError:
+                pass
+
+        logger.info(
+            f"Resuming {name} — loaded existing checkpoint "
+            f"(cv_auc={cv_auc:.4f}, tuning_cv_auc={tuning_cv_auc:.4f})"
+        )
+        return {
+            "pipeline": pipeline,
+            "cv_auc": cv_auc,
+            "cv_std": cv_std,
+            "tuning_cv_auc": tuning_cv_auc,
+            "params": params,
+        }
 
     def _load_data(self):
         X, y, groups, feat_cols, df = load_patient_feature_matrix(self.config)
@@ -266,8 +340,11 @@ class ModelTrainer:
             n_splits=self.cv_folds, shuffle=True, random_state=self.random_state
         )
         outer_scores: list[float] = []
+        outer_splits = list(outer_cv.split(X, y, groups))
 
-        for train_idx, val_idx in outer_cv.split(X, y, groups):
+        for train_idx, val_idx in progress_bar(
+            outer_splits, desc=f"train_nested_cv:{name}", unit="fold"
+        ):
             col_idx = nested_rfecv_column_indices(
                 self.config, X, y, groups, feat_cols, train_idx
             )
@@ -314,8 +391,11 @@ class ModelTrainer:
             )
         )
         outer_scores: list[float] = []
+        outer_splits = list(outer_cv.split(X_full, y, groups))
 
-        for train_idx, val_idx in outer_cv.split(X_full, y, groups):
+        for train_idx, val_idx in progress_bar(
+            outer_splits, desc=f"train_nested_ensemble:{method}", unit="fold"
+        ):
             col_idx = nested_rfecv_column_indices(
                 self.config, X_full, y, groups, feat_cols_full, train_idx
             )
@@ -377,7 +457,7 @@ class ModelTrainer:
                 scoring=scoring,
                 groups=groups,
                 n_jobs=self.cv_jobs,
-                fit_params=fit_params if fit_params else None,
+                **_cross_val_score_fit_kw(fit_params),
             )
             return float(np.mean(scores))
 
@@ -386,7 +466,12 @@ class ModelTrainer:
             sampler=optuna.samplers.TPESampler(seed=self.random_state),
         )
         try:
-            study.optimize(objective, n_trials=n_trials, timeout=timeout)
+            study.optimize(
+                objective,
+                n_trials=n_trials,
+                timeout=timeout,
+                show_progress_bar=progress_enabled(),
+            )
         finally:
             self._fit_y = None
         return study.best_params, study.best_value

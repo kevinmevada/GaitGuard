@@ -36,6 +36,7 @@ from src.models.bilstm_ae_scoring import (
 from src.models.deep_models import CHANNEL_ORDER, trial_to_tensor
 from src.preprocessing.windowing import parse_window_spec, window_single_trial
 from src.utils.reproducibility import get_pipeline_seed
+from src.utils.torch_device import resolve_torch_device
 
 SEALED_OUTPUT_NAME = "daphnet_bilstm_ae_fog_auroc.json"
 
@@ -173,7 +174,7 @@ def run_daphnet_bilstm_ae_fog_eval(config: dict, *, force: bool = False) -> dict
     if out_path.is_file() and not force and not sealed.get("allow_rerun", False):
         raise DaphnetBilstmAeEvalError(f"Sealed result exists: {out_path}")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device(config)
     spec = parse_window_spec(config)
     overlap = float(config["deep_learning"]["overlap"])
 

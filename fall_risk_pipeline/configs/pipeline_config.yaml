@@ -6,6 +6,10 @@ reproducibility:
   seed: 42
   deterministic_torch: true   # cudnn deterministic mode when PyTorch/CUDA is used
 
+# Compute — shared by all PyTorch stages (phase3, train_deep, anomaly, evaluators)
+compute:
+  device: "cuda"                 # "auto" | "cuda" | "cpu" — ROCKET/sklearn remain CPU
+
 # Paths
 paths:
   raw_data: "data/raw"
@@ -437,7 +441,7 @@ deep_learning:
   max_epochs: 80
   learning_rate: 0.001
   early_stopping_patience: 12
-  device: "auto"                 # "auto" → CUDA if available, else CPU
+  device: "cuda"                 # falls back to compute.device when unset; use "auto" for CPU fallback
   # ML-042: per-LOSO-fold lr search on inner participant val (aligned with tabular Optuna/fold)
   loso_hyperparameter_tuning:
     enabled: true                # HIGH-001: protocol-aligned vs tabular per-fold tuning (slower)

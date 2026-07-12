@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from src.utils.checkpoint_io import register_checkpoint_file, verify_checkpoint_bytes
 from src.utils.reproducibility import get_pipeline_seed
+from src.utils.torch_device import resolve_torch_device
 
 
 @dataclass(frozen=True)
@@ -125,7 +126,7 @@ def train_bilstm_autoencoder(
         latent_dim=latent_dim,
         sensor_slices=sensor_slices,
     )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device(config)
     model.to(device)
 
     X_t = torch.tensor(X_train, dtype=torch.float32)
@@ -193,7 +194,7 @@ def load_bilstm_autoencoder(
     *,
     require_manifest: bool = False,
 ) -> BiLSTMAutoencoder:
-    device = device or torch.device("cpu")
+    device = device or resolve_torch_device()
     checkpoint_path = Path(checkpoint_path)
     raw_bytes = checkpoint_path.read_bytes()
     verify_checkpoint_bytes(

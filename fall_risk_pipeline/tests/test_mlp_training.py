@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.neural_network import MLPClassifier
 
-from src.models.trainer import ModelTrainer
+from src.models.trainer import ModelTrainer, _cross_val_score_fit_kw
 
 
 def _trainer(tmp_path: Path) -> ModelTrainer:
@@ -39,6 +39,12 @@ def test_mlp_pipeline_fit_params_include_sample_weight(tmp_path: Path):
     params = trainer._pipeline_fit_params("mlp", y)
     assert "clf__sample_weight" in params
     assert len(params["clf__sample_weight"]) == len(y)
+
+
+def test_cross_val_score_fit_kw_uses_sklearn_params_name():
+    kw = _cross_val_score_fit_kw({"clf__sample_weight": [1.0, 2.0]})
+    assert "params" in kw or "fit_params" in kw
+    assert len(kw) == 1
 
 
 def test_mlp_classifier_disables_early_stopping(tmp_path: Path):

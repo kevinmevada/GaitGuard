@@ -32,7 +32,22 @@ import pandas as pd
 from loguru import logger
 from scipy.signal import welch
 from scipy.stats import entropy as sp_entropy
-from tqdm import tqdm
+from src.utils.progress import RED_BAR_FORMAT, progress_bar
+
+def _parse_uturn_bounds(start, end) -> tuple[int, int] | None:
+    """Return integer sample bounds when both are present and finite; else None."""
+    if start is None or end is None:
+        return None
+    try:
+        if pd.isna(start) or pd.isna(end):
+            return None
+        uturn_start, uturn_end = int(start), int(end)
+    except (TypeError, ValueError):
+        return None
+    if uturn_end <= uturn_start:
+        return None
+    return uturn_start, uturn_end
+
 try:
     import pywt
     _PYWT_AVAILABLE = True
@@ -100,12 +115,13 @@ class FeatureExtractor:
         meta = pd.read_csv(meta_path)
         rows = []
 
-        for row in tqdm(
+        for row in progress_bar(
             meta.itertuples(index=False),
             total=len(meta),
-            desc="Extracting features",
+            desc="features",
             colour="red",
-            bar_format="\033[31m{l_bar}{bar}{r_bar}\033[0m",
+            bar_format=RED_BAR_FORMAT,
+            unit="trial",
         ):
             feats = self._extract_trial(row._asdict())
             if feats:
@@ -225,13 +241,12 @@ class FeatureExtractor:
 
         uturn_start = metadata.get("uturn_start")
         uturn_end = metadata.get("uturn_end")
-        if uturn_start is not None and uturn_end is not None:
+        bounds = _parse_uturn_bounds(uturn_start, uturn_end)
+        if bounds is not None:
             tid = str(metadata.get("trial_id", ""))
             lb_full = self._load_raw_signal(tid, "lower_back") if tid else None
             if lb_full is not None:
-                feats.update(
-                    self._turning_features(lb_full, int(uturn_start), int(uturn_end))
-                )
+                feats.update(self._turning_features(lb_full, *bounds))
 
         feats.update(
             extract_phase2_kinematic_frequency_features(
@@ -297,12 +312,11 @@ class FeatureExtractor:
 
         uturn_start = row.get("uturn_start")
         uturn_end = row.get("uturn_end")
-        if uturn_start is not None and uturn_end is not None:
+        bounds = _parse_uturn_bounds(uturn_start, uturn_end)
+        if bounds is not None:
             lb_full = self._load_raw_signal(trial_id, "lower_back")
             if lb_full is not None:
-                feats.update(
-                    self._turning_features(lb_full, int(uturn_start), int(uturn_end))
-                )
+                feats.update(self._turning_features(lb_full, *bounds))
 
         feats.update(
             extract_phase2_kinematic_frequency_features(

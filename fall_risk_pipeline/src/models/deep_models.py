@@ -33,6 +33,7 @@ from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader, Dataset
 
 from src.utils.reproducibility import get_pipeline_seed
+from src.utils.torch_device import resolve_torch_device
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -591,11 +592,7 @@ class DeepModelTrainer:
         self.patience = dl_cfg["early_stopping_patience"]
         self.seed = get_pipeline_seed(config)
 
-        dev = dl_cfg["device"]
-        if dev == "auto":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(dev)
+        self.device = resolve_torch_device(config, log=False)
 
         # Mixed precision: substantial speedup on RTX GPUs while preserving stability.
         self.mixed_precision = bool(dl_cfg.get("mixed_precision", True)) and self.device.type == "cuda"

@@ -29,6 +29,7 @@ from src.evaluation.per_cohort_loso_metrics import (
 )
 from src.evaluation.primary_endpoint import ENDPOINT_BILSTM_AE_ENSEMBLE
 from src.models.bilstm_ae_scoring import METHOD_ENSEMBLE
+from src.utils.progress import progress_bar
 
 DEFAULT_SCORE_COL = f"{METHOD_ENSEMBLE}_score"
 
@@ -213,7 +214,9 @@ def run_per_cohort_loso_results(config: dict) -> pd.DataFrame:
     global_threshold = youden_threshold(y_global, scores[global_mask])
 
     metric_rows: list[dict[str, Any]] = []
-    for cohort in PATHOLOGICAL_COHORT_ORDER:
+    for cohort in progress_bar(
+        PATHOLOGICAL_COHORT_ORDER, desc="per_cohort_loso", unit="cohort"
+    ):
         row = one_vs_healthy_metrics(cohorts, scores, cohort, config=config)
         if not row:
             logger.warning("Skipping per-cohort metrics — no trials for {}", cohort)

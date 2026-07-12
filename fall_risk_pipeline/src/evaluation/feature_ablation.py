@@ -46,6 +46,7 @@ from src.features.feature_matrix import (
 )
 from src.models.trainer import ModelTrainer
 from src.utils.checkpoint_io import CheckpointIntegrityError, load_checkpoint
+from src.utils.progress import progress_bar
 from src.utils.reproducibility import get_pipeline_seed
 
 BASELINE_ABLATION_SCENARIO = "all_features_nested_rfecv"
@@ -99,7 +100,11 @@ class FeatureAblationStudy:
             )
 
         rows: list[dict[str, Any]] = []
-        for scenario_id, columns, description in scenarios:
+        for scenario_id, columns, description in progress_bar(
+            scenarios,
+            desc="ablation",
+            unit="scenario",
+        ):
             col_idx = [feat_names.index(c) for c in columns]
             result = self._loso_evaluate(
                 scenario_id,

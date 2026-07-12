@@ -16,6 +16,7 @@ from loguru import logger
 
 from src.ingestion.data_loader import PATHOLOGY_KEY_MAP, SENSOR_FILE_MAPPING
 from src.ingestion.daphnet_parser import DAPHNET_FILENAME_RE, DAPHNET_SENSOR_CODES
+from src.utils.progress import progress_bar
 
 VOISARD_SOURCE = "voisard"
 DAPHNET_SOURCE = "daphnet"
@@ -87,7 +88,10 @@ class DatasetDiscovery:
 
     def _scan_voisard(self, root: Path) -> list[dict]:
         rows: list[dict] = []
-        for meta_path in sorted(root.rglob("*_meta.json")):
+        meta_paths = sorted(root.rglob("*_meta.json"))
+        for meta_path in progress_bar(
+            meta_paths, desc="discover voisard", unit="trial"
+        ):
             trial_dir = meta_path.parent
             trial_id = trial_dir.name
             meta = self._load_json(meta_path)
@@ -114,10 +118,12 @@ class DatasetDiscovery:
 
     def _scan_daphnet(self, root: Path) -> list[dict]:
         rows: list[dict] = []
-        for txt_path in sorted(root.rglob("*.txt")):
-            if not DAPHNET_FILENAME_RE.match(txt_path.name):
-                continue
-
+        txt_paths = [
+            p
+            for p in sorted(root.rglob("*.txt"))
+            if DAPHNET_FILENAME_RE.match(p.name)
+        ]
+        for txt_path in progress_bar(txt_paths, desc="discover daphnet", unit="file"):
             match = DAPHNET_FILENAME_RE.match(txt_path.name)
             assert match is not None
             subject = f"S{match.group(1)}"

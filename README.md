@@ -213,7 +213,7 @@ Endpoints:
 
 Runs at: `http://localhost:8001`
 
-### Web Frontend (`api/static/`)
+### Web Frontend (`Front_end/`)
 
 Research dashboard (served at `GET /app` when the API is running):
 - Drag-drop file upload

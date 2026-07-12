@@ -41,6 +41,7 @@ from src.evaluation.uncertainty import (
     fit_conformal_threshold,
     fit_isotonic_calibrator,
 )
+from src.utils.progress import progress_bar
 
 
 def _cfg(config: dict[str, Any]) -> dict[str, Any]:
@@ -140,12 +141,15 @@ def run_fit_uncertainty(config: dict) -> dict[str, Any]:
     half = n // 2
     fit_idx, check_idx = perm[:half] if half > 0 else perm, perm[half:] if half > 0 else perm
 
+    steps = progress_bar(total=3, desc="fit_uncertainty", unit="step")
+
     calibration_artifact = fit_isotonic_calibrator(
         y_true[fit_idx], y_prob[fit_idx] if y_prob.ndim == 1 else y_prob[fit_idx], label_mode=label_mode
     )
     calibration_path = metrics_dir / "calibration_artifact.json"
     calibration_artifact.to_json(calibration_path)
     logger.info(f"Calibration artifact saved → {calibration_path}")
+    steps.update(1)
 
     alpha = float(cfg.get("conformal_alpha", 0.1))
     conformal_artifact = fit_conformal_threshold(
@@ -154,6 +158,7 @@ def run_fit_uncertainty(config: dict) -> dict[str, Any]:
     conformal_path = metrics_dir / "conformal_artifact.json"
     conformal_artifact.to_json(conformal_path)
     logger.info(f"Conformal artifact saved → {conformal_path} (q_hat={conformal_artifact.q_hat:.4f})")
+    steps.update(1)
 
     report: dict[str, Any] = {"model": model_name, "label_mode": label_mode, "n_oof_rows": n}
     if len(check_idx) >= 10:
@@ -173,4 +178,6 @@ def run_fit_uncertainty(config: dict) -> dict[str, Any]:
 
     report_path = metrics_dir / "uncertainty_coverage_report.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    steps.update(1)
+    steps.close()
     return report

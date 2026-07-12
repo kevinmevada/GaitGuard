@@ -1,9 +1,0 @@
-test_cohort,train_cohorts,n_train,n_test,n_train_classes,n_test_classes,auc,auc_status,mean_true_class_proba,accuracy,f1_macro
-ACL,"CIPN, CVA, Healthy, HipOA, KneeOA, PD, RIL",249,11,3,1,,undefined_single_class_test,0.1861068606376648,0.0,0.0
-CIPN,"ACL, CVA, Healthy, HipOA, KneeOA, PD, RIL",241,19,3,1,,undefined_single_class_test,0.7110263705253601,0.8947368421052632,0.4722222222222222
-CVA,"ACL, CIPN, Healthy, HipOA, KneeOA, PD, RIL",211,49,3,1,,undefined_single_class_test,0.38371941447257996,0.40816326530612246,0.1932367149758454
-Healthy,"ACL, CIPN, CVA, HipOA, KneeOA, PD, RIL",187,73,2,1,,insufficient_known_samples,,,
-HipOA,"ACL, CIPN, CVA, Healthy, KneeOA, PD, RIL",245,15,3,1,,undefined_single_class_test,0.16579708456993103,0.06666666666666667,0.041666666666666664
-KneeOA,"ACL, CIPN, CVA, Healthy, HipOA, PD, RIL",242,18,3,1,,undefined_single_class_test,0.17297175526618958,0.0,0.0
-PD,"ACL, CIPN, CVA, Healthy, HipOA, KneeOA, RIL",236,24,3,1,,undefined_single_class_test,0.7281096577644348,0.9583333333333334,0.48936170212765956
-RIL,"ACL, CIPN, CVA, Healthy, HipOA, KneeOA, PD",209,51,3,1,,undefined_single_class_test,0.5520551204681396,0.6078431372549019,0.25203252032520324

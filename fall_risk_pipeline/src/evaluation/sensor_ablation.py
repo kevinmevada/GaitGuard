@@ -35,6 +35,7 @@ from src.features.feature_matrix import (
     load_patient_feature_matrix,
 )
 from src.utils.checkpoint_io import CheckpointIntegrityError, load_checkpoint
+from src.utils.progress import progress_bar
 from src.utils.reproducibility import get_pipeline_seed
 
 SENSOR_POSITIONS = ["head", "lower_back", "left_foot", "right_foot"]
@@ -291,7 +292,7 @@ class SensorAblationStudy:
 
         rows = []
         logger.info(f"Sensor ablation: {len(subsets)} subsets × LOSO CV")
-        for combo in subsets:
+        for combo in progress_bar(subsets, desc="sensor_ablation", unit="subset"):
             col_idx = _features_for_sensors(feat_names, combo)
             if not col_idx:
                 logger.warning(f"No features for {combo} — skipping")

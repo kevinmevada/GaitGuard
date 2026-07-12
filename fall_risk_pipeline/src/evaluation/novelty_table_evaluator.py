@@ -8,6 +8,7 @@ from typing import Any
 from loguru import logger
 
 from src.reporting.novelty_comparison import write_novelty_artifacts
+from src.utils.progress import stage_spinner
 
 
 def run_novelty_comparison_table(config: dict) -> dict[str, Any]:
@@ -27,7 +28,8 @@ def run_novelty_comparison_table(config: dict) -> dict[str, Any]:
         else:
             paper_dir = pipeline_root / "docs" / "paper"
 
-    summary = write_novelty_artifacts(metrics_dir, paper_docs_dir=paper_dir)
+    with stage_spinner("novelty_table"):
+        summary = write_novelty_artifacts(metrics_dir, paper_docs_dir=paper_dir)
     logger.info(
         "Novelty comparison table → {} (GaitGuard sole full-firsts: {})",
         metrics_dir / "novelty_comparison_table.md",
