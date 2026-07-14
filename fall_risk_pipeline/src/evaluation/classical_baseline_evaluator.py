@@ -21,6 +21,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import optuna
+from joblib import Parallel, delayed
 from loguru import logger
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
@@ -220,6 +221,58 @@ def _tune_random_forest(
     return study.best_params
 
 
+def _classical_fold_one(
+    train_idx: np.ndarray,
+    test_idx: np.ndarray,
+    model_name: str,
+    X: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    config: dict[str, Any],
+    *,
+    rf_best_params: dict[str, Any] | None,
+    meta_index: np.ndarray | None,
+    binary: bool,
+) -> tuple[list[int], list[int], np.ndarray, list[str], list[int]] | None:
+    """Single LOSO fold for classical baselines (process-parallel worker)."""
+    y_tr, y_te = y[train_idx], y[test_idx]
+    if len(np.unique(y_tr)) < 2:
+        return None
+    assert_loso_fold_disjoint(
+        groups[train_idx], groups[test_idx], held_out_subject=str(groups[test_idx][0])
+    )
+
+    if model_name == MODEL_RANDOM_FOREST and rf_best_params is None:
+        fold_rf_params = _tune_random_forest(X[train_idx], y_tr, config)
+    else:
+        fold_rf_params = rf_best_params
+
+    pipe = _build_estimator(
+        model_name,
+        config,
+        y_train=y_tr,
+        rf_params=fold_rf_params,
+    )
+    pipe.fit(X[train_idx], y_tr)
+
+    if binary:
+        proba = pipe.predict_proba(X[test_idx])
+        scores = proba[:, 1] if proba.shape[1] > 1 else proba.ravel()
+        pred = (scores >= 0.5).astype(int)
+        proba_out = np.column_stack([1.0 - scores, scores])
+    else:
+        proba_out, pred = predict_multiclass(pipe, X[test_idx])
+
+    meta_idxs = meta_index[test_idx].tolist() if meta_index is not None else list(test_idx)
+    return (
+        y_te.tolist(),
+        pred.tolist(),
+        proba_out,
+        groups[test_idx].astype(str).tolist(),
+        meta_idxs,
+    )
+
+
 def _pool_oof_predictions(
     model_name: str,
     X: np.ndarray,
@@ -231,47 +284,41 @@ def _pool_oof_predictions(
     meta_index: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     logo = LeaveOneGroupOut()
+    splits = list(logo.split(X, y, groups))
+    binary = is_binary_task(y, config)
+
+    fold_results = Parallel(n_jobs=-1, prefer="processes")(
+        delayed(_classical_fold_one)(
+            train_idx,
+            test_idx,
+            model_name,
+            X,
+            y,
+            groups,
+            config,
+            rf_best_params=rf_best_params,
+            meta_index=meta_index,
+            binary=binary,
+        )
+        for train_idx, test_idx in progress_bar(
+            splits, desc=f"  classical {model_name} LOSO", leave=False, unit="fold"
+        )
+    )
+
     y_true: list[int] = []
     y_pred: list[int] = []
     y_proba_chunks: list[np.ndarray] = []
     participant_ids: list[str] = []
     trial_indices: list[int] = []
-
-    for train_idx, test_idx in logo.split(X, y, groups):
-        y_tr, y_te = y[train_idx], y[test_idx]
-        if len(np.unique(y_tr)) < 2:
+    for result in fold_results:
+        if result is None:
             continue
-        assert_loso_fold_disjoint(
-            groups[train_idx], groups[test_idx], held_out_subject=str(groups[test_idx][0])
-        )
-
-        if model_name == MODEL_RANDOM_FOREST and rf_best_params is None:
-            fold_rf_params = _tune_random_forest(X[train_idx], y_tr, config)
-        else:
-            fold_rf_params = rf_best_params
-
-        pipe = _build_estimator(
-            model_name,
-            config,
-            y_train=y_tr,
-            rf_params=fold_rf_params,
-        )
-        pipe.fit(X[train_idx], y_tr)
-
-        if is_binary_task(y, config):
-            proba = pipe.predict_proba(X[test_idx])
-            scores = proba[:, 1] if proba.shape[1] > 1 else proba.ravel()
-            pred = (scores >= 0.5).astype(int)
-            y_proba_chunks.append(np.column_stack([1.0 - scores, scores]))
-        else:
-            proba, pred = predict_multiclass(pipe, X[test_idx])
-            y_proba_chunks.append(proba)
-
-        y_true.extend(y_te.tolist())
-        y_pred.extend(pred.tolist())
-        participant_ids.extend(groups[test_idx].astype(str).tolist())
-        if meta_index is not None:
-            trial_indices.extend(meta_index[test_idx].tolist())
+        yt, yp, proba, pids, idxs = result
+        y_true.extend(yt)
+        y_pred.extend(yp)
+        y_proba_chunks.append(proba)
+        participant_ids.extend(pids)
+        trial_indices.extend(idxs)
 
     y_true_arr = np.asarray(y_true, dtype=int)
     y_pred_arr = np.asarray(y_pred, dtype=int)

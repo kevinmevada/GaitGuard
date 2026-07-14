@@ -7,6 +7,21 @@ Scenarios:
      (same per-fold nested RFECV ∩ scenario columns as `_loso_evaluate`, ML-033)
   3. minus_<group> — leave-one feature group out (temporal, spectral, …)
   4. minus_lyapunov — drop only lyapunov_* columns (nonlinear dynamics probe)
+
+FIXES APPLIED:
+  1. _loso_evaluate's per-subject LOSO loop parallelized across folds — was a
+     sequential Python for-loop (RFECV intersection + model fit + inner-CV
+     Youden search per subject, one core), run once per ablation scenario
+     (~8-12 scenarios), the dominant cost of this stage.
+  2. _loso_shap_importance's per-subject loop (used once at startup to find
+     the top-K SHAP features for the top{k}_shap scenario) parallelized the
+     same way — same RFECV-per-fold pattern, previously sequential.
+  3. Fixed a real crash bug in _resolve_top_shap_features: it referenced
+     self.seed, which __init__ never sets (only self.random_state exists) —
+     this raised AttributeError the first time this method ran, i.e.
+     immediately at the start of run(). Changed to self.random_state.
+  Both loop fixes use process-based parallelism (pure sklearn/numpy/shap
+  work here, no GPU/CUDA involved, unlike the BiLSTM-AE evaluators).
 """
 
 from __future__ import annotations
@@ -21,6 +36,7 @@ import numpy as np
 import pandas as pd
 import shap
 import sklearn.base as skbase
+from joblib import Parallel, delayed
 from loguru import logger
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedGroupKFold
@@ -208,15 +224,16 @@ class FeatureAblationStudy:
         ckpt_path = self.ckpt_dir / f"{self.reference_model}.pkl"
         ckpt_mtime = int(ckpt_path.stat().st_mtime) if ckpt_path.exists() else 0
         cache = self.metrics_dir / (
-            f"ablation_top_shap_features_{self.reference_model}_{self.seed}_{ckpt_mtime}.json"
+            f"ablation_top_shap_features_{self.reference_model}_{self.random_state}_{ckpt_mtime}.json"
         )
+        cache_key = f"{self.reference_model}:{self.random_state}:{ckpt_mtime}"
         if cache.exists():
             try:
                 cached = json.loads(cache.read_text(encoding="utf-8"))
                 if (
                     isinstance(cached, dict)
                     and cached.get("source") == "loso_aggregate_nested_rfecv"
-                    and cached.get("cache_key") == f"{self.reference_model}:{self.seed}:{ckpt_mtime}"
+                    and cached.get("cache_key") == cache_key
                     and isinstance(cached.get("features"), list)
                     and len(cached["features"]) >= 1
                 ):
@@ -228,7 +245,7 @@ class FeatureAblationStudy:
         order = sorted(importance, key=importance.get, reverse=True)[: self.top_k_shap]
         payload = {
             "source": "loso_aggregate_nested_rfecv",
-            "cache_key": f"{self.reference_model}:{self.seed}:{ckpt_mtime}",
+            "cache_key": cache_key,
             "features": order,
         }
         cache.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -268,6 +285,60 @@ class FeatureAblationStudy:
 
         return threshold_from_inner_oof(y_tr, oof_prob, n_splits=n_splits)[0]
 
+    def _shap_fold_one_subject(
+        self,
+        subj,
+        checkpoint: Any,
+        X: np.ndarray,
+        y: np.ndarray,
+        groups: np.ndarray,
+        feat_names: list[str],
+        all_col_idx: list[int],
+    ) -> list[tuple[str, float]] | None:
+        """One LOSO fold's contribution to the LOSO-aggregate SHAP importance
+        used to pick the top-K SHAP scenario's features.
+
+        Returns a list of (feature_name, mean_abs_shap) pairs for this fold's
+        held-out subject, or None if the fold can't be evaluated. Split out
+        of _loso_shap_importance so it can run under joblib.Parallel — each
+        fold is a fully independent refit + SHAP explanation.
+        """
+        test_idx = np.where(groups == subj)[0]
+        train_idx = np.where(groups != subj)[0]
+        if len(np.unique(y[train_idx])) < 2:
+            return None
+
+        fold_cols = intersect_nested_rfecv_columns(
+            self.config,
+            X,
+            y,
+            groups,
+            feat_names,
+            train_idx,
+            all_col_idx,
+            held_out_subject=str(subj),
+        )
+        if not fold_cols:
+            return None
+
+        fold_model = skbase.clone(checkpoint)
+        self.trainer.fit_pipeline(
+            self.reference_model, fold_model, X[train_idx][:, fold_cols], y[train_idx]
+        )
+        clf = fold_model.named_steps.get("clf")
+        if clf is None or not hasattr(clf, "predict_proba"):
+            raise TypeError("Reference model has no tree classifier for SHAP.")
+
+        X_proc = self._transform_for_shap(fold_model, X[test_idx][:, fold_cols])
+        explainer = shap.TreeExplainer(clf)
+        shap_vals = explainer.shap_values(X_proc)
+        per_class = split_shap_by_class(shap_vals, n_classes=int(len(np.unique(y))))
+        mean_abs = global_mean_abs_importance(per_class)
+        return [
+            (feat_names[col_idx], float(mean_abs[local_idx]))
+            for local_idx, col_idx in enumerate(fold_cols)
+        ]
+
     def _loso_shap_importance(
         self,
         X: np.ndarray,
@@ -278,52 +349,32 @@ class FeatureAblationStudy:
         """Mean |SHAP| per feature from LOSO held-out explanations (train-only fit).
 
         Uses the same per-fold nested RFECV column mask as ``_loso_evaluate`` (ML-033).
+        Folds run in parallel across CPU cores (see _shap_fold_one_subject) —
+        previously a sequential Python for-loop, one RFECV+refit+SHAP pass
+        per subject, one core.
         """
         checkpoint = self._load_checkpoint(self.reference_model)
         if checkpoint is None:
             raise FileNotFoundError("Cannot compute SHAP top features without a checkpoint.")
 
-        accum: dict[str, list[float]] = defaultdict(list)
         all_col_idx = list(range(len(feat_names)))
+        unique_subjects = np.unique(groups)
 
-        for subj in np.unique(groups):
-            test_idx = np.where(groups == subj)[0]
-            train_idx = np.where(groups != subj)[0]
-            if len(np.unique(y[train_idx])) < 2:
+        fold_results = Parallel(n_jobs=-1, prefer="processes")(
+            delayed(self._shap_fold_one_subject)(
+                subj, checkpoint, X, y, groups, feat_names, all_col_idx
+            )
+            for subj in progress_bar(
+                unique_subjects, desc="  ablation SHAP folds", leave=False, unit="fold"
+            )
+        )
+
+        accum: dict[str, list[float]] = defaultdict(list)
+        for result in fold_results:
+            if result is None:
                 continue
-
-            fold_cols = intersect_nested_rfecv_columns(
-                self.config,
-                X,
-                y,
-                groups,
-                feat_names,
-                train_idx,
-                all_col_idx,
-            )
-            if not fold_cols:
-                continue
-
-            fold_model = skbase.clone(checkpoint)
-            self.trainer.fit_pipeline(
-                self.reference_model,
-                fold_model,
-                X[train_idx][:, fold_cols],
-                y[train_idx],
-            )
-            clf = fold_model.named_steps.get("clf")
-            if clf is None or not hasattr(clf, "predict_proba"):
-                raise TypeError("Reference model has no tree classifier for SHAP.")
-
-            X_proc = self._transform_for_shap(fold_model, X[test_idx][:, fold_cols])
-            explainer = shap.TreeExplainer(clf)
-            shap_vals = explainer.shap_values(X_proc)
-            per_class = split_shap_by_class(
-                shap_vals, n_classes=int(len(np.unique(y)))
-            )
-            mean_abs = global_mean_abs_importance(per_class)
-            for local_idx, col_idx in enumerate(fold_cols):
-                accum[feat_names[col_idx]].append(float(mean_abs[local_idx]))
+            for feat_name, val in result:
+                accum[feat_name].append(val)
 
         if not accum:
             raise RuntimeError("No LOSO SHAP values collected for ablation top-K.")
@@ -341,6 +392,70 @@ class FeatureAblationStudy:
             X_proc = scaler.transform(X_proc)
         return X_proc
 
+    def _ablation_fold_one_subject(
+        self,
+        subj,
+        checkpoint: Any,
+        X: np.ndarray,
+        y: np.ndarray,
+        groups: np.ndarray,
+        cohorts: np.ndarray,
+        *,
+        feat_names: list[str],
+        scenario_col_idx: list[int],
+        binary_task: bool,
+    ) -> tuple[list[int], Any, list[int] | None, list[str]] | None:
+        """One LOSO fold for one ablation scenario.
+
+        Returns ``(y_test, probs, pred_or_None, test_cohorts)`` — for binary
+        tasks ``probs`` is a flat list and ``pred`` is filled in (thresholded
+        via the inner-CV Youden search); for multiclass ``probs`` is an
+        ``(n_test, n_classes)`` array and ``pred`` comes from argmax — or
+        ``None`` if this fold can't be evaluated.
+
+        Split out of ``_loso_evaluate`` so it can run under
+        ``joblib.Parallel`` — each fold (RFECV intersection + model refit +,
+        for binary tasks, an inner-CV Youden threshold search) is fully
+        independent of every other fold's. Pure sklearn work, no GPU.
+        """
+        test_idx = np.where(groups == subj)[0]
+        train_idx = np.where(groups != subj)[0]
+        if len(np.unique(y[train_idx])) < 2:
+            return None
+
+        fold_cols = intersect_nested_rfecv_columns(
+            self.config,
+            X,
+            y,
+            groups,
+            feat_names,
+            train_idx,
+            scenario_col_idx,
+            held_out_subject=str(subj),
+        )
+        if not fold_cols:
+            return None
+
+        fold_model = skbase.clone(checkpoint)
+        self.trainer.fit_pipeline(
+            self.reference_model, fold_model, X[train_idx][:, fold_cols], y[train_idx]
+        )
+
+        if binary_task:
+            proba = fold_model.predict_proba(X[test_idx][:, fold_cols])
+            score = proba[:, 1] if proba.shape[1] > 1 else proba.ravel()
+            thresh = self._train_fold_youden_binary(
+                fold_model, self.reference_model, X[:, fold_cols], y, groups, train_idx
+            )
+            probs: Any = score.tolist()
+            pred: list[int] | None = (score >= thresh).astype(int).tolist()
+        else:
+            proba, pred_arr = predict_multiclass(fold_model, X[test_idx][:, fold_cols])
+            probs = proba
+            pred = pred_arr.tolist()
+
+        return y[test_idx].tolist(), probs, pred, cohorts[test_idx].tolist()
+
     def _loso_evaluate(
         self,
         scenario_id: str,
@@ -357,54 +472,37 @@ class FeatureAblationStudy:
             return {"auc": float("nan"), "f1": float("nan"), "accuracy": float("nan")}
 
         binary_task = is_binary_task(y, self.config)
+
+        fold_results = Parallel(n_jobs=-1, prefer="processes")(
+            delayed(self._ablation_fold_one_subject)(
+                subj,
+                checkpoint,
+                X,
+                y,
+                groups,
+                cohorts,
+                feat_names=feat_names,
+                scenario_col_idx=scenario_col_idx,
+                binary_task=binary_task,
+            )
+            for subj in np.unique(groups)
+        )
+
         all_true: list[int] = []
         all_probs: list[Any] = []
         all_pred: list[int] = []
         all_cohorts: list[str] = []
-
-        for subj in np.unique(groups):
-            test_idx = np.where(groups == subj)[0]
-            train_idx = np.where(groups != subj)[0]
-            if len(np.unique(y[train_idx])) < 2:
+        for result in fold_results:
+            if result is None:
                 continue
-
-            fold_cols = intersect_nested_rfecv_columns(
-                self.config,
-                X,
-                y,
-                groups,
-                feat_names,
-                train_idx,
-                scenario_col_idx,
-            )
-            if not fold_cols:
-                continue
-
-            fold_model = skbase.clone(checkpoint)
-            self.trainer.fit_pipeline(
-                self.reference_model, fold_model, X[train_idx][:, fold_cols], y[train_idx]
-            )
-
+            y_test, probs, pred, test_cohorts = result
+            all_true.extend(y_test)
             if binary_task:
-                proba = fold_model.predict_proba(X[test_idx][:, fold_cols])
-                score = proba[:, 1] if proba.shape[1] > 1 else proba.ravel()
-                thresh = self._train_fold_youden_binary(
-                    fold_model,
-                    self.reference_model,
-                    X[:, fold_cols],
-                    y,
-                    groups,
-                    train_idx,
-                )
-                all_probs.extend(score.tolist())
-                all_pred.extend((score >= thresh).astype(int).tolist())
+                all_probs.extend(probs)
             else:
-                proba, pred = predict_multiclass(fold_model, X[test_idx][:, fold_cols])
-                all_probs.append(proba)
-                all_pred.extend(pred.tolist())
-
-            all_true.extend(y[test_idx].tolist())
-            all_cohorts.extend(cohorts[test_idx].tolist())
+                all_probs.append(probs)
+            all_pred.extend(pred)
+            all_cohorts.extend(test_cohorts)
 
         y_true = np.asarray(all_true, dtype=int)
         if binary_task:

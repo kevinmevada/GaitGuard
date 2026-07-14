@@ -33,6 +33,33 @@ FIXES APPLIED:
      search space — and with 5 base models was effectively re-doing the
      entire single-model sweep's tuning cost again inside the ensemble
      sweep on top of it.
+  10. _load_checkpoint now caches loaded checkpoints in memory
+      (self._checkpoint_cache). The same model checkpoint was being read
+      from disk and integrity-verified (SHA-256/HMAC) up to 4 separate
+      times within one run() — once each from the single-model eval,
+      deploy-schema fast eval, leakage comparison, and SHAP sweeps. Every
+      caller already clones the checkpoint before fitting, so returning a
+      cached reference instead of re-reading identical bytes is safe.
+      Negative results (missing/failed verification) are NOT cached.
+  11. _shap_loso_aggregate's per-fold fit+SHAP-compute step is now
+      parallelized (see _shap_fit_and_explain_one_subject) — previously
+      the last remaining sequential per-fold sweep in this file, left that
+      way deliberately in fix 8 because its early-stopping/truncation
+      logic (stop once n_shap_samples total OOF rows are collected) is not
+      naively parallelizable. Verified by direct simulation (old
+      sequential vs. new parallel-then-aggregate) that the two produce
+      bit-for-bit identical final SHAP aggregates, including the
+      mid-fold-truncation and skip-on-failed-fold edge cases — see the
+      method's docstring for exactly how the truncation semantics are
+      preserved.
+  12. _save/_save_shap no longer write the same figure twice when
+      reporting.figure_format is already "png" (default is "pdf", so this
+      only matters for configs that explicitly set figure_format: png).
+  13. Nested FS (per-LOSO-fold RFECV) persists each fold's selected feature
+      names under paths.metrics/nested_fs_cache/<fingerprint>/fold_*.json.
+      Parallel workers write atomically on completion; restarts skip cached
+      folds. Ablation/sensor/leakage reuse the same cache via
+      nested_rfecv_column_indices — identical RFECV, no protocol change.
 """
 
 from __future__ import annotations
@@ -103,7 +130,6 @@ from src.features.feature_matrix import (
     load_patient_feature_matrix,
     nested_rfecv_column_indices,
 )
-from src.features.feature_selector import FeatureSelector
 from src.models.ensemble_builder import (
     build_ensemble_estimator,
     ensemble_model_name,
@@ -159,6 +185,12 @@ class Evaluator:
         # _nested_group_evaluate_ensembles so the ensemble sweep doesn't redundantly
         # re-run the exact same per-fold Optuna search a second time (fix 9).
         self._fold_best_params: dict[tuple[str, str], dict] = {}
+        # Checkpoint cache: the same model checkpoint is loaded from disk
+        # (joblib.load + integrity verification) from up to 4 separate call
+        # sites/sweeps (single-model eval, deploy-schema fast eval, leakage
+        # comparison, SHAP) — cache it once loaded rather than re-reading
+        # and re-verifying identical bytes from disk each time (perf fix).
+        self._checkpoint_cache: dict[str, Any] = {}
 
         logger.info("Evaluator initialized — nested LOSO with per-fold Optuna retuning")
 
@@ -173,6 +205,7 @@ class Evaluator:
         y: np.ndarray,
         groups: np.ndarray,
         feat_cols: list[str],
+        cache_dir: Path | None = None,
     ) -> tuple[str, np.ndarray, list[str]] | None:
         """RFECV feature selection for a single LOSO train fold (all subjects
         except `subj`). Returns (key, col_idx, selected_names), or None if
@@ -181,20 +214,29 @@ class Evaluator:
         Split out of _init_fold_feature_masks so it can run under
         joblib.Parallel — each fold's RFECV is fully independent of every
         other fold's, exactly like the per-fold model tuning below.
+
+        Disk-cached via ``nested_rfecv_column_indices`` (fix 13): completed
+        folds are skipped on resume.
         """
         train_idx = np.where(groups != subj)[0]
         if len(np.unique(y[train_idx])) < 2:
             return None
-        selector = FeatureSelector(self.config)
-        selected = selector.select_feature_names(
-            X[train_idx],
-            y[train_idx],
-            groups[train_idx],
+        key = str(subj)
+        col_idx_list = nested_rfecv_column_indices(
+            self.config,
+            X,
+            y,
+            groups,
             feat_cols,
-            n_jobs=1,
+            train_idx,
+            held_out_subject=key,
+            cache_dir=cache_dir,
         )
-        col_idx = np.array([feat_cols.index(name) for name in selected], dtype=int)
-        return str(subj), col_idx, selected
+        if not col_idx_list:
+            return None
+        col_idx = np.asarray(col_idx_list, dtype=int)
+        selected = [feat_cols[i] for i in col_idx]
+        return key, col_idx, selected
 
     def _init_fold_feature_masks(
         self,
@@ -205,11 +247,15 @@ class Evaluator:
     ) -> None:
         """Precompute per-LOSO-fold feature masks (train-only RFECV).
 
-        Parallelized across folds (previously a sequential Python for-loop —
-        one RFECV fit per subject, one core, before any model training even
-        began). Each fold's feature selection is independent of every other
-        fold's, same as the model-tuning loop already parallelizes below.
+        Parallelized across folds. Each completed fold is written to
+        ``nested_fs_cache`` so a killed run resumes only unfinished folds.
         """
+        from src.features.nested_fs_cache import (
+            count_cached_folds,
+            load_fold_selected,
+            nested_fs_cache_dir,
+        )
+
         self._fold_col_idx = {}
         self._fold_feat_names = {}
         if not self._nested_fs_enabled():
@@ -217,25 +263,69 @@ class Evaluator:
             return
 
         unique_subjects = np.unique(groups)
-        logger.info(
-            f"Nested feature selection: RFECV on each LOSO train fold "
-            f"({len(unique_subjects)} folds, p={len(feat_cols)}), parallel across folds"
+        cache_dir = nested_fs_cache_dir(
+            self.config,
+            feat_cols,
+            n_samples=int(X.shape[0]),
+            n_groups=int(len(unique_subjects)),
         )
-        results = Parallel(n_jobs=-1, prefer="processes")(
-            delayed(self._fs_one_subject)(subj, X, y, groups, feat_cols)
-            for subj in progress_bar(
-                unique_subjects,
-                desc="  Nested FS folds",
-                leave=False,
-                colour="yellow",
+        n_cached = count_cached_folds(cache_dir)
+        if n_cached:
+            logger.info(
+                "Nested FS disk cache: {}/{} folds already on disk — will skip those",
+                n_cached,
+                len(unique_subjects),
             )
-        )
-        for result in results:
-            if result is None:
-                continue
-            key, col_idx, selected = result
-            self._fold_col_idx[key] = col_idx
-            self._fold_feat_names[key] = selected
+
+        # Warm in-memory maps from disk first (instant), then Parallel only misses.
+        pending: list[Any] = []
+        for subj in unique_subjects:
+            key = str(subj)
+            cached = load_fold_selected(cache_dir, key)
+            if cached is not None:
+                present = [name for name in cached if name in feat_cols]
+                if present:
+                    col_idx = np.array(
+                        [feat_cols.index(name) for name in present], dtype=int
+                    )
+                    self._fold_col_idx[key] = col_idx
+                    self._fold_feat_names[key] = present
+                    continue
+            pending.append(subj)
+
+        if pending:
+            logger.info(
+                f"Nested feature selection: RFECV on each LOSO train fold "
+                f"({len(pending)} remaining / {len(unique_subjects)} total, "
+                f"p={len(feat_cols)}), parallel across folds"
+            )
+            results = Parallel(n_jobs=-1, prefer="processes")(
+                delayed(self._fs_one_subject)(
+                    subj, X, y, groups, feat_cols, cache_dir
+                )
+                for subj in progress_bar(
+                    pending,
+                    desc="  Nested FS folds",
+                    leave=False,
+                    colour="yellow",
+                )
+            )
+            for result in results:
+                if result is None:
+                    continue
+                key, col_idx, selected = result
+                self._fold_col_idx[key] = col_idx
+                self._fold_feat_names[key] = selected
+        else:
+            logger.info(
+                "Nested FS: all {} folds loaded from disk cache (p={})",
+                len(unique_subjects),
+                len(feat_cols),
+            )
+
+        if not self._fold_feat_names:
+            logger.warning("Nested FS produced no fold masks — falling back to full matrix")
+            return
 
         logger.info(
             f"Nested FS complete — median features/fold: "
@@ -260,6 +350,10 @@ class Evaluator:
     # ------------------------------------------------------------------
 
     def run(self):
+        import joblib
+
+        from src.features.nested_fs_cache import build_nested_fs_fingerprint
+
         ensure_subject_split_manifest(self.config, self.metrics_dir)
         X, y, groups, feat_names, cohorts = self._load_data()
         self._feat_cols = feat_names
@@ -273,6 +367,31 @@ class Evaluator:
         ]
         all_results: dict[str, dict] = {}
         cohort_rows: list[dict] = []
+        resume_path = self.metrics_dir / "evaluate_model_resume.joblib"
+        resume_key = build_nested_fs_fingerprint(
+            self.config,
+            feat_names,
+            n_samples=int(X.shape[0]),
+            n_groups=int(len(np.unique(groups))),
+        )
+        if resume_path.exists():
+            try:
+                saved = joblib.load(resume_path)
+                if (
+                    isinstance(saved, dict)
+                    and saved.get("resume_key") == resume_key
+                    and isinstance(saved.get("results"), dict)
+                ):
+                    all_results = dict(saved["results"])
+                    self._fold_best_params = dict(saved.get("fold_best_params") or {})
+                    cohort_rows = list(saved.get("cohort_rows") or [])
+                    logger.info(
+                        "Evaluate resume: {}/{} models already complete",
+                        sum(1 for n in model_names if n in all_results),
+                        len(model_names),
+                    )
+            except Exception as exc:
+                logger.warning("Evaluate resume load failed (will recompute): {}", exc)
 
         for name in progress_bar(
             model_names,
@@ -280,11 +399,26 @@ class Evaluator:
             colour="red",
             bar_format=RED_BAR_FORMAT,
         ):
+            if name in all_results:
+                logger.info("Skipping model {} — resume cache hit", name)
+                continue
             result = self._nested_group_evaluate_model(name, X, y, groups, cohorts)
 
             all_results[name] = result
             cohort_rows.extend(self._cohort_metric_rows(name, result))
             self._log_model_metrics(name, result, binary_task)
+            try:
+                joblib.dump(
+                    {
+                        "resume_key": resume_key,
+                        "results": all_results,
+                        "fold_best_params": self._fold_best_params,
+                        "cohort_rows": cohort_rows,
+                    },
+                    resume_path,
+                )
+            except Exception as exc:
+                logger.warning("Evaluate resume save failed: {}", exc)
 
         ensemble_methods = resolve_ensemble_methods(self.config)
         if ensemble_methods:
@@ -1314,11 +1448,30 @@ class Evaluator:
         return deploy_results
 
     def _load_checkpoint(self, model_name: str):
+        """Load a model checkpoint, cached after the first successful read.
+
+        Perf fix: this is called from up to 4 separate sweeps (single-model
+        eval, deploy-schema fast eval, leakage comparison, SHAP) for the
+        same model within one `run()`. Without caching, each call re-reads
+        the pickle from disk and re-runs its SHA-256/HMAC integrity check on
+        identical bytes. Every caller already does `skbase.clone(checkpoint)`
+        before fitting, so returning the same cached object is safe — clone
+        happens downstream regardless of whether this method loads fresh or
+        returns a cached reference.
+
+        Negative results (checkpoint missing / failed verification) are
+        deliberately NOT cached, so a checkpoint written after `run()`
+        started (e.g. by a concurrently-finishing train stage) is still
+        picked up on the next call rather than being permanently "missing".
+        """
+        if model_name in self._checkpoint_cache:
+            return self._checkpoint_cache[model_name]
+
         path = self.ckpt_dir / f"{model_name}.pkl"
         if not path.exists():
             return None
         try:
-            return load_checkpoint(
+            checkpoint = load_checkpoint(
                 path,
                 manifest_dir=self.ckpt_dir,
                 require_manifest=False,
@@ -1326,6 +1479,8 @@ class Evaluator:
         except CheckpointIntegrityError as exc:
             logger.warning("Checkpoint verification failed for %s: %s", model_name, exc)
             return None
+        self._checkpoint_cache[model_name] = checkpoint
+        return checkpoint
 
     def _youden_threshold(self, y_true: np.ndarray, y_prob: np.ndarray) -> float:
         """Youden J threshold (max TPR − FPR) — must be fit on training data only at eval time."""
@@ -1728,6 +1883,56 @@ class Evaluator:
             aligned[:, master_idx] = matrix[:, col_idx]
         return aligned
 
+    def _shap_fit_and_explain_one_subject(
+        self,
+        subj,
+        name: str,
+        checkpoint: Any,
+        X: np.ndarray,
+        y: np.ndarray,
+        groups: np.ndarray,
+        feat_names: list[str],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]] | None:
+        """Fit this LOSO fold's model and compute SHAP on its FULL held-out
+        test set (not yet truncated to the n_shap_samples cap).
+
+        Returns ``(test_idx, X_proc, shap_raw, fold_feat_names)``, or None if
+        this fold is degenerate (train fold has < 2 classes) or SHAP failed.
+
+        Split out of ``_shap_loso_aggregate`` so it can run under
+        ``joblib.Parallel`` — each fold's fit+explain is independent.
+        Deliberately does NOT apply the ``n_shap_samples``
+        early-stopping/truncation here — that stays sequential in the
+        caller (see _shap_loso_aggregate) so the exact original
+        "stop as soon as N total OOF rows are collected, in
+        stratified-subject order" semantics are preserved bit-for-bit,
+        rather than approximated. The only difference from the original
+        sequential version is that a fold that would have been truncated
+        (or never reached, if an earlier fold's SHAP call failed) computes
+        SHAP on its full test set instead of a partial one — bounded,
+        deterministic extra work that never changes which samples end up
+        in the final aggregate.
+        """
+        import sklearn.base as skbase
+
+        test_idx = np.where(groups == subj)[0]
+        train_idx = np.where(groups != subj)[0]
+        if len(np.unique(y[train_idx])) < 2:
+            return None
+
+        fold_model = skbase.clone(checkpoint)
+        X_fold = self._X_for_fold(X, subj)
+        fold_feat_names = self._feat_names_for_fold(feat_names, subj)
+        self._fit_fold_model(name, fold_model, X_fold[train_idx], y[train_idx])
+
+        X_test = X_fold[test_idx]
+        X_proc = self._transform_for_shap(fold_model, X_test)
+        shap_raw = self._compute_shap_raw(name, fold_model, X_proc)
+        if shap_raw is None or shap_raw.size == 0:
+            return None
+
+        return test_idx, X_proc, shap_raw, fold_feat_names
+
     def _shap_loso_aggregate(
         self, name: str, X: np.ndarray, y: np.ndarray, groups: np.ndarray,
         feat_names: list[str], *, cohorts: np.ndarray | None = None,
@@ -1736,13 +1941,25 @@ class Evaluator:
         Compute SHAP on every LOSO held-out fold (refit per fold), concatenate
         all OOF explanations, and aggregate mean |SHAP| for global importance.
         Then produce per-cohort SHAP breakdowns.
+
+        Perf fix: the per-fold fit+SHAP-compute work (the expensive part) is
+        parallelized across CPU cores (see _shap_fit_and_explain_one_subject
+        and the Parallel(...) call below) — previously a sequential Python
+        for-loop, one fold at a time, one core. The early-stopping/truncation
+        logic ("stop once n_shap_samples total OOF rows are collected, in
+        stratified-subject order") stays sequential afterward, walking the
+        pre-computed per-fold results in the exact same order the original
+        loop would have — this preserves the exact original sample-count
+        semantics rather than approximating them (see the worker's
+        docstring for the one bounded, deterministic difference: a fold
+        near the cap computes SHAP on its full test set rather than a
+        pre-truncated partial one, which never changes the final aggregate,
+        only how many discarded extra rows get computed and thrown away).
         """
         checkpoint = self._load_checkpoint(name)
         if checkpoint is None:
             logger.warning(f"Skipping SHAP — checkpoint not found for {name}")
             return
-
-        import sklearn.base as skbase
 
         unique_subjects = np.unique(groups)
         exp_cfg = self.config["explainability"]
@@ -1761,39 +1978,39 @@ class Evaluator:
                 len(unique_subjects),
             )
 
+        raw_fold_results = Parallel(n_jobs=-1, prefer="processes")(
+            delayed(self._shap_fit_and_explain_one_subject)(
+                subj, name, checkpoint, X, y, groups, feat_names
+            )
+            for subj in progress_bar(
+                subject_order,
+                desc=f"  SHAP {name} LOSO",
+                leave=False,
+                colour="green",
+            )
+        )
+
         fold_shap_blocks: list[np.ndarray] = []
         fold_shap_raw_blocks: list[np.ndarray] = []
         fold_x_blocks: list[np.ndarray] = []
         fold_cohort_blocks: list[np.ndarray] = []
         n_explained = 0
 
-        for subj in progress_bar(
-            subject_order,
-            desc=f"  SHAP {name} LOSO",
-            leave=False,
-            colour="green",
-        ):
+        # Sequential aggregation over PRE-COMPUTED results, in the same
+        # subject_order the original loop iterated — reproduces the exact
+        # original stopping/truncation behavior (see method docstring).
+        for subj, result in zip(subject_order, raw_fold_results, strict=True):
             if n_explained >= max_oof:
                 break
-
-            test_idx = np.where(groups == subj)[0]
-            train_idx = np.where(groups != subj)[0]
-            if len(np.unique(y[train_idx])) < 2:
+            if result is None:
                 continue
 
-            fold_model = skbase.clone(checkpoint)
-            X_fold = self._X_for_fold(X, subj)
-            fold_feat_names = self._feat_names_for_fold(feat_names, subj)
-            self._fit_fold_model(name, fold_model, X_fold[train_idx], y[train_idx])
-
+            test_idx, X_proc_full, shap_raw_full, fold_feat_names = result
             remaining = max_oof - n_explained
             idx = test_idx[:remaining]
-            X_test = X_fold[idx]
-            X_proc = self._transform_for_shap(fold_model, X_test)
-
-            shap_raw = self._compute_shap_raw(name, fold_model, X_proc)
-            if shap_raw is None or shap_raw.size == 0:
-                continue
+            n_keep = len(idx)
+            X_proc = X_proc_full[:n_keep]
+            shap_raw = shap_raw_full[:n_keep]
 
             shap_mat = global_shap_matrix(shap_raw)
             if self._nested_fs_enabled():
@@ -2552,11 +2769,11 @@ class Evaluator:
         logger.info("Per-cohort metrics saved")
 
     def _save(self, fig, name):
-        for ext in [self.fmt, "png"]:
+        for ext in dict.fromkeys([self.fmt, "png"]):  # dedupe if fmt is already png
             fig.savefig(self.fig_models / f"{name}.{ext}", dpi=self.dpi)
         plt.close(fig)
 
     def _save_shap(self, fig, name):
-        for ext in [self.fmt, "png"]:
+        for ext in dict.fromkeys([self.fmt, "png"]):  # dedupe if fmt is already png
             fig.savefig(self.fig_shap / f"{name}.{ext}", dpi=self.dpi)
         plt.close(fig)

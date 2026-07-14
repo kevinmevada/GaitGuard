@@ -140,19 +140,53 @@ def nested_rfecv_column_indices(
     groups: np.ndarray,
     feat_cols: list[str],
     train_rows: np.ndarray,
+    *,
+    held_out_subject: str | None = None,
+    cache_dir: Path | None = None,
+    use_disk_cache: bool = True,
 ) -> list[int]:
     """
     RFECV on train rows only (ML-014). Returns column indices into ``feat_cols``.
 
-  ``train_rows`` may be a boolean mask (length ``n_samples``) or integer indices
+    ``train_rows`` may be a boolean mask (length ``n_samples``) or integer indices
     from ``sklearn`` ``split()`` (e.g. outer-CV train_idx).
+
+    When Nested FS disk caching is enabled (default) and the call is LOSO
+    (exactly one held-out subject), results are read/written under
+    ``paths.metrics/nested_fs_cache/<fingerprint>/`` so evaluate + ablation
+    share deterministic masks and crashed runs can resume.
     """
     from src.features.feature_selector import FeatureSelector
+    from src.features.nested_fs_cache import (
+        infer_held_out_subject,
+        load_fold_selected,
+        nested_fs_cache_dir,
+        save_fold_selected,
+    )
 
     train_rows = np.asarray(train_rows)
     fscfg = config.get("feature_selection", {})
     if not fscfg.get("enabled", False):
         return list(range(len(feat_cols)))
+
+    if held_out_subject is None:
+        held_out_subject = infer_held_out_subject(groups, train_rows)
+
+    resolved_cache: Path | None = None
+    if use_disk_cache and held_out_subject is not None:
+        resolved_cache = cache_dir
+        if resolved_cache is None:
+            resolved_cache = nested_fs_cache_dir(
+                config,
+                feat_cols,
+                n_samples=int(X.shape[0]),
+                n_groups=int(len(np.unique(groups))),
+            )
+        cached = load_fold_selected(resolved_cache, held_out_subject)
+        if cached is not None:
+            present = [name for name in cached if name in feat_cols]
+            if present:
+                return column_indices(feat_cols, present)
 
     fs = FeatureSelector(config)
     selected = fs.select_feature_names(
@@ -162,6 +196,15 @@ def nested_rfecv_column_indices(
         feat_cols,
         n_jobs=1,
     )
+    if use_disk_cache and held_out_subject is not None:
+        if resolved_cache is None:
+            resolved_cache = cache_dir or nested_fs_cache_dir(
+                config,
+                feat_cols,
+                n_samples=int(X.shape[0]),
+                n_groups=int(len(np.unique(groups))),
+            )
+        save_fold_selected(resolved_cache, held_out_subject, selected)
     return column_indices(feat_cols, selected)
 
 
@@ -173,12 +216,24 @@ def intersect_nested_rfecv_columns(
     feat_cols: list[str],
     train_mask: np.ndarray,
     scenario_indices: list[int],
+    *,
+    held_out_subject: str | None = None,
+    cache_dir: Path | None = None,
 ) -> list[int]:
     """Intersect scenario column indices with per-fold nested RFECV (ML-025)."""
     fscfg = config.get("feature_selection", {})
     if not fscfg.get("nested_in_ablation", True):
         return list(scenario_indices)
     nested_set = set(
-        nested_rfecv_column_indices(config, X, y, groups, feat_cols, train_mask)
+        nested_rfecv_column_indices(
+            config,
+            X,
+            y,
+            groups,
+            feat_cols,
+            train_mask,
+            held_out_subject=held_out_subject,
+            cache_dir=cache_dir,
+        )
     )
     return [idx for idx in scenario_indices if idx in nested_set]

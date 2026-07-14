@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import sklearn.base as skbase
+from joblib import Parallel, delayed
 from loguru import logger
 from sklearn.metrics import roc_auc_score
 
@@ -153,6 +154,51 @@ def _bootstrap_macro_auc_ci(
     )
 
 
+def _sensor_ablation_fold_one_subject(
+    subj,
+    X: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    checkpoint,
+    config: dict,
+    *,
+    feat_cols: list[str],
+    scenario_col_idx: list[int],
+    binary: bool,
+    model_name: str,
+) -> tuple[list[int], Any] | None:
+    """One LOSO fold for a sensor subset (process-parallel worker)."""
+    test_idx = np.where(groups == subj)[0]
+    train_idx = np.where(groups != subj)[0]
+    if len(np.unique(y[train_idx])) < 2:
+        return None
+
+    fold_cols = intersect_nested_rfecv_columns(
+        config,
+        X,
+        y,
+        groups,
+        feat_cols,
+        train_idx,
+        scenario_col_idx,
+        held_out_subject=str(subj),
+    )
+    if not fold_cols:
+        return None
+
+    trainer = ModelTrainer(config)
+    model = skbase.clone(checkpoint)
+    trainer.fit_pipeline(model_name, model, X[train_idx][:, fold_cols], y[train_idx])
+
+    if binary:
+        proba = model.predict_proba(X[test_idx][:, fold_cols])
+        score = proba[:, 1] if proba.shape[1] > 1 else proba.ravel()
+        return y[test_idx].tolist(), score.tolist()
+
+    proba, _ = predict_multiclass(model, X[test_idx][:, fold_cols])
+    return y[test_idx].tolist(), proba
+
+
 def _loso_evaluate_auc(
     X: np.ndarray,
     y: np.ndarray,
@@ -168,6 +214,9 @@ def _loso_evaluate_auc(
     """
     True leave-one-subject-out: one participant held out per fold, macro-OVR AUC
     on pooled out-of-fold predictions (same protocol as feature_ablation).
+
+    Folds run in parallel; Nested FS masks hit the shared disk cache when
+    evaluate (or a prior scenario) already computed them.
     """
     nan = {
         "auc": float("nan"),
@@ -179,35 +228,38 @@ def _loso_evaluate_auc(
         return nan
 
     binary = is_binary_task(y, config)
+    model_name = str(config.get("ablation", {}).get("reference_model", "xgboost"))
+    unique_subjects = np.unique(groups)
+
+    fold_results = Parallel(n_jobs=-1, prefer="processes")(
+        delayed(_sensor_ablation_fold_one_subject)(
+            subj,
+            X,
+            y,
+            groups,
+            checkpoint,
+            config,
+            feat_cols=feat_cols,
+            scenario_col_idx=scenario_col_idx,
+            binary=binary,
+            model_name=model_name,
+        )
+        for subj in progress_bar(
+            unique_subjects, desc="  sensor ablation LOSO", leave=False, unit="fold"
+        )
+    )
+
     all_true: list[int] = []
     all_probs: list[Any] = []
-    trainer = ModelTrainer(config)
-    model_name = str(config.get("ablation", {}).get("reference_model", "xgboost"))
-
-    for subj in np.unique(groups):
-        test_idx = np.where(groups == subj)[0]
-        train_idx = np.where(groups != subj)[0]
-        if len(np.unique(y[train_idx])) < 2:
+    for result in fold_results:
+        if result is None:
             continue
-
-        fold_cols = intersect_nested_rfecv_columns(
-            config, X, y, groups, feat_cols, train_idx, scenario_col_idx
-        )
-        if not fold_cols:
-            continue
-
-        model = skbase.clone(checkpoint)
-        trainer.fit_pipeline(model_name, model, X[train_idx][:, fold_cols], y[train_idx])
-
+        y_test, probs = result
+        all_true.extend(y_test)
         if binary:
-            proba = model.predict_proba(X[test_idx][:, fold_cols])
-            score = proba[:, 1] if proba.shape[1] > 1 else proba.ravel()
-            all_probs.extend(score.tolist())
+            all_probs.extend(probs)
         else:
-            proba, _ = predict_multiclass(model, X[test_idx][:, fold_cols])
-            all_probs.append(proba)
-
-        all_true.extend(y[test_idx].tolist())
+            all_probs.append(probs)
 
     y_true = np.asarray(all_true, dtype=int)
     if len(y_true) == 0 or len(np.unique(y_true)) < 2:
