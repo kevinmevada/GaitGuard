@@ -24,6 +24,23 @@ from src.utils.reproducibility import get_pipeline_seed
 
 _SAFE_SUBJ = re.compile(r"[^A-Za-z0-9._-]+")
 
+# Parallelism / orchestration only — must not invalidate RFECV fold caches.
+_FINGERPRINT_IGNORE_FS_KEYS = frozenset(
+    {
+        "nested_fs_n_jobs",
+        "nested_n_jobs",
+    }
+)
+
+
+def _fingerprint_feature_selection(fscfg: dict[str, Any] | None) -> dict[str, Any]:
+    """Return feature_selection subset that affects RFECV selected features."""
+    return {
+        key: value
+        for key, value in (fscfg or {}).items()
+        if key not in _FINGERPRINT_IGNORE_FS_KEYS
+    }
+
 
 def build_nested_fs_fingerprint(
     config: dict[str, Any],
@@ -35,13 +52,76 @@ def build_nested_fs_fingerprint(
     """Stable key for a Nested FS cache directory (config + feature schema)."""
     payload = {
         "seed": get_pipeline_seed(config),
-        "feature_selection": config.get("feature_selection") or {},
+        "feature_selection": _fingerprint_feature_selection(
+            config.get("feature_selection")
+        ),
         "feat_cols": list(feat_cols),
         "n_samples": int(n_samples),
         "n_groups": int(n_groups),
     }
     blob = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def _manifest_is_compatible(
+    manifest: dict[str, Any],
+    *,
+    seed: int,
+    feat_cols: list[str],
+    n_samples: int,
+    n_groups: int,
+    fscfg_fp: dict[str, Any],
+) -> bool:
+    if int(manifest.get("seed", -1)) != int(seed):
+        return False
+    if int(manifest.get("n_samples", -1)) != int(n_samples):
+        return False
+    if int(manifest.get("n_groups", -1)) != int(n_groups):
+        return False
+    if int(manifest.get("n_features", -1)) != len(feat_cols):
+        return False
+    legacy_fs = _fingerprint_feature_selection(manifest.get("feature_selection"))
+    return legacy_fs == fscfg_fp
+
+
+def _find_compatible_legacy_cache(
+    root: Path,
+    *,
+    seed: int,
+    feat_cols: list[str],
+    n_samples: int,
+    n_groups: int,
+    fscfg_fp: dict[str, Any],
+) -> Path | None:
+    """Reuse an older cache dir when only parallelism knobs differed in the hash."""
+    if not root.is_dir():
+        return None
+    best: Path | None = None
+    best_n = 0
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        manifest_path = child / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not _manifest_is_compatible(
+            manifest,
+            seed=seed,
+            feat_cols=feat_cols,
+            n_samples=n_samples,
+            n_groups=n_groups,
+            fscfg_fp=fscfg_fp,
+        ):
+            continue
+        n_folds = count_cached_folds(child)
+        if n_folds > best_n:
+            best = child
+            best_n = n_folds
+    return best if best_n > 0 else None
 
 
 def nested_fs_cache_dir(
@@ -53,11 +133,33 @@ def nested_fs_cache_dir(
 ) -> Path:
     """Return (and create) the cache directory for this Nested FS fingerprint."""
     metrics = Path(config["paths"]["metrics"])
+    root = metrics / "nested_fs_cache"
     fp = build_nested_fs_fingerprint(
         config, feat_cols, n_samples=n_samples, n_groups=n_groups
     )
-    cache_dir = metrics / "nested_fs_cache" / fp
+    cache_dir = root / fp
     cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Fingerprint once ignored nested_fs_n_jobs; keep folds from the old hash dir.
+    if count_cached_folds(cache_dir) == 0:
+        legacy = _find_compatible_legacy_cache(
+            root,
+            seed=int(get_pipeline_seed(config)),
+            feat_cols=feat_cols,
+            n_samples=int(n_samples),
+            n_groups=int(n_groups),
+            fscfg_fp=_fingerprint_feature_selection(config.get("feature_selection")),
+        )
+        if legacy is not None and legacy.resolve() != cache_dir.resolve():
+            logger.info(
+                "Nested FS cache: reusing compatible legacy dir {} ({} folds) "
+                "instead of empty {}",
+                legacy,
+                count_cached_folds(legacy),
+                cache_dir,
+            )
+            return legacy
+
     manifest = cache_dir / "manifest.json"
     if not manifest.exists():
         manifest.write_text(

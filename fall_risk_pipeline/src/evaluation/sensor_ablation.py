@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 import sklearn.base as skbase
 from joblib import Parallel, delayed
+from src.core.resources import parallel_n_jobs
 from loguru import logger
 from sklearn.metrics import roc_auc_score
 
@@ -231,7 +232,9 @@ def _loso_evaluate_auc(
     model_name = str(config.get("ablation", {}).get("reference_model", "xgboost"))
     unique_subjects = np.unique(groups)
 
-    fold_results = Parallel(n_jobs=-1, prefer="processes")(
+    n_jobs = parallel_n_jobs()
+
+    fold_results = Parallel(n_jobs=n_jobs, prefer="processes")(
         delayed(_sensor_ablation_fold_one_subject)(
             subj,
             X,

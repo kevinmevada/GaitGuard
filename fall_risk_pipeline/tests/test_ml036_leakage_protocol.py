@@ -19,6 +19,8 @@ def test_leakage_comparison_uses_nested_rfecv_on_ungrouped_folds():
     assert "X[train_idx][:, col_idx]" in source
     assert "_ungrouped_kfold_auc" in source
     assert "leakage_kfold_seed_repeats_by_model" in source or "_leakage_kfold_seed_repeats" in source
+    assert "load_leakage_resume" in source
+    assert "save_leakage_resume" in source
 
 
 def test_pipeline_config_averages_mlp_leakage_over_seeds():

@@ -83,7 +83,11 @@ def discover_oof_models(metrics_dir: Path, reference: str) -> list[str]:
 
 
 def binary_positive_score(y_proba: np.ndarray, *, binary: bool) -> np.ndarray:
-    """Map classifier probabilities to a single score for AUROC."""
+    """Map classifier probabilities to a single score for binary AUROC.
+
+    Binary classifiers use P(class=1). Multiclass uses P(non-healthy)=1-P(class=0),
+    matching the healthy-vs-rest endpoint used by BiLSTM-AE OOF exports.
+    """
     proba = np.asarray(y_proba, dtype=float)
     if proba.ndim == 1:
         return proba
@@ -91,6 +95,8 @@ def binary_positive_score(y_proba: np.ndarray, *, binary: bool) -> np.ndarray:
         return proba.ravel()
     if binary:
         return proba[:, 1] if proba.shape[1] > 1 else proba.ravel()
+    if proba.shape[1] > 2:
+        return 1.0 - proba[:, 0]
     return proba.max(axis=1)
 
 
@@ -103,10 +109,17 @@ def leave_one_participant_out_aurocs(
     Jackknife AUROC: for each participant *p*, AUROC on all trials except *p*.
 
     Yields paired vectors of length ≤ n_participants for Wilcoxon / CD ranks.
+
+    Multiclass ``y_true`` with a 1-D score is collapsed to healthy (0) vs
+    non-healthy (``y > 0``) so AUROC stays binary and comparable to BiLSTM-AE.
     """
     y = np.asarray(y_true, dtype=int)
     s = np.asarray(scores, dtype=float)
     pids = np.asarray(participant_ids, dtype=str)
+    if s.ndim > 1:
+        raise ValueError("leave_one_participant_out_aurocs expects 1-D scores")
+    if len(np.unique(y)) > 2:
+        y = (y > 0).astype(int)
 
     aucs: list[float] = []
     used: list[str] = []

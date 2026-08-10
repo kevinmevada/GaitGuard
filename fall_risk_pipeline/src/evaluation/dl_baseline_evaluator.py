@@ -217,10 +217,13 @@ def _export_dl_oof(
     from src.evaluation.loso_oof_scores import binary_positive_score, build_oof_export_frame, save_model_oof
 
     metrics_dir = Path(config["paths"]["metrics"])
-    y_bin = (np.asarray(y_true, dtype=int) > 0).astype(int)
-    if is_binary_task(y_true, config):
-        y_bin = np.asarray(y_true, dtype=int)
-    scores = binary_positive_score(y_proba, binary=is_binary_task(y_true, config))
+    y_arr = np.asarray(y_true, dtype=int)
+    if is_binary_task(y_arr, config):
+        y_bin = y_arr
+        scores = binary_positive_score(y_proba, binary=True)
+    else:
+        y_bin = (y_arr > 0).astype(int)
+        scores = binary_positive_score(y_proba, binary=False)
     frame = build_oof_export_frame(
         trial_ids,
         np.asarray(participant_ids, dtype=str),

@@ -369,6 +369,16 @@ feature_selection:
   # Global RFECV/compare_before_after parallelism (default: cpu_count - 1; not sklearn -1).
   # nested_n_jobs: 1 for per-LOSO-fold selection (avoid nested fork bombs).
   nested_n_jobs: 1
+  # Legacy field retained for nested_fs_cache fingerprint compatibility only.
+  # Runtime Parallel fan-out uses ResourceScheduler (baseline 14; see docs/resource_scheduler.md).
+  nested_fs_n_jobs: 14
+
+# Adaptive Parallel worker selection (src.core.resources.ResourceScheduler).
+resource_scheduler:
+  enabled: true
+  console_log: true
+  # Optional append-only audit log (null = console decisions only).
+  log_file: null
 
 # Models (tabular only)
 models:

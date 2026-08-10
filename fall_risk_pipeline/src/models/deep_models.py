@@ -42,8 +42,11 @@ from src.utils.torch_device import resolve_torch_device
 
 class GaitSequenceDataset(Dataset):
     def __init__(self, X: np.ndarray, y: np.ndarray, groups: Optional[np.ndarray] = None):
-        self.X = torch.tensor(X, dtype=torch.float32)
-        self.y = torch.tensor(y, dtype=torch.long)
+        # from_numpy avoids an extra host copy when arrays are already contiguous float32/int64.
+        x_np = np.ascontiguousarray(X, dtype=np.float32)
+        y_np = np.ascontiguousarray(y, dtype=np.int64)
+        self.X = torch.from_numpy(x_np)
+        self.y = torch.from_numpy(y_np)
         self.groups = groups
 
     def __len__(self):
@@ -608,6 +611,31 @@ class DeepModelTrainer:
             return torch.amp.autocast(device_type="cuda", dtype=self.amp_dtype)
         return nullcontext()
 
+    def _pin_memory(self) -> bool:
+        return self.device.type == "cuda"
+
+    def _to_device(self, tensor: torch.Tensor) -> torch.Tensor:
+        return tensor.to(self.device, non_blocking=self._pin_memory())
+
+    def _dataloader(
+        self,
+        dataset: Dataset,
+        *,
+        shuffle: bool,
+        generator: torch.Generator | None = None,
+        drop_last: bool = False,
+    ) -> DataLoader:
+        # num_workers stays 0: shuffle generator + Windows CUDA spawn stay deterministic.
+        return DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=shuffle,
+            generator=generator,
+            drop_last=drop_last,
+            pin_memory=self._pin_memory(),
+            num_workers=0,
+        )
+
     def train(
         self,
         model: nn.Module,
@@ -630,14 +658,13 @@ class DeepModelTrainer:
 
         train_generator = torch.Generator()
         train_generator.manual_seed(self.seed if shuffle_seed is None else int(shuffle_seed))
-        train_dl = DataLoader(
+        train_dl = self._dataloader(
             train_ds,
-            batch_size=self.batch_size,
             shuffle=True,
             generator=train_generator,
             drop_last=len(train_ds) > self.batch_size,
         )
-        val_dl = DataLoader(val_ds, batch_size=self.batch_size, shuffle=False)
+        val_dl = self._dataloader(val_ds, shuffle=False)
 
         n_classes = int(max(y_train.max(), y_val.max())) + 1
         if participant_ids_train is not None:
@@ -662,10 +689,12 @@ class DeepModelTrainer:
 
         for epoch in range(self.max_epochs):
             model.train()
-            running_loss = 0.0
+            # Accumulate on-device; one .item() sync per epoch (logging only).
+            running_loss = torch.zeros((), device=self.device, dtype=torch.float32)
             n_batches = 0
             for Xb, yb in train_dl:
-                Xb, yb = Xb.to(self.device), yb.to(self.device)
+                Xb = self._to_device(Xb)
+                yb = self._to_device(yb)
                 optimizer.zero_grad(set_to_none=True)
                 with self._autocast_context():
                     logits = model(Xb)
@@ -680,21 +709,21 @@ class DeepModelTrainer:
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                     optimizer.step()
-                running_loss += float(loss.item())
+                running_loss = running_loss + loss.detach().float()
                 n_batches += 1
 
             scheduler.step()
             val_auc = self._evaluate_auc(
                 model, val_dl, n_classes, participant_ids_val=participant_ids_val
             )
-            mean_loss = running_loss / max(n_batches, 1)
+            mean_loss = float(running_loss.item()) / max(n_batches, 1)
 
             if on_epoch is not None:
                 on_epoch(epoch + 1, mean_loss, val_auc, best_auc)
 
             if val_auc > best_auc:
                 best_auc = val_auc
-                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
                 patience_ctr = 0
             else:
                 patience_ctr += 1
@@ -709,13 +738,13 @@ class DeepModelTrainer:
         if len(X) == 0:
             return np.array([])
         model = model.to(self.device).eval()
-        ds = GaitSequenceDataset(X, np.zeros(len(X), dtype=int))
-        dl = DataLoader(ds, batch_size=self.batch_size)
+        ds = GaitSequenceDataset(X, np.zeros(len(X), dtype=np.int64))
+        dl = self._dataloader(ds, shuffle=False)
         probs = []
-        with torch.no_grad():
+        with torch.inference_mode():
             for Xb, _ in dl:
                 with self._autocast_context():
-                    logits = model(Xb.to(self.device))
+                    logits = model(self._to_device(Xb))
                 # Force FP32 before softmax export to avoid AMP underflow/rounding
                 # that can produce invalid probability rows for sklearn AUC checks.
                 prob = torch.softmax(logits.float(), dim=1).cpu().numpy().astype(np.float32)
@@ -734,10 +763,10 @@ class DeepModelTrainer:
         model.eval()
         all_y: list[int] = []
         all_prob: list[np.ndarray] = []
-        with torch.no_grad():
+        with torch.inference_mode():
             for Xb, yb in dl:
                 with self._autocast_context():
-                    logits = model(Xb.to(next(model.parameters()).device))
+                    logits = model(self._to_device(Xb))
                 prob = torch.softmax(logits, dim=1).cpu().numpy()
                 all_prob.append(prob)
                 all_y.extend(yb.numpy().tolist())

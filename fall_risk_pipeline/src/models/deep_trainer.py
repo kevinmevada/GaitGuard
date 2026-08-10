@@ -38,6 +38,14 @@ from src.models.deep_models import (
     independent_stride_window_indices,
     trial_to_tensor,
 )
+from src.models.dl_loso_resume import (
+    build_dl_loso_fingerprint,
+    count_cached_folds,
+    dl_loso_model_cache_dir,
+    load_dl_fold_result,
+    save_dl_fold_result,
+    write_cache_manifest,
+)
 from src.utils.progress import progress_bar, stderr_is_tty
 from src.utils.reproducibility import get_pipeline_seed, set_global_seed
 
@@ -420,7 +428,58 @@ class DeepLearningPipeline:
         oof_y_proba = []
         oof_pids = []
 
+        n_windows_total = int(
+            sum(len(participants[p]["windows"]) for p in pids)
+        )
+        fingerprint = build_dl_loso_fingerprint(
+            self.config,
+            model_name=model_name,
+            participant_ids=pids,
+            n_channels=n_channels,
+            n_windows_total=n_windows_total,
+        )
+        cache_dir = dl_loso_model_cache_dir(self.metrics_dir, fingerprint, model_name)
+        write_cache_manifest(cache_dir, fingerprint, model_name)
+        n_cached = count_cached_folds(cache_dir)
+        if n_cached:
+            logger.info(
+                "DL {} LOSO resume: {}/{} folds already on disk ({})",
+                model_name,
+                n_cached,
+                len(pids),
+                cache_dir,
+            )
+
         for fold_idx, test_pid in enumerate(pids):
+            cached = load_dl_fold_result(cache_dir, test_pid)
+            if cached is not None:
+                y_true_c = int(cached["y_true"])
+                proba_c = [float(x) for x in cached["y_proba"]]
+                lr_c = float(cached.get("learning_rate", base_lr))
+                oof_y_true.append(y_true_c)
+                oof_y_proba.append(np.asarray(proba_c, dtype=np.float64))
+                oof_pids.append(str(cached.get("participant_id", test_pid)))
+                fold_lrs.append(lr_c)
+                bar.set_postfix(
+                    model=model_name,
+                    fold=f"{fold_idx + 1}/{len(pids)}",
+                    pid=str(test_pid)[:12],
+                    epoch="cache",
+                    loss="-",
+                    val_auc="-",
+                    best="-",
+                )
+                bar.update(1)
+                if (fold_idx + 1) == 1 or (fold_idx + 1) % 25 == 0 or (fold_idx + 1) == len(pids):
+                    logger.info(
+                        "DL {} LOSO fold {}/{} ({}) — resume cache hit",
+                        model_name,
+                        fold_idx + 1,
+                        len(pids),
+                        test_pid,
+                    )
+                continue
+
             set_global_seed(self.seed + fold_idx, deterministic_torch=True)
 
             test_data = participants[test_pid]
@@ -477,9 +536,10 @@ class DeepLearningPipeline:
                 )
                 continue
 
-            # Fit normalization on inner-train only, then apply to val/test.
-            X_train_norm, X_test_norm = self._normalize(X_train_f_raw, X_test_raw)
-            _, X_val_norm = self._normalize(X_train_f_raw, X_val_raw)
+            # Fit normalization on inner-train only, then apply to val/test (one stats pass).
+            X_train_norm, X_val_norm, X_test_norm = self._normalize_fit_apply(
+                X_train_f_raw, X_val_raw, X_test_raw
+            )
 
             fold_label = f"{fold_idx + 1}/{len(pids)}"
             bar.set_postfix(
@@ -550,6 +610,15 @@ class DeepLearningPipeline:
             oof_y_proba.append(participant_proba)
             oof_pids.append(test_pid)
 
+            save_dl_fold_result(
+                cache_dir,
+                participant_id=str(test_pid),
+                fold_idx=fold_idx,
+                y_true=int(y_test_label),
+                y_proba=participant_proba.tolist(),
+                learning_rate=float(fold_lr),
+            )
+
             bar.update(1)
 
             del model, X_train_f_raw, X_val_raw, X_test_raw, X_train_norm, X_test_norm, X_val_norm
@@ -616,6 +685,16 @@ class DeepLearningPipeline:
         X_train: np.ndarray, X_apply: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
         """Per-channel z-normalization fitted on training windows, applied to X_apply."""
+        X_train_norm, X_apply_norm = DeepLearningPipeline._normalize_fit_apply(
+            X_train, X_apply
+        )
+        return X_train_norm, X_apply_norm
+
+    @staticmethod
+    def _normalize_fit_apply(
+        X_train: np.ndarray, *X_apply: np.ndarray
+    ) -> tuple[np.ndarray, ...]:
+        """Fit mean/std once on ``X_train``, apply to train and any additional arrays."""
         B, C, T = X_train.shape
         flat_train = X_train.transpose(1, 0, 2).reshape(C, -1)
         mean = flat_train.mean(axis=1, keepdims=True)
@@ -627,21 +706,20 @@ class DeepLearningPipeline:
             normed = ((flat - mean) / std).reshape(C, n, T).transpose(1, 0, 2)
             return normed.astype(np.float32)
 
-        X_train_norm = _apply(X_train)
-        X_apply_norm = _apply(X_apply)
+        outs = [_apply(X_train), *(_apply(x) for x in X_apply)]
 
-        train_flat = X_train_norm.transpose(1, 0, 2).reshape(C, -1)
+        train_flat = outs[0].transpose(1, 0, 2).reshape(C, -1)
         assert np.allclose(train_flat.mean(axis=1), 0.0, atol=1e-4), (
             "normalized train windows should have ~zero per-channel mean"
         )
         assert np.allclose(train_flat.std(axis=1), 1.0, atol=1e-4), (
             "normalized train windows should have ~unit per-channel std"
         )
-        assert X_apply_norm.shape == X_apply.shape, "normalization must preserve window shape"
-        assert np.isfinite(X_apply_norm).all(), "normalized apply array contains non-finite values"
+        for x_raw, x_norm in zip(X_apply, outs[1:], strict=True):
+            assert x_norm.shape == x_raw.shape, "normalization must preserve window shape"
+            assert np.isfinite(x_norm).all(), "normalized apply array contains non-finite values"
 
-        return X_train_norm, X_apply_norm
-
+        return tuple(outs)
     def _plot_gait_transformer_attention(self) -> None:
         """Save averaged temporal attention map from last LOSO fold GaitTransformer."""
         info = getattr(self, "_gait_transformer_attn", None)

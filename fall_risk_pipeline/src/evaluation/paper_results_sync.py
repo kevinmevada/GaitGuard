@@ -28,6 +28,20 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 PAPER_RESULTS_PATH = REPO_ROOT / "docs" / "paper" / "results.md"
 PAPER_ABSTRACT_PATH = REPO_ROOT / "docs" / "paper" / "abstract.md"
 
+
+def _row_f1(row: object) -> float:
+    """Macro-F1 from a Series / itertuples row (`macro_f1` or legacy `f1`)."""
+    for key in ("macro_f1", "f1"):
+        if isinstance(row, pd.Series):
+            if key in row.index and pd.notna(row[key]):
+                return float(row[key])
+        else:
+            val = getattr(row, key, None)
+            if val is not None and pd.notna(val):
+                return float(val)
+    return float("nan")
+
+
 MISSING_ARTIFACTS_STUB = """# Results
 
 > **Artifact status:** `fall_risk_pipeline/results/metrics/metrics.csv` was not found at generation time.
@@ -222,7 +236,7 @@ def _supervised_secondary_section(df: pd.DataFrame) -> str:
     for row in sort_df.itertuples(index=False):
         lines.append(
             f"| {row.model} | {float(row.auc):.4f} | {_fmt_ci(row)} | "
-            f"{float(row.f1):.4f} | {float(row.accuracy):.4f} |"
+            f"{_row_f1(row):.4f} | {float(row.accuracy):.4f} |"
         )
     best = sort_df.iloc[0]
     lines.extend([
@@ -252,8 +266,10 @@ def _deep_learning_section(metrics_dir: Path) -> str:
     for row in df.itertuples(index=False):
         auc = getattr(row, "auc", float("nan"))
         auc_str = f"{float(auc):.4f}" if pd.notna(auc) else "N/A"
+        f1 = _row_f1(row)
+        f1_str = f"{f1:.4f}" if pd.notna(f1) else "N/A"
         lines.append(
-            f"| {row.model} | {auc_str} | {float(row.f1):.4f} | {float(row.accuracy):.4f} |"
+            f"| {row.model} | {auc_str} | {f1_str} | {float(row.accuracy):.4f} |"
         )
     return "\n".join(lines) + "\n"
 

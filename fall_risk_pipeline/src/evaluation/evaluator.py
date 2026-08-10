@@ -73,6 +73,8 @@ import pandas as pd
 import shap
 from joblib import Parallel, delayed
 from loguru import logger
+
+from src.core.resources import parallel_n_jobs
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
@@ -104,6 +106,14 @@ from src.evaluation.clinical_threshold import (
     youden_threshold,
 )
 from src.evaluation.classification_significance import pairwise_classification_significance
+from src.evaluation.leakage_resume import (
+    build_leakage_resume_key,
+    completed_model_names,
+    get_cached_seed_auc,
+    load_leakage_resume,
+    save_leakage_resume,
+    set_cached_seed_auc,
+)
 from src.evaluation.metrics_ci import subject_bootstrap_binary_auc_ci
 from src.evaluation.multiclass_metrics import (
     build_multiclass_metric_payload,
@@ -197,6 +207,10 @@ class Evaluator:
     def _nested_fs_enabled(self) -> bool:
         fscfg = self.config.get("feature_selection", {})
         return bool(fscfg.get("enabled", False) and fscfg.get("nested_in_evaluation", True))
+
+    def _nested_fs_parallel_jobs(self) -> int:
+        """Process count for Nested FS Parallel via ResourceScheduler."""
+        return parallel_n_jobs()
 
     def _fs_one_subject(
         self,
@@ -294,28 +308,53 @@ class Evaluator:
             pending.append(subj)
 
         if pending:
+            n_jobs = self._nested_fs_parallel_jobs()
+            n_done_disk = len(unique_subjects) - len(pending)
             logger.info(
                 f"Nested feature selection: RFECV on each LOSO train fold "
                 f"({len(pending)} remaining / {len(unique_subjects)} total, "
-                f"p={len(feat_cols)}), parallel across folds"
+                f"p={len(feat_cols)}), parallel across folds (n_jobs={n_jobs})"
             )
-            results = Parallel(n_jobs=-1, prefer="processes")(
-                delayed(self._fs_one_subject)(
-                    subj, X, y, groups, feat_cols, cache_dir
-                )
-                for subj in progress_bar(
-                    pending,
-                    desc="  Nested FS folds",
-                    leave=False,
-                    colour="yellow",
-                )
+            # Advance the bar on fold *completion* (not job submit). joblib
+            # 1.3+ return_as='generator' yields results as workers finish.
+            completed = 0
+            pbar = progress_bar(
+                total=len(pending),
+                desc="  Nested FS folds",
+                leave=True,
+                colour="yellow",
+                unit="fold",
+                initial=0,
             )
-            for result in results:
-                if result is None:
-                    continue
-                key, col_idx, selected = result
-                self._fold_col_idx[key] = col_idx
-                self._fold_feat_names[key] = selected
+            try:
+                result_iter = Parallel(
+                    n_jobs=n_jobs, prefer="processes", return_as="generator"
+                )(
+                    delayed(self._fs_one_subject)(
+                        subj, X, y, groups, feat_cols, cache_dir
+                    )
+                    for subj in pending
+                )
+                for result in result_iter:
+                    pbar.update(1)
+                    completed += 1
+                    if result is None:
+                        continue
+                    key, col_idx, selected = result
+                    self._fold_col_idx[key] = col_idx
+                    self._fold_feat_names[key] = selected
+                    # Loguru line so file-watchers see progress without a TTY.
+                    if completed == 1 or completed % max(1, min(8, n_jobs)) == 0 or completed == len(pending):
+                        logger.info(
+                            "Nested FS progress: {}/{} remaining folds done "
+                            "({}/{} total including cache)",
+                            completed,
+                            len(pending),
+                            n_done_disk + completed,
+                            len(unique_subjects),
+                        )
+            finally:
+                pbar.close()
         else:
             logger.info(
                 "Nested FS: all {} folds loaded from disk cache (p={})",
@@ -549,7 +588,9 @@ class Evaluator:
         unique_subjects = np.unique(groups)
         binary_task = is_binary_task(y, self.config)
 
-        fold_results = Parallel(n_jobs=-1, prefer="processes")(
+        n_jobs = parallel_n_jobs()
+
+        fold_results = Parallel(n_jobs=n_jobs, prefer="processes")(
             delayed(self._fast_evaluate_one_subject)(
                 subj, name, checkpoint, X, y, groups, cohorts, apply_nested_fs=apply_nested_fs
             )
@@ -764,7 +805,9 @@ class Evaluator:
         binary_task = is_binary_task(y, self.config)
         unique_subjects = np.unique(groups)
 
-        fold_results = Parallel(n_jobs=-1, prefer="processes")(
+        n_jobs = parallel_n_jobs()
+
+        fold_results = Parallel(n_jobs=n_jobs, prefer="processes")(
             delayed(self._fast_evaluate_ensembles_one_subject)(
                 subj, X, y, groups, cohorts, checkpoints, methods,
                 apply_nested_fs=apply_nested_fs, top_k=top_k, cv_folds=cv_folds,
@@ -866,7 +909,9 @@ class Evaluator:
         """Parallelized nested LOSO-CV with per-fold Optuna retuning."""
         unique_subjects = np.unique(groups)
 
-        fold_results = Parallel(n_jobs=-1, prefer="processes")(
+        n_jobs = parallel_n_jobs()
+
+        fold_results = Parallel(n_jobs=n_jobs, prefer="processes")(
             delayed(self._evaluate_one_subject)(subj, name, X, y, groups, cohorts)
             for subj in progress_bar(
                 unique_subjects,
@@ -1053,7 +1098,9 @@ class Evaluator:
             for k in keys
         }
 
-        fold_results = Parallel(n_jobs=-1, prefer="processes")(
+        n_jobs = parallel_n_jobs()
+
+        fold_results = Parallel(n_jobs=n_jobs, prefer="processes")(
             delayed(self._evaluate_ensemble_one_subject)(
                 subj, model_names, X, y, groups, cohorts, methods
             )
@@ -1395,9 +1442,10 @@ class Evaluator:
             )
             return {}
 
-        X, y, groups, feat_names, cohorts = load_patient_feature_matrix(
+        X, y, groups, feat_names, df = load_patient_feature_matrix(
             self.config, use_selected=True
         )
+        cohorts = df["cohort"].astype(str).values
         deploy_results: dict[str, dict] = {}
         model_names = [
             name
@@ -1883,6 +1931,26 @@ class Evaluator:
             aligned[:, master_idx] = matrix[:, col_idx]
         return aligned
 
+    def _align_shap_raw_to_features(
+        self,
+        shap_raw: np.ndarray,
+        fold_feat_names: list[str],
+        master_feat_names: list[str],
+    ) -> np.ndarray:
+        """Align raw SHAP values (2D binary or 3D multiclass) to the full schema."""
+        if shap_raw.ndim == 2:
+            return self._align_matrix_to_features(
+                shap_raw, fold_feat_names, master_feat_names
+            )
+        aligned = np.zeros(
+            (shap_raw.shape[0], len(master_feat_names), shap_raw.shape[2]),
+            dtype=shap_raw.dtype,
+        )
+        for col_idx, name in enumerate(fold_feat_names):
+            master_idx = master_feat_names.index(name)
+            aligned[:, master_idx, :] = shap_raw[:, col_idx, :]
+        return aligned
+
     def _shap_fit_and_explain_one_subject(
         self,
         subj,
@@ -1978,7 +2046,9 @@ class Evaluator:
                 len(unique_subjects),
             )
 
-        raw_fold_results = Parallel(n_jobs=-1, prefer="processes")(
+        n_jobs = parallel_n_jobs()
+
+        raw_fold_results = Parallel(n_jobs=n_jobs, prefer="processes")(
             delayed(self._shap_fit_and_explain_one_subject)(
                 subj, name, checkpoint, X, y, groups, feat_names
             )
@@ -2019,6 +2089,9 @@ class Evaluator:
                 )
                 X_proc = self._align_matrix_to_features(
                     X_proc, fold_feat_names, feat_names
+                )
+                shap_raw = self._align_shap_raw_to_features(
+                    shap_raw, fold_feat_names, feat_names
                 )
 
             fold_shap_raw_blocks.append(shap_raw)
@@ -2363,7 +2436,9 @@ class Evaluator:
         skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
         splits = list(skf.split(X, y))
 
-        fold_results = Parallel(n_jobs=-1, prefer="processes")(
+        n_jobs = parallel_n_jobs()
+
+        fold_results = Parallel(n_jobs=n_jobs, prefer="processes")(
             delayed(self._ungrouped_kfold_one_fold)(
                 name, checkpoint, X, y, groups, train_idx, test_idx,
                 seed=seed, binary_task=binary_task, nested_fs=nested_fs, feat_cols=feat_cols,
@@ -2413,17 +2488,39 @@ class Evaluator:
         binary_task = is_binary_task(y, self.config)
         nested_fs = self._nested_fs_enabled()
         feat_cols = self._feat_cols
+        n_participants = int(len(np.unique(groups)))
         grouped_feature_protocol = (
             PROTOCOL_NESTED_RFECV if nested_fs else "full_feature_matrix"
         )
         ungrouped_feature_protocol = (
             "nested_rfecv_per_kfold_train_fold" if nested_fs else "full_feature_matrix"
         )
-        rows = []
+
+        resume_key = build_leakage_resume_key(
+            self.config,
+            feat_cols,
+            n_samples=int(X.shape[0]),
+            n_groups=n_participants,
+        )
+        cached = load_leakage_resume(self.metrics_dir, resume_key)
+        seed_aucs: dict[str, dict[str, float]] = dict(cached["seed_aucs"])
+        rows: list[dict] = list(cached["rows"])
+        done_models = completed_model_names(rows)
+        if done_models:
+            logger.info(
+                "Leakage resume: {}/{} models already complete ({})",
+                len(done_models),
+                len([n for n in grouped_results if not n.startswith("ensemble_")]),
+                ", ".join(sorted(done_models)),
+            )
 
         model_names = [n for n in grouped_results if not n.startswith("ensemble_")]
 
         for name in model_names:
+            if name in done_models:
+                logger.info("Skipping leakage model {} — resume cache hit", name)
+                continue
+
             checkpoint = self._load_checkpoint(name)
             if checkpoint is None:
                 continue
@@ -2431,6 +2528,18 @@ class Evaluator:
             n_repeats = self._leakage_kfold_seed_repeats(name)
             repeat_aucs: list[float] = []
             for rep in range(n_repeats):
+                cached_auc = get_cached_seed_auc(seed_aucs, name, rep)
+                if cached_auc is not None:
+                    logger.info(
+                        "Leakage {} seed {}/{} — resume cache hit (AUC={:.4f})",
+                        name,
+                        rep + 1,
+                        n_repeats,
+                        cached_auc,
+                    )
+                    repeat_aucs.append(cached_auc)
+                    continue
+
                 auc = self._ungrouped_kfold_auc(
                     name,
                     checkpoint,
@@ -2445,6 +2554,20 @@ class Evaluator:
                 )
                 if auc is not None:
                     repeat_aucs.append(auc)
+                    set_cached_seed_auc(seed_aucs, name, rep, auc)
+                    save_leakage_resume(
+                        self.metrics_dir,
+                        resume_key,
+                        seed_aucs=seed_aucs,
+                        rows=rows,
+                    )
+                    logger.info(
+                        "Leakage {} seed {}/{} done (AUC={:.4f}) — checkpoint saved",
+                        name,
+                        rep + 1,
+                        n_repeats,
+                        auc,
+                    )
 
             if not repeat_aucs:
                 continue
@@ -2456,7 +2579,7 @@ class Evaluator:
             grouped_auc = float(grouped_results[name]["auc"])
             inflation = ungrouped_auc - grouped_auc
 
-            rows.append({
+            row = {
                 "model": name,
                 "auc_grouped_loso": grouped_auc,
                 "auc_ungrouped_kfold": ungrouped_auc,
@@ -2469,8 +2592,20 @@ class Evaluator:
                 "grouped_feature_protocol": grouped_feature_protocol,
                 "ungrouped_feature_protocol": ungrouped_feature_protocol,
                 "protocol_matched": True,
-                "n_participants": len(np.unique(groups)),
-            })
+                "n_participants": n_participants,
+            }
+            rows.append(row)
+            done_models.add(name)
+            save_leakage_resume(
+                self.metrics_dir,
+                resume_key,
+                seed_aucs=seed_aucs,
+                rows=rows,
+            )
+            # Progressive CSV so partial results survive even if final write is skipped.
+            pd.DataFrame(rows).to_csv(
+                self.metrics_dir / "leakage_comparison_partial.csv", index=False
+            )
             repeat_note = (
                 f" mean±std over {n_repeats} KFold seeds"
                 if n_repeats > 1

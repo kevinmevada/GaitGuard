@@ -63,6 +63,21 @@ def test_leave_one_participant_out_aurocs_paired():
     assert len(aligned["a"]) == len(aligned["b"]) == len(common)
 
 
+def test_leave_one_participant_out_aurocs_multiclass_collapses_to_binary():
+    sys.path.insert(0, str(PIPELINE_ROOT))
+    from src.evaluation.loso_oof_scores import leave_one_participant_out_aurocs
+
+    rng = np.random.default_rng(3)
+    n = 48
+    # Multiclass tiers 0/1/2 with a 1-D ranking score (as in classical OOF CSVs).
+    y = np.array([0] * 16 + [1] * 16 + [2] * 16)
+    pids = np.array([f"p{i // 4}" for i in range(n)])
+    scores = rng.normal((y > 0).astype(float) * 0.6, 0.2)
+    aucs, used = leave_one_participant_out_aurocs(y, scores, pids)
+    assert len(aucs) == len(used) >= 3
+    assert np.all(np.isfinite(aucs))
+
+
 def test_holm_wilcoxon_vs_reference():
     sys.path.insert(0, str(PIPELINE_ROOT))
     from src.evaluation.critical_difference import holm_correction, wilcoxon_vs_reference

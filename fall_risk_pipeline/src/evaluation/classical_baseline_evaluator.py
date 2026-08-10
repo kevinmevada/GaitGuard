@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import optuna
 from joblib import Parallel, delayed
+from src.core.resources import parallel_n_jobs
 from loguru import logger
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
@@ -287,7 +288,9 @@ def _pool_oof_predictions(
     splits = list(logo.split(X, y, groups))
     binary = is_binary_task(y, config)
 
-    fold_results = Parallel(n_jobs=-1, prefer="processes")(
+    n_jobs = parallel_n_jobs()
+
+    fold_results = Parallel(n_jobs=n_jobs, prefer="processes")(
         delayed(_classical_fold_one)(
             train_idx,
             test_idx,
@@ -356,11 +359,14 @@ def _export_classical_oof(
     if len(y_true) == 0:
         return
     sub = meta_df.iloc[trial_indices].reset_index(drop=True)
+    # Statistical benchmark compares binary AUROC vs BiLSTM-AE (healthy vs rest).
     if "risk_label" in sub.columns:
-        y_bin = sub["risk_label"].astype(int).values
+        y_raw = sub["risk_label"].astype(int).values
     else:
-        y_bin = (np.asarray(y_true, dtype=int) > 0).astype(int)
-    scores = binary_positive_score(y_proba, binary=True)
+        y_raw = np.asarray(y_true, dtype=int)
+    y_bin = (y_raw > 0).astype(int)
+    n_cols = int(np.asarray(y_proba).shape[1]) if np.ndim(y_proba) == 2 else 1
+    scores = binary_positive_score(y_proba, binary=n_cols <= 2)
     trial_ids = (
         sub["trial_id"].astype(str).values
         if "trial_id" in sub.columns

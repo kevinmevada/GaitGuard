@@ -24,14 +24,20 @@ Falls affect approximately one in three community-dwelling adults aged ≥65 yea
 
 ## Metrics fill-in
 
-_Artifacts not yet regenerated — run `python scripts/regenerate_paper_results.py` after `python main.py`._
+_Auto-updated from pipeline artifacts — do not edit manually._
 
 | Metric | Value |
 |--------|-------|
-| Primary anomaly ensemble ROC-AUC (LOSO OOF) | _pending pipeline rerun_ |
-| Primary anomaly ensemble PR-AUC | _pending_ |
-| Secondary deployable ensemble macro OvR AUC | _pending pipeline rerun_ |
-| Best supervised single-model LOSO macro OvR AUC | _pending pipeline rerun_ |
+| Primary BiLSTM-AE MCC (LOSO OOF) | 0.1014 |
+| Primary BiLSTM-AE AUROC (LOSO OOF) | 0.6238 |
+| Primary BiLSTM-AE F1 weighted | 0.4127 |
+| Primary BiLSTM-AE Cohen κ | 0.0619 |
+| Primary BiLSTM-AE PR-AUC | 0.8053 |
+| Secondary deployable ensemble macro OvR AUC | 0.8404 (ensemble_soft_voting) |
+| Best supervised single-model LOSO macro OvR AUC | 0.8415 (xgboost) |
+| MCC abstract-lead threshold | 0.70 |
+
+_Headline: report **AUROC** as threshold-independent headline; cite **MCC** and Cohen κ for rigor._
 
 Regenerate after each pipeline run:
 
@@ -40,20 +46,3 @@ cd fall_risk_pipeline && python main.py
 python ../scripts/regenerate_paper_results.py
 ```
 
-Optional binary sensitivity (`label_mode: binary`, `binary_strategy: threshold_ge_1`): report only as a **sensitivity analysis** — merges orthopedic and neurological tiers; primary binary rule is `threshold_ge_2` (neurological-only high risk).
-
----
-
-## Full paper outline (*Sensors* — quantified sections to draft next)
-
-| Section | Content to quantify |
-|---------|---------------------|
-| **Introduction / background** | Fall epidemiology; IMU gait in aging and neuro/orthopedic disease; cite dataset (Figshare 10.6084/m9.figshare.28806086). |
-| **Gap** | Subject leakage, trial vs patient features, label heterogeneity, lack of open reproducible LOSO benchmarks on this cohort. |
-| **Methods** | N = 260, 1,356 trials, 8 cohorts, 4 IMUs, 100 Hz; preprocessing (Madgwick, gait events); temporal/spectral/wavelet/trunk/orientation/asymmetry features; RFECV cap ≤20; nested LOSO tabular eval; per-fold DL LR Optuna (`loso_hyperparameter_tuning.enabled`); ensemble top-k soft voting; macro-OVR AUC, macro F1, per-class metrics; **Youden J** on train folds (binary); multiclass paired comparisons via bootstrap macro-OVR deltas + BH-FDR (DeLong binary-only). |
-| **Results** | Table 1 demographics; primary LOSO AUC from `docs/paper/results.md` (auto-generated); calibration; SHAP top features; **feature ablation** (LOSO); anomaly vote rates by cohort; gait-event validation error (ms). |
-| **Discussion / conclusion** | Screening vs diagnosis; single-trial API limitation; **limitations** (research prototype, no clinical decision support). |
-| **Limitations** | **Retrospective**, **single dataset**, **no prospective follow-up**, **no ground-truth fall outcomes** (cohort labels only); internal LOSO only; path to prospective validation — `docs/limitations.md`, `docs/paper/limitations.md`. |
-| **Ethics** | Public de-identified Figshare data; CPP Île-de-France II (2014-10-04 RNI); no new human data — see `docs/paper/ethics_statement.md`. |
-
-See also: `docs/label_binning.md`, `docs/inference_single_trial_limitation.md`, `docs/ethics.md`, `fall_risk_pipeline/docs/reproducibility.md`.

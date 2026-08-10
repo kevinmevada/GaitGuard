@@ -42,6 +42,7 @@ joblib>=1.3.0
 loguru>=0.7.0
 rich>=13.0.0
 huggingface_hub>=0.20.0
+psutil>=5.9.0          # ResourceScheduler (RAM/CPU monitor)
 
 # API / deployment (consolidated from api/requirements.txt)
 fastapi>=0.104.0

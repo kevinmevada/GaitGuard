@@ -37,6 +37,7 @@ import pandas as pd
 import shap
 import sklearn.base as skbase
 from joblib import Parallel, delayed
+from src.core.resources import parallel_n_jobs
 from loguru import logger
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedGroupKFold
@@ -360,7 +361,9 @@ class FeatureAblationStudy:
         all_col_idx = list(range(len(feat_names)))
         unique_subjects = np.unique(groups)
 
-        fold_results = Parallel(n_jobs=-1, prefer="processes")(
+        n_jobs = parallel_n_jobs()
+
+        fold_results = Parallel(n_jobs=n_jobs, prefer="processes")(
             delayed(self._shap_fold_one_subject)(
                 subj, checkpoint, X, y, groups, feat_names, all_col_idx
             )
@@ -473,7 +476,9 @@ class FeatureAblationStudy:
 
         binary_task = is_binary_task(y, self.config)
 
-        fold_results = Parallel(n_jobs=-1, prefer="processes")(
+        n_jobs = parallel_n_jobs()
+
+        fold_results = Parallel(n_jobs=n_jobs, prefer="processes")(
             delayed(self._ablation_fold_one_subject)(
                 subj,
                 checkpoint,
