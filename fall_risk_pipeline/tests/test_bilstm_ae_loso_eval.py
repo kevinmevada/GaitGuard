@@ -1,4 +1,4 @@
-"""Tests for BiLSTM-AE 3-method LOSO primary endpoint."""
+"""Tests for BiLSTM-AE 2-method ensemble primary endpoint."""
 
 from __future__ import annotations
 

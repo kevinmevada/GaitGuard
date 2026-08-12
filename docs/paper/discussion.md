@@ -26,6 +26,27 @@ Leave-one-cohort-out (LOCO) transfer results highlight translational limits: hel
 
 The grouped LOSO vs StratifiedKFold comparison (`split_protocol_comparison.csv`) estimates how much performance changes when the validation split is easier (more training subjects per fold), not duplicate-subject leakage at the participant matrix. After regeneration, report mean and maximum inflation from that table; do not cite historical percentages from prior manuscript drafts.
 
+### In-domain vs. zero-shot fusion behavior
+
+Under strict LOSO on Voisard, the source-locked 2-method ensemble (Isolation Forest + One-Class SVM on
+BiLSTM-AE latents, rank-averaged) slightly exceeds Isolation Forest alone (AUC 0.7545 vs. 0.7540; +0.0005) and substantially exceeds AE reconstruction error (0.4790). The ensemble is reported as the protocol primary endpoint but is empirically IF-dominated; OCSVM contributes negligible in-domain signal. Under zero-shot
+transfer to DAPHNET, applying the identical percentile-rank-averaging *procedure* independently on
+DAPHNET's pooled window scores (no DAPHNET-side tuning; ranks relative to DAPHNET's own 15,916-window
+pool, not a shared frozen Voisard reference), this ordering reverses: reconstruction
+error attains the higher point estimate (AUC 0.7046 vs. 0.5314 for the ensemble and 0.5884 for IF), though the
+95% confidence intervals overlap. We deliberately did not retune fusion weights on DAPHNET, since
+doing so would use target-domain performance to select the model — precisely the leakage a
+zero-shot evaluation is designed to exclude. Fusion membership itself was source-locked from Voisard OOF diagnostics (not pre-registered before those diagnostics). The two ensembles therefore share membership and the rank-average formula, but not a strictly identical numeric scale. We report the reversal as-is.
+
+One plausible explanation is that the latent-space one-class boundaries (IF, OCSVM) are fit to
+the shape of Voisard's healthy latent distribution — a function of its sensor layout, population,
+and acquisition protocol — and that boundary does not transfer cleanly to DAPHNET's zero-padded,
+single-sensor input and different patient population. Reconstruction error, by contrast, is a
+coarser, more distribution-agnostic signal ("does this resemble normal gait at all") and appears
+to degrade more gracefully under this domain shift. We present this as a plausible mechanism,
+not a demonstrated one; disentangling it from the identifiability limitation below would require
+FOG-positive data from more than one subject.
+
 ## 6. Reproducibility and reporting contribution
 
 A practical contribution is the explicit reproducibility pathway: stage-structured execution, YAML configuration, deterministic seeding (`PYTHONHASHSEED=42` before Python start), lockfile-pinned CI installs, and containerized reruns. For clinical-ML literature, these engineering details affect trust and independent verification.

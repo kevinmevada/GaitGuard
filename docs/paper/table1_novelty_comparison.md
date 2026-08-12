@@ -18,11 +18,11 @@ Comparison of **evaluation rigor** features across wearable gait competitors ben
 
 - **First strict LOSO on full 8-cohort Voisard.** No prior wearable gait paper evaluates all eight Voisard pathology cohorts (Healthy, HipOA, KneeOA, ACL, PD, CVA, CIPN, RIL) under leave-one-subject-out holdout.
 - **First 2-method one-class ensemble under LOSO.** Isolation Forest on latent activations + one-class SVM boundary distance (rank-averaged), trained on healthy gait only per fold. AE reconstruction is reported standalone as an ablation baseline and is excluded from the combined ensemble.
-- **First zero-shot cross-dataset FOG transfer in this comparator set.** Sealed DAPHNET freezing-of-gait evaluation with asymmetric sensing: four-sensor Voisard training → single lower-back sensor at test time (zero-padded layout), which is strictly harder than matched-sensor transfer.
+- **First zero-shot cross-dataset FOG *protocol* in this comparator set.** Sealed DAPHNET freezing-of-gait evaluation with asymmetric sensing: four-sensor Voisard training → single lower-back sensor at test time (zero-padded layout), no target-domain weight tuning. Numeric transfer is a single-positive-subject case study (all FOG+ = S03), not established FOG generalization.
 
 ## Footnotes
 
 - **Strict LOSO:** leave-one-participant-out; no trial from the held-out subject appears in training.
 - **2-method one-class ensemble:** Isolation Forest (latent) + one-class SVM (latent), rank-averaged; pathological gait never used for manifold fitting. AE reconstruction is an ablation-only baseline (below-chance, Spearman ~0.41–0.43 vs the latent detectors) and is not fused into the primary ensemble.
-- **Cross-dataset eval:** train on Voisard, evaluate on an external dataset without target-domain retraining (DAPHNET FOG).
+- **Cross-dataset eval:** train on Voisard, evaluate on an external dataset without target-domain retraining (DAPHNET FOG). **Protocol ✓; FOG generalization not established (all positives = S03).**
 - Competitor flags reflect **published protocols** for the cited benchmark papers, not re-runs on Voisard.

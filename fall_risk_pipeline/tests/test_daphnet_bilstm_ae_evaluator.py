@@ -11,6 +11,7 @@ output schema contract (including the ISSUE-45 CI fields) via a stub.
 
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,7 +24,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PIPELINE_ROOT = REPO_ROOT / "fall_risk_pipeline"
 sys.path.insert(0, str(PIPELINE_ROOT))
 
-from src.evaluation.daphnet_bilstm_ae_evaluator import _daphnet_lb_windows  # noqa: E402
+from src.evaluation.daphnet_bilstm_ae_evaluator import (  # noqa: E402
+    DAPHNET_FUSION_OPERATOR,
+    _daphnet_lb_windows,
+    evaluate_daphnet_lb_scores,
+    rank_average_if_ocsvm,
+    run_daphnet_bilstm_ae_fog_eval,
+)
 from src.models.bilstm_ae_scoring import lb_slice_from_slices  # noqa: E402
 from src.models.bilstm_autoencoder import SensorChannelSlice  # noqa: E402
 
@@ -90,3 +97,28 @@ def test_lb_slice_from_slices_finds_lower_back():
 def test_lb_slice_from_slices_returns_none_when_absent():
     slices = [SensorChannelSlice("head", 0, 3)]
     assert lb_slice_from_slices(slices) is None
+
+
+def test_rank_average_if_ocsvm_matches_percentile_formula():
+    if_s = np.array([1.0, 3.0, 2.0, 4.0])
+    svm_s = np.array([10.0, 40.0, 20.0, 30.0])
+    out = rank_average_if_ocsvm(if_s, svm_s)
+    expected = 0.5 * (
+        pd.Series(if_s).rank(pct=True).to_numpy()
+        + pd.Series(svm_s).rank(pct=True).to_numpy()
+    )
+    np.testing.assert_allclose(out, expected)
+
+
+def test_daphnet_eval_paths_share_pooled_rank_average_fusion():
+    """Both DAPHNET entry points must use the paper fusion, not min-max-vs-ref."""
+    import src.evaluation.daphnet_bilstm_ae_evaluator as ev
+
+    assert DAPHNET_FUSION_OPERATOR == "pooled_percentile_rank_average"
+    assert "combine_ensemble_scores" not in vars(ev)
+    eval_src = inspect.getsource(evaluate_daphnet_lb_scores)
+    run_src = inspect.getsource(run_daphnet_bilstm_ae_fog_eval)
+    assert "rank_average_if_ocsvm(" in eval_src
+    assert "rank_average_if_ocsvm(" in run_src
+    assert "fusion_operator" in run_src
+    assert "DAPHNET_FUSION_OPERATOR" in run_src

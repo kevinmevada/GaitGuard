@@ -160,7 +160,7 @@ def write_bilstm_ae_primary_artifacts(
     metrics_dir: Path,
     registry: dict[str, Any],
 ) -> None:
-    """Write primary registry when BiLSTM-AE 3-method ensemble is the manuscript endpoint."""
+    """Write primary registry when BiLSTM-AE 2-method ensemble is the manuscript endpoint."""
     metrics_dir.mkdir(parents=True, exist_ok=True)
     (metrics_dir / "primary_endpoint.json").write_text(
         json.dumps(registry, indent=2),

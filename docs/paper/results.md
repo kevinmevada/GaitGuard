@@ -22,31 +22,58 @@ Comparison of **evaluation rigor** features across wearable gait competitors ben
 
 - **First strict LOSO on full 8-cohort Voisard.** No prior wearable gait paper evaluates all eight Voisard pathology cohorts (Healthy, HipOA, KneeOA, ACL, PD, CVA, CIPN, RIL) under leave-one-subject-out holdout.
 - **First 2-method one-class ensemble under LOSO.** Isolation Forest on latent activations + one-class SVM boundary distance (rank-averaged), trained on healthy gait only per fold. AE reconstruction is reported standalone as an ablation baseline and is excluded from the combined ensemble.
-- **First zero-shot cross-dataset FOG transfer in this comparator set.** Sealed DAPHNET freezing-of-gait evaluation with asymmetric sensing: four-sensor Voisard training → single lower-back sensor at test time (zero-padded layout), which is strictly harder than matched-sensor transfer.
+- **First zero-shot cross-dataset FOG *protocol* in this comparator set.** Sealed DAPHNET freezing-of-gait evaluation with asymmetric sensing: four-sensor Voisard training → single lower-back sensor at test time (zero-padded layout), no target-domain weight tuning. The numeric transfer result is a **single-positive-subject case study** (all FOG+ windows from S03), not established cross-subject FOG generalization.
 
 ## Footnotes
 
 - **Strict LOSO:** leave-one-participant-out; no trial from the held-out subject appears in training.
 - **2-method one-class ensemble:** Isolation Forest (latent) + one-class SVM (latent), rank-averaged; pathological gait never used for manifold fitting. AE reconstruction is an ablation-only baseline (below-chance, Spearman ~0.41–0.43 vs the latent detectors) and is not fused into the primary ensemble.
-- **Cross-dataset eval:** train on Voisard, evaluate on an external dataset without target-domain retraining (DAPHNET FOG).
+- **Cross-dataset eval:** train on Voisard, evaluate on an external dataset without target-domain retraining (DAPHNET FOG). Protocol ✓; FOG generalization not established (all positives = S03).
 - Competitor flags reflect **published protocols** for the cited benchmark papers, not re-runs on Voisard.
 
 ## 2. Primary BiLSTM-AE 2-method ensemble (LOSO OOF)
 
 Healthy-reference BiLSTM autoencoder (HE+LB+LF+RF) with latent Isolation Forest and One-Class SVM — strict leave-one-subject-out (`feature_selection_protocol: bilstm_ae_loso_healthy_reference_3method`). Pseudo ground truth: non-Healthy trial = positive.
 
-Primary ensemble is the **rank-averaged 2-method** score (Isolation Forest + One-Class SVM on latent activations). AE reconstruction remains a standalone ablation line.
+Primary ensemble is the **rank-averaged 2-method** score (Isolation Forest + One-Class SVM on latent activations). Isolation Forest (latent) is the **effective detector**; the ensemble is equal-weight fusion that is empirically IF-dominated (OCSVM adds negligible in-domain signal). AE reconstruction remains a standalone ablation line. The unsupervised endpoint is reported as primary because it requires no pathological labels at training time and remains deployable in populations without disease-specific training data — a property the supervised models (LOSO AUC > 0.93 for several deep architectures) do not share.
 
 | Method | ROC-AUC | PR-AUC | Sensitivity | Specificity |
 |---|---:|---:|---:|---:|
 | isolation_forest_latent | 0.7540 | 0.8418 | 0.0807 | 0.9209 |
 | one_class_svm_latent | 0.7490 | 0.8760 | 0.5106 | 0.7966 |
-| bilstm_ae_ensemble | 0.7545 | 0.8669 | 0.711 | 0.720 |
-| ae_reconstruction | 0.4790 | 0.7720 | 0.3047 | 0.7627 |
+| bilstm_ae_ensemble (2-method, source-locked) | 0.7545 | 0.8669 | 0.711 | 0.720 |
+| ae_reconstruction (ablation) | 0.4790 | 0.7720 | 0.3047 | 0.7627 |
+| bilstm_ae_ensemble (old 3-method, AE included) | 0.6238 | 0.8053 | 0.271 | 0.828 |
 
-**Primary endpoint (`bilstm_ae_ensemble`):** 2-method rank-averaged ensemble ROC-AUC 0.7545, PR-AUC 0.8669, F1 0.786, MCC 0.388, Sensitivity 0.711, Specificity 0.720.
-AE reconstruction (ROC-AUC 0.479) was excluded from the combined ensemble because it is below-chance and weakly correlated (Spearman ~0.41–0.43) with the two latent-space detectors, so combining it dilutes rather than complements the ensemble.
- Ensemble gain vs best single method: +0.0005 AUC.
+**Primary endpoint (`bilstm_ae_ensemble`):** source-locked 2-method rank-averaged ensemble ROC-AUC 0.7545, PR-AUC 0.8669, F1 0.786, MCC 0.388, Cohen κ 0.369, Sensitivity 0.711, Specificity 0.720. Isolation Forest alone is 0.7540 (+0.0005 ensemble gain — not a meaningful performance lift).
+AE reconstruction (ROC-AUC 0.479) was dropped from fusion after source-domain OOF diagnostics (below-chance; Spearman ~0.41–0.43 vs IF/OCSVM) and frozen before DAPHNET. **Sensitivity:** including AE (old 3-method weights) drops in-domain AUC from 0.7545 to **0.6238** (−0.13).
+
+## Zero-shot cross-dataset transfer (DAPHNET FOG)
+
+We evaluated the source-locked 2-method fusion (membership and equal weights fixed from Voisard;
+no DAPHNET-side weight tuning) on 15,916 windows from 9 DAPHNET subjects, with lower-back input
+only (other three sensor channels zero-padded). An identical percentile-rank-averaging procedure
+(0.5 × [rank_pct(IF) + rank_pct(OCSVM)]) was applied independently within this evaluation set:
+DAPHNET ranks are computed over the pooled zero-shot window scores, not against a shared frozen
+Voisard reference, so the two ensembles are not on a strictly identical numeric scale.
+FOG-positive windows numbered 62 (prevalence 0.39%), and all 62 originated from a single subject
+(S03); the remaining 8 subjects contributed no positive windows. This is a
+single-positive-subject case study, not cross-subject FOG generalization.
+
+| Method | ROC-AUC | 95% CI (subject-cluster, n=2000) | PR-AUC | PR-AUC / prevalence |
+|---|---:|---|---:|---:|
+| AE reconstruction | 0.7046 | [0.627, 0.769] | 0.0071 | 1.82× |
+| Isolation Forest (latent) | 0.5884 | [0.463, 0.726] | 0.0199 | 5.10× |
+| One-Class SVM (latent) | 0.4497 | [0.323, 0.582] | 0.0033 | 0.84× (below no-skill) |
+| 2-method ensemble (rank-average, source-locked) | 0.5314 | [0.405, 0.664] | 0.0223 | 5.73× |
+
+Under that per-domain rank-average (not a shared numeric scale with Voisard), One-Class SVM's below-chance ranking (ROC-AUC 0.4497) pulls the ensemble (0.5314) *below* Isolation Forest alone (0.5884); Isolation Forest remains the effective latent detector, and OCSVM contributes negative signal under shift. Reconstruction error outranks both on point-estimate ROC-AUC,
+but the reconstruction vs ensemble 95% confidence intervals still overlap, so this reversal cannot be
+called statistically significant at conventional thresholds — it should be read as a directional
+signal, not a resolved result. PR-AUC is reported against the empirical no-skill baseline
+(prevalence 0.39%, PR-AUC 0.0039) rather than against Voisard's PR-AUC values, which come from a
+much more balanced label distribution (74% non-Healthy) and are not comparable under standard
+PR-AUC conventions.
 
 ## Per-cohort LOSO results — pathology-tier screening (detailed)
 
@@ -79,6 +106,8 @@ Each row is a **separate** binary task: cohort *c* (positive) vs Healthy (negati
 - **Anomaly rate** — % of pathological trials flagged at the cohort-specific Youden threshold (re-fit on Healthy + that cohort's OOF trials).
 - **Ref. fall prob.** — literature reference fall-risk percentage for the cohort label (not a prospective outcome in this dataset).
 - **Mean score gap** — pathological minus healthy mean anomaly score on the same comparison set.
+
+Unsupervised deviation from the healthy manifold is not equivalent to epidemiological fall risk; orthopedic mechanical gait alterations (HOA, TKA, ACL) can fall within the healthy latent manifold — mean score gaps are negative for those cohorts — even when clinical fall-risk references are elevated.
 
 ## 2. Anomaly score distribution by cohort (all eight cohorts)
 
@@ -181,7 +210,7 @@ Section 2b reports nested per-fold RFECV LOSO (`metrics.csv`). API/deploy checkp
 | svm | 0.8172 | 0.8410 | +0.0238 |
 | mlp | 0.7505 | 0.8213 | +0.0708 |
 
-**Pre-registered primary endpoint:** `bilstm_ae_ensemble` — see `primary_endpoint.json`.
+**Source-locked primary endpoint:** `bilstm_ae_ensemble` — see `primary_endpoint.json` (fusion membership locked from Voisard OOF diagnostics, not pre-registered before those diagnostics).
 
 ## 3. Classical baselines (competitor paradigm 1)
 
@@ -205,7 +234,7 @@ Raw-IMU deep baselines (LOSO) + GaitGuard BiLSTM-AE primary endpoint.
 | ROCKET | Dempster 2019 | nan | nan | nan | nan | nan | nan | nan | nan |
 | InceptionTime | Ismail Fawaz 2020 | 0.8439 | 0.8051 | 0.7369 | 0.9414 | 0.8051 | 0.9159 | 0.8156 | 0.7363 |
 | DeepConvLSTM | Ordóñez & Roggen 2016 | 0.8503 | 0.8158 | 0.7512 | 0.9326 | 0.8158 | 0.9200 | 0.8212 | 0.7493 |
-| BiLSTM-AE | GaitGuard (yours) | 0.786 | 0.5496 | 0.388 | 0.7545 | 0.711 | 0.720 | 0.8152 | 0.0619 |
+| BiLSTM-AE | GaitGuard (yours) | 0.786 | 0.7159 | 0.388 | 0.7545 | 0.711 | 0.720 | 0.8769 | 0.369 |
 
 ## 5. Core discriminative metrics (full competitor matrix)
 
@@ -224,7 +253,7 @@ F1 (weighted), balanced accuracy, MCC, AUROC, sensitivity, specificity, precisio
 | ROCKET | competitor_paradigm_2_dl | — | — | — | — | — | — | — | — |
 | InceptionTime | competitor_paradigm_2_dl | 0.8439 | 0.8051 | 0.7369 | 0.9414 | 0.8051 | 0.9159 | 0.8156 | 0.7363 |
 | DeepConvLSTM | competitor_paradigm_2_dl | 0.8503 | 0.8158 | 0.7512 | 0.9326 | 0.8158 | 0.9200 | 0.8212 | 0.7493 |
-| BiLSTM-AE | gaitguard_primary | 0.786 | 0.5496 | 0.388 | 0.7545 | 0.711 | 0.720 | 0.8152 | 0.0619 |
+| BiLSTM-AE | gaitguard_primary | 0.786 | 0.7159 | 0.388 | 0.7545 | 0.711 | 0.720 | 0.8769 | 0.369 |
 
 ## 4. Class-wise behavior
 See per-class columns in `metrics.csv` and `pipeline_report.md`.
@@ -285,7 +314,7 @@ Three training configurations on Voisard (Healthy-reference LOSO ensemble). Inac
 
 **In-distribution:** 4-sensor > 2-sensor > 1-sensor → multi-sensor training adds value.
 
-**Cross-dataset:** 4-sensor-trained model, LB-only DAPHNET input → AUROC **0.7046** (representation transfers via LB channel).
+**Cross-dataset:** 4-sensor-trained model, LB-only DAPHNET input → reconstruction AUROC **0.7046** / source-locked per-domain rank-averaged ensemble **0.5314** (all FOG-positive windows from a single subject — see §Zero-shot transfer / Limitations).
 
 ## Cross-Cohort Transfer (Leave-One-Cohort-Out)
 

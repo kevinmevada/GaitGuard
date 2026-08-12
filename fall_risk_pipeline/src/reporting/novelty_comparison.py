@@ -177,10 +177,11 @@ def three_firsts_bullets() -> list[str]:
             "AE reconstruction is reported standalone as an ablation baseline and is not a fusion member."
         ),
         (
-            "**First zero-shot cross-dataset FOG transfer in this comparator set.** Sealed DAPHNET "
+            "**First zero-shot cross-dataset FOG *protocol* in this comparator set.** Sealed DAPHNET "
             "freezing-of-gait evaluation with asymmetric sensing: four-sensor Voisard training → "
-            "single lower-back sensor at test time (zero-padded layout), which is strictly harder than "
-            "matched-sensor transfer."
+            "single lower-back sensor at test time (zero-padded layout), no target-domain weight tuning. "
+            "Numeric transfer is a single-positive-subject case study (all FOG+ = S03), not established "
+            "FOG generalization."
         ),
     ]
 
@@ -216,7 +217,7 @@ def render_novelty_markdown(df: pd.DataFrame | None = None) -> str:
             "BiLSTM-AE latent representations, rank-averaged; pathological gait never used for manifold "
             "fitting. AE reconstruction is an ablation-only baseline, not a voting member of the fusion.",
             "- **Cross-dataset eval:** train on Voisard, evaluate on an external dataset without target-domain "
-            "retraining (DAPHNET FOG).",
+            "retraining (DAPHNET FOG). Protocol ✓; FOG generalization not established (all positives = S03).",
             "- Competitor flags reflect **published protocols** for the cited benchmark papers, not re-runs on Voisard.",
             "",
         ]

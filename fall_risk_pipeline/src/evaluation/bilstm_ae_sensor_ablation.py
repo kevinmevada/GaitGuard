@@ -218,17 +218,16 @@ def run_bilstm_ae_sensor_ablation(config: dict) -> pd.DataFrame:
             try:
                 model, norm, slices = _train_deploy_4sensor_for_daphnet(fit_config, device=device)
                 daph = evaluate_daphnet_lb_scores(model, norm, slices, config, device=device)
-                daphnet_auc = float(daph.get("lb_reconstruction_auc", float("nan")))
-                daphnet_auc_pr = float(daph.get("lb_reconstruction_auc_pr", float("nan")))
+                daphnet_auc = float(daph.get("ensemble_auc", float("nan")))
+                daphnet_auc_pr = float(daph.get("ensemble_auc_pr", float("nan")))
                 daphnet_4sensor_auc = daphnet_auc
             except (FileNotFoundError, RuntimeError) as exc:
                 logger.info("DAPHNET transfer eval skipped for 4-sensor: {}", exc)
                 sealed = metrics_dir / "daphnet_bilstm_ae_fog_auroc.json"
                 if sealed.is_file():
                     payload = json.loads(sealed.read_text(encoding="utf-8"))
-                    per = payload.get("per_method", {}).get("ae_reconstruction") or {}
-                    daphnet_auc = float(per.get("auc", payload.get("auc", float("nan"))))
-                    daphnet_auc_pr = float(per.get("auc_pr", payload.get("auc_pr", float("nan"))))
+                    daphnet_auc = float(payload.get("auc", float("nan")))
+                    daphnet_auc_pr = float(payload.get("auc_pr", float("nan")))
                     daphnet_4sensor_auc = daphnet_auc
 
         rows.append(

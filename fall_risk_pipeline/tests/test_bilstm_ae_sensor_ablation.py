@@ -95,7 +95,12 @@ def test_run_bilstm_ae_sensor_ablation_table(tmp_path):
         ),
         patch(
             "src.evaluation.bilstm_ae_sensor_ablation.evaluate_daphnet_lb_scores",
-            return_value={"lb_reconstruction_auc": 0.79, "lb_reconstruction_auc_pr": 0.55},
+            return_value={
+                "lb_reconstruction_auc": 0.70,
+                "lb_reconstruction_auc_pr": 0.50,
+                "ensemble_auc": 0.79,
+                "ensemble_auc_pr": 0.55,
+            },
         ),
     ):
         df = run_bilstm_ae_sensor_ablation(config)

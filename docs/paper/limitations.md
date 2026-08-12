@@ -18,6 +18,20 @@ Fourth, **laterality imbalance (sidestep by design).** Several orthopedic and ne
 
 **Note:** `clinicalDeficitSide` in the same metadata files does not always agree with `laterality` (e.g. 5/15 Hip OA participants); all tabulated side counts in the audit use **`laterality`** to match the dataset’s published bookkeeping.
 
+**Fifth, the DAPHNET zero-shot evaluation is confounded by a single-subject positive class.**
+All 62 FOG-positive windows (of 15,916 total, 9 subjects) originate from one subject (S03); the
+remaining 8 subjects contribute zero positive windows. Consequently, this evaluation cannot
+currently distinguish a model that detects freezing-of-gait from a model that detects
+subject-specific characteristics of S03 unrelated to FOG. The reported ROC-AUC and PR-AUC values,
+and the reversal in method ranking relative to Voisard (Discussion, "In-domain vs. zero-shot
+fusion behavior"), should be read as evidence from a single positive-bearing subject, not as
+evidence of cross-subject FOG generalization. Subject-cluster bootstrap confidence intervals
+partially reflect this — they are wide precisely because so few independent positive-bearing
+units exist — but wide CIs understate the deeper issue that FOG-signal and subject-identity are
+not separable in this sample. Extending this evaluation to DAPHNET subjects with multiple
+FOG-positive individuals is necessary before the zero-shot transfer result can be interpreted as
+evidence of generalizable FOG detection rather than a single-subject case study.
+
 ### Future directions
 
 **Prospective validation** should enroll a new cohort, record **adjudicated fall outcomes** over a pre-specified follow-up period, and test frozen or externally trained models at independent site(s), with calibration and comparison to clinical fall-risk assessments. Until such evidence exists, results should be interpreted as supporting IMU-based gait screening **research**, not routine clinical decision-making.
@@ -33,3 +47,4 @@ Fourth, **laterality imbalance (sidestep by design).** Several orthopedic and ne
 - LOSO internal validation; no external replication  
 - Research prototype — not for clinical use without validation  
 - **Laterality skew (HOA 15R/0L; CVA 47R/2L) — sidestep protocol confound; see `laterality_audit.csv`**
+- **DAPHNET zero-shot: all 62 FOG+ windows from one subject (S03) — FOG vs subject-identity not separable**

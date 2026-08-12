@@ -1,10 +1,12 @@
 """
-DAPHNET cross-dataset eval — BiLSTM-AE LB reconstruction + 3-method ensemble.
+DAPHNET cross-dataset eval — BiLSTM-AE LB reconstruction + 2-method ensemble.
 
 Trains on Voisard Healthy train-fold windows (4-sensor AE). Scores DAPHNET with
 LB-channel-only input (zero-padded HE/LF/RF). Primary score: 2-method ensemble
-(Isolation Forest + One-Class SVM latent). AE-reconstruction reported separately
-as an ablation baseline.
+(Isolation Forest + One-Class SVM latent), fused by pooled percentile
+rank-average (``rank_average_if_ocsvm`` / ``DAPHNET_FUSION_OPERATOR``). Both
+``evaluate_daphnet_lb_scores`` and ``run_daphnet_bilstm_ae_fog_eval`` use that
+operator. AE-reconstruction is reported separately as an ablation baseline.
 """
 
 from __future__ import annotations
@@ -28,7 +30,6 @@ from src.models.bilstm_ae_scoring import (
     METHOD_ENSEMBLE,
     METHOD_IF_LATENT,
     METHOD_OCSVM_LATENT,
-    combine_ensemble_scores,
     fit_latent_one_class_models,
     lb_slice_from_slices,
     score_latent_one_class,
@@ -41,6 +42,27 @@ from src.utils.reproducibility import get_pipeline_seed
 from src.utils.torch_device import resolve_torch_device
 
 SEALED_OUTPUT_NAME = "daphnet_bilstm_ae_fog_auroc.json"
+# Paper headline DAPHNET fusion: pooled percentile rank-average of IF + OCSVM
+# (same formula as evaluate_daphnet_lb_scores / Voisard recompute_ensemble_from_oof).
+DAPHNET_FUSION_OPERATOR = "pooled_percentile_rank_average"
+
+
+def rank_average_if_ocsvm(if_scores: np.ndarray, svm_scores: np.ndarray) -> np.ndarray:
+    """Pooled 0.5 × [rank_pct(IF) + rank_pct(OCSVM)] over the evaluation set.
+
+    Ranks are self-referential to the concatenated eval pool (not a frozen
+    Voisard healthy-train reference). This is the manuscript DAPHNET fusion.
+    """
+    if_scores = np.asarray(if_scores, dtype=np.float64)
+    svm_scores = np.asarray(svm_scores, dtype=np.float64)
+    if if_scores.shape != svm_scores.shape:
+        raise ValueError(
+            f"IF/OCSVM score length mismatch: {if_scores.shape} vs {svm_scores.shape}"
+        )
+    return 0.5 * (
+        pd.Series(if_scores).rank(pct=True).to_numpy()
+        + pd.Series(svm_scores).rank(pct=True).to_numpy()
+    )
 
 
 class DaphnetBilstmAeEvalError(RuntimeError):
@@ -111,12 +133,16 @@ def evaluate_daphnet_lb_scores(
     *,
     device: torch.device,
 ) -> dict[str, float]:
-    """Score DAPHNET with LB-only zero-padded windows; return LB reconstruction AUROC."""
+    """Score DAPHNET with LB-only zero-padded windows; return recon + 2-method ensemble AUROC."""
     spec = parse_window_spec(config)
     overlap = float(config["deep_learning"]["overlap"])
     lb_slice = lb_slice_from_slices(sensor_slices)
     if lb_slice is None:
         raise DaphnetBilstmAeEvalError("No lower_back slice")
+
+    healthy_windows, _ = _collect_healthy_train_windows(config)
+    _, lat_fit = score_windows(model, healthy_windows, norm, device=device)
+    oc = fit_latent_one_class_models(lat_fit, random_state=42)
 
     sealed = (config.get("ingestion") or {}).get("daphnet", {}).get("sealed_fog_eval") or {}
     labels_path = Path(
@@ -126,7 +152,9 @@ def evaluate_daphnet_lb_scores(
     processed = Path(config["paths"]["processed_data"])
 
     all_y: list[np.ndarray] = []
-    all_scores: list[np.ndarray] = []
+    all_recon: list[np.ndarray] = []
+    all_if: list[np.ndarray] = []
+    all_svm: list[np.ndarray] = []
 
     for subject_id, y_true in sorted(y_by_subject.items()):
         try:
@@ -144,27 +172,46 @@ def evaluate_daphnet_lb_scores(
             continue
         n = min(len(wins), len(y_true))
         wins, y_true = wins[:n], y_true[:n]
-        recon, _ = score_windows(model, wins, norm, device=device, lb_slice=lb_slice)
+        recon, lat = score_windows(model, wins, norm, device=device, lb_slice=lb_slice)
+        if_s, svm_s = score_latent_one_class(oc, lat)
         all_y.append(y_true)
-        all_scores.append(recon)
+        all_recon.append(recon)
+        all_if.append(if_s)
+        all_svm.append(svm_s)
 
     if not all_y:
         raise FileNotFoundError("No DAPHNET LB windows for transfer eval")
 
     y_cat = np.concatenate(all_y)
-    sc = np.concatenate(all_scores)
+    recon_cat = np.concatenate(all_recon)
+    ens_cat = rank_average_if_ocsvm(np.concatenate(all_if), np.concatenate(all_svm))
+    empty = {
+        "lb_reconstruction_auc": float("nan"),
+        "lb_reconstruction_auc_pr": float("nan"),
+        "ensemble_auc": float("nan"),
+        "ensemble_auc_pr": float("nan"),
+        "n_samples": int(len(y_cat)),
+    }
     if len(np.unique(y_cat)) < 2:
-        return {"lb_reconstruction_auc": float("nan"), "lb_reconstruction_auc_pr": float("nan")}
+        return empty
 
     return {
-        "lb_reconstruction_auc": float(roc_auc_score(y_cat, sc)),
-        "lb_reconstruction_auc_pr": float(average_precision_score(y_cat, sc)),
+        "lb_reconstruction_auc": float(roc_auc_score(y_cat, recon_cat)),
+        "lb_reconstruction_auc_pr": float(average_precision_score(y_cat, recon_cat)),
+        "ensemble_auc": float(roc_auc_score(y_cat, ens_cat)),
+        "ensemble_auc_pr": float(average_precision_score(y_cat, ens_cat)),
         "n_samples": int(len(y_cat)),
     }
 
 
 def run_daphnet_bilstm_ae_fog_eval(config: dict, *, force: bool = False) -> dict[str, Any]:
-    """Sealed DAPHNET FOG AUROC using BiLSTM-AE LB reconstruction + 3-method ensemble."""
+    """Sealed DAPHNET FOG AUROC using BiLSTM-AE LB reconstruction + 2-method ensemble.
+
+    Fusion matches ``evaluate_daphnet_lb_scores`` / the manuscript headline:
+    pooled percentile rank-average of Isolation Forest + OCSVM over the full
+    zero-shot window pool (``DAPHNET_FUSION_OPERATOR``). Do not restore
+    min-max-vs-healthy-reference ``combine_ensemble_scores`` here.
+    """
     pcfg = (config.get("primary_model") or {}).get("bilstm_ae_ensemble") or {}
     sealed = (config.get("ingestion") or {}).get("daphnet", {}).get("sealed_fog_eval") or {}
     if not pcfg.get("enabled", True):
@@ -192,13 +239,6 @@ def run_daphnet_bilstm_ae_fog_eval(config: dict, *, force: bool = False) -> dict
 
     _, lat_fit = score_windows(model, healthy_windows, norm, device=device)
     oc = fit_latent_one_class_models(lat_fit, random_state=42)
-    recon_fit, _ = score_windows(model, healthy_windows, norm, device=device, lb_slice=lb_slice)
-    if_fit, svm_fit = score_latent_one_class(oc, lat_fit)
-    ref = {
-        METHOD_AE_RECON: recon_fit,
-        METHOD_IF_LATENT: if_fit,
-        METHOD_OCSVM_LATENT: svm_fit,
-    }
 
     labels_path = Path(sealed.get("labels_path") or fog_labels_path(Path(config["paths"]["processed_data"])))
     y_by_subject = load_fog_labels_npz(labels_path)
@@ -206,7 +246,9 @@ def run_daphnet_bilstm_ae_fog_eval(config: dict, *, force: bool = False) -> dict
 
     all_y: list[np.ndarray] = []
     all_groups: list[np.ndarray] = []
-    scores_by_method: dict[str, list[np.ndarray]] = {m: [] for m in (*ref.keys(), METHOD_ENSEMBLE)}
+    all_recon: list[np.ndarray] = []
+    all_if: list[np.ndarray] = []
+    all_svm: list[np.ndarray] = []
 
     for subject_id, y_true in sorted(y_by_subject.items()):
         try:
@@ -226,34 +268,33 @@ def run_daphnet_bilstm_ae_fog_eval(config: dict, *, force: bool = False) -> dict
         wins, y_true = wins[:n], y_true[:n]
         recon, lat = score_windows(model, wins, norm, device=device, lb_slice=lb_slice)
         if_s, svm_s = score_latent_one_class(oc, lat)
-        methods = {
-            METHOD_AE_RECON: recon,
-            METHOD_IF_LATENT: if_s,
-            METHOD_OCSVM_LATENT: svm_s,
-        }
-        ens = combine_ensemble_scores(methods, config, reference_scores=ref)
-        methods[METHOD_ENSEMBLE] = ens
-
         all_y.append(y_true)
         all_groups.append(np.full(len(y_true), subject_id, dtype=object))
-        for m, s in methods.items():
-            scores_by_method[m].append(s)
+        all_recon.append(recon)
+        all_if.append(if_s)
+        all_svm.append(svm_s)
 
     y_cat = np.concatenate(all_y)
     groups_cat = np.concatenate(all_groups)
+    scores_by_method = {
+        METHOD_AE_RECON: np.concatenate(all_recon),
+        METHOD_IF_LATENT: np.concatenate(all_if),
+        METHOD_OCSVM_LATENT: np.concatenate(all_svm),
+        METHOD_ENSEMBLE: rank_average_if_ocsvm(
+            np.concatenate(all_if), np.concatenate(all_svm)
+        ),
+    }
     result: dict[str, Any] = {
         "endpoint": "daphnet_fog_bilstm_ae_auroc",
         "protocol": "sealed_lb_reconstruction",
         "train_reference": "voisard_healthy_train_fold_4sensor_ae",
         "eval_input": "daphnet_lb_zero_padded",
+        "fusion_operator": DAPHNET_FUSION_OPERATOR,
         "label_mapping": FOG_LABEL_MANIFEST["mapping"],
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "per_method": {},
     }
-    for method, chunks in scores_by_method.items():
-        if not chunks:
-            continue
-        sc = np.concatenate(chunks)
+    for method, sc in scores_by_method.items():
         if len(np.unique(y_cat)) >= 2:
             auc_full, ci_low, ci_high, ci_status = grouped_bootstrap_binary_auc_ci(
                 y_cat, sc, groups_cat, seed=get_pipeline_seed(config)
@@ -279,7 +320,7 @@ def run_daphnet_bilstm_ae_fog_eval(config: dict, *, force: bool = False) -> dict
     np.savez_compressed(
         metrics_dir / "daphnet_bilstm_ae_scores.npz",
         y_true=y_cat.astype(np.int8),
-        **{f"{m}_scores": np.concatenate(chunks).astype(np.float32) for m, chunks in scores_by_method.items() if chunks},
+        **{f"{m}_scores": sc.astype(np.float32) for m, sc in scores_by_method.items()},
     )
     logger.info("DAPHNET BiLSTM-AE FOG AUROC (LB recon) = {:.4f}", result.get("auc", float("nan")))
     return result
