@@ -2,7 +2,9 @@
 DAPHNET cross-dataset eval — BiLSTM-AE LB reconstruction + 3-method ensemble.
 
 Trains on Voisard Healthy train-fold windows (4-sensor AE). Scores DAPHNET with
-LB-channel-only input (zero-padded HE/LF/RF). Primary score: LB reconstruction error.
+LB-channel-only input (zero-padded HE/LF/RF). Primary score: 2-method ensemble
+(Isolation Forest + One-Class SVM latent). AE-reconstruction reported separately
+as an ablation baseline.
 """
 
 from __future__ import annotations
@@ -263,7 +265,7 @@ def run_daphnet_bilstm_ae_fog_eval(config: dict, *, force: bool = False) -> dict
                 "auc_ci_high": ci_high,
                 "auc_ci_method": ci_status,
             }
-    primary = result["per_method"].get(METHOD_AE_RECON) or result["per_method"].get(METHOD_ENSEMBLE)
+    primary = result["per_method"].get(METHOD_ENSEMBLE) or result["per_method"].get(METHOD_AE_RECON)
     if primary:
         result["auc"] = primary["auc"]
         result["auc_pr"] = primary["auc_pr"]
