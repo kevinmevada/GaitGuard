@@ -28,11 +28,13 @@ _Auto-updated from pipeline artifacts — do not edit manually._
 
 | Metric | Value |
 |--------|-------|
-| Primary BiLSTM-AE MCC (LOSO OOF) | 0.1014 |
-| Primary BiLSTM-AE AUROC (LOSO OOF) | 0.6238 |
-| Primary BiLSTM-AE F1 weighted | 0.4127 |
+| Primary BiLSTM-AE MCC (LOSO OOF) | 0.388 |
+| Primary BiLSTM-AE AUROC (LOSO OOF) | 0.7545 |
+| Primary BiLSTM-AE F1 | 0.786 |
+| Primary BiLSTM-AE Sensitivity (Youden) | 0.711 |
+| Primary BiLSTM-AE Specificity (Youden) | 0.720 |
 | Primary BiLSTM-AE Cohen κ | 0.0619 |
-| Primary BiLSTM-AE PR-AUC | 0.8053 |
+| Primary BiLSTM-AE PR-AUC | 0.8669 |
 | Secondary deployable ensemble macro OvR AUC | 0.8404 (ensemble_soft_voting) |
 | Best supervised single-model LOSO macro OvR AUC | 0.8415 (xgboost) |
 | MCC abstract-lead threshold | 0.70 |

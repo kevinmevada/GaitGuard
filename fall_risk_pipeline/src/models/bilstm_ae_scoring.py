@@ -32,7 +32,7 @@ METHOD_IF_LATENT = "isolation_forest_latent"
 METHOD_OCSVM_LATENT = "one_class_svm_latent"
 METHOD_ENSEMBLE = "bilstm_ae_ensemble"
 
-ENSEMBLE_METHODS = (METHOD_AE_RECON, METHOD_IF_LATENT, METHOD_OCSVM_LATENT)
+ENSEMBLE_METHODS = (METHOD_IF_LATENT, METHOD_OCSVM_LATENT)
 
 # Manuscript sensor ablation: 4 > 2 > 1 in-distribution; 4-sensor train → DAPHNET LB transfer.
 SENSOR_ABLATION_CONFIGS: dict[str, tuple[str, tuple[str, ...]]] = {

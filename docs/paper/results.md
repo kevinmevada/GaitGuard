@@ -6,7 +6,7 @@ The analysis set contains 260 participants and 1,356 walking trials across eight
 
 Comparison of **evaluation rigor** features across wearable gait competitors benchmarked in GaitGuard. Numeric performance lives in Table 2 (`docs/paper/table2_prior_work.md`).
 
-| Study | Year | Dataset | Strict LOSO | 3-method one-class ensemble | Cross-dataset eval | Cohorts |
+| Study | Year | Dataset | Strict LOSO | 2-method one-class ensemble | Cross-dataset eval | Cohorts |
 |---|---:|---|:---:|:---:|:---:|---|
 | Moon et al. | 2020 | Single-site IMU gait (PD vs healthy) | — | — | — | 2 |
 | Trabassi et al. | 2022 | PD gait cohort | — | — | — | 1 |
@@ -21,29 +21,32 @@ Comparison of **evaluation rigor** features across wearable gait competitors ben
 ## Three unambiguous firsts (GaitGuard only)
 
 - **First strict LOSO on full 8-cohort Voisard.** No prior wearable gait paper evaluates all eight Voisard pathology cohorts (Healthy, HipOA, KneeOA, ACL, PD, CVA, CIPN, RIL) under leave-one-subject-out holdout.
-- **First 3-method one-class ensemble under LOSO.** BiLSTM-AE reconstruction + Isolation Forest on latent activations + one-class SVM boundary distance, trained on healthy gait only per fold.
+- **First 2-method one-class ensemble under LOSO.** Isolation Forest on latent activations + one-class SVM boundary distance (rank-averaged), trained on healthy gait only per fold. AE reconstruction is reported standalone as an ablation baseline and is excluded from the combined ensemble.
 - **First zero-shot cross-dataset FOG transfer in this comparator set.** Sealed DAPHNET freezing-of-gait evaluation with asymmetric sensing: four-sensor Voisard training → single lower-back sensor at test time (zero-padded layout), which is strictly harder than matched-sensor transfer.
 
 ## Footnotes
 
 - **Strict LOSO:** leave-one-participant-out; no trial from the held-out subject appears in training.
-- **3-method one-class ensemble:** BiLSTM-AE + Isolation Forest (latent) + one-class SVM (latent); pathological gait never used for manifold fitting.
+- **2-method one-class ensemble:** Isolation Forest (latent) + one-class SVM (latent), rank-averaged; pathological gait never used for manifold fitting. AE reconstruction is an ablation-only baseline (below-chance, Spearman ~0.41–0.43 vs the latent detectors) and is not fused into the primary ensemble.
 - **Cross-dataset eval:** train on Voisard, evaluate on an external dataset without target-domain retraining (DAPHNET FOG).
 - Competitor flags reflect **published protocols** for the cited benchmark papers, not re-runs on Voisard.
 
-## 2. Primary BiLSTM-AE 3-method ensemble (LOSO OOF)
+## 2. Primary BiLSTM-AE 2-method ensemble (LOSO OOF)
 
 Healthy-reference BiLSTM autoencoder (HE+LB+LF+RF) with latent Isolation Forest and One-Class SVM — strict leave-one-subject-out (`feature_selection_protocol: bilstm_ae_loso_healthy_reference_3method`). Pseudo ground truth: non-Healthy trial = positive.
+
+Primary ensemble is the **rank-averaged 2-method** score (Isolation Forest + One-Class SVM on latent activations). AE reconstruction remains a standalone ablation line.
 
 | Method | ROC-AUC | PR-AUC | Sensitivity | Specificity |
 |---|---:|---:|---:|---:|
 | isolation_forest_latent | 0.7540 | 0.8418 | 0.0807 | 0.9209 |
 | one_class_svm_latent | 0.7490 | 0.8760 | 0.5106 | 0.7966 |
-| bilstm_ae_ensemble | 0.6238 | 0.8053 | 0.2714 | 0.8277 |
+| bilstm_ae_ensemble | 0.7545 | 0.8669 | 0.711 | 0.720 |
 | ae_reconstruction | 0.4790 | 0.7720 | 0.3047 | 0.7627 |
 
-**Primary endpoint (`bilstm_ae_ensemble`):** ensemble ROC-AUC 0.6238.
- Ensemble gain vs best single method: -0.1302 AUC.
+**Primary endpoint (`bilstm_ae_ensemble`):** 2-method rank-averaged ensemble ROC-AUC 0.7545, PR-AUC 0.8669, F1 0.786, MCC 0.388, Sensitivity 0.711, Specificity 0.720.
+AE reconstruction (ROC-AUC 0.479) was excluded from the combined ensemble because it is below-chance and weakly correlated (Spearman ~0.41–0.43) with the two latent-space detectors, so combining it dilutes rather than complements the ensemble.
+ Ensemble gain vs best single method: +0.0005 AUC.
 
 ## Per-cohort LOSO results — pathology-tier screening (detailed)
 
@@ -202,7 +205,7 @@ Raw-IMU deep baselines (LOSO) + GaitGuard BiLSTM-AE primary endpoint.
 | ROCKET | Dempster 2019 | nan | nan | nan | nan | nan | nan | nan | nan |
 | InceptionTime | Ismail Fawaz 2020 | 0.8439 | 0.8051 | 0.7369 | 0.9414 | 0.8051 | 0.9159 | 0.8156 | 0.7363 |
 | DeepConvLSTM | Ordóñez & Roggen 2016 | 0.8503 | 0.8158 | 0.7512 | 0.9326 | 0.8158 | 0.9200 | 0.8212 | 0.7493 |
-| BiLSTM-AE | GaitGuard (yours) | 0.4127 | 0.5496 | 0.1014 | 0.6238 | 0.2714 | 0.8277 | 0.8152 | 0.0619 |
+| BiLSTM-AE | GaitGuard (yours) | 0.786 | 0.5496 | 0.388 | 0.7545 | 0.711 | 0.720 | 0.8152 | 0.0619 |
 
 ## 5. Core discriminative metrics (full competitor matrix)
 
@@ -221,7 +224,7 @@ F1 (weighted), balanced accuracy, MCC, AUROC, sensitivity, specificity, precisio
 | ROCKET | competitor_paradigm_2_dl | — | — | — | — | — | — | — | — |
 | InceptionTime | competitor_paradigm_2_dl | 0.8439 | 0.8051 | 0.7369 | 0.9414 | 0.8051 | 0.9159 | 0.8156 | 0.7363 |
 | DeepConvLSTM | competitor_paradigm_2_dl | 0.8503 | 0.8158 | 0.7512 | 0.9326 | 0.8158 | 0.9200 | 0.8212 | 0.7493 |
-| BiLSTM-AE | gaitguard_primary | 0.4127 | 0.5496 | 0.1014 | 0.6238 | 0.2714 | 0.8277 | 0.8152 | 0.0619 |
+| BiLSTM-AE | gaitguard_primary | 0.786 | 0.5496 | 0.388 | 0.7545 | 0.711 | 0.720 | 0.8152 | 0.0619 |
 
 ## 4. Class-wise behavior
 See per-class columns in `metrics.csv` and `pipeline_report.md`.

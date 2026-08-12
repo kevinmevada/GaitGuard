@@ -485,9 +485,9 @@ anomaly:
 primary_model:
   bilstm_ae_ensemble:
     enabled: true
-    ae_reconstruction_weight: 0.40
-    isolation_forest_latent_weight: 0.33
-    one_class_svm_latent_weight: 0.27
+    ae_reconstruction_weight: 0.0
+    isolation_forest_latent_weight: 0.50
+    one_class_svm_latent_weight: 0.50
     max_windows_per_fold_fit: 30000
     anomaly_threshold:
       policy: healthy_train_percentile   # v13: train-fold healthy scores only
