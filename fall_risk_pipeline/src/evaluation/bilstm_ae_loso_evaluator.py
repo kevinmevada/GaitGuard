@@ -1,10 +1,12 @@
 """
-LOSO evaluation — BiLSTM-AE + 3-method one-class ensemble (primary novelty).
+LOSO evaluation — BiLSTM-AE + 2-method ensemble (BiLSTM-AE latent representations scored by Isolation Forest
++ One-Class SVM) (primary novelty).
 
 Trains on Healthy subjects in each LOSO train fold only. Pathological gait never
 appears in AE / IF / OCSVM fitting.
 
 Outputs ``bilstm_ae_anomaly_metrics.csv`` with one row per method + ensemble row.
+AE reconstruction is reported as a standalone ablation baseline and is not fused.
 """
 
 from __future__ import annotations
@@ -28,8 +30,9 @@ from src.evaluation.primary_endpoint import (
 )
 from src.models.anomaly_scoring import eval_binary_labels
 from src.models.bilstm_ae_scoring import (
-    ENSEMBLE_METHODS,
+    METHOD_AE_RECON,
     METHOD_ENSEMBLE,
+    REPORTED_METHODS,
     build_fold_trial_scores,
     load_voisard_trial_windows,
 )
@@ -37,7 +40,7 @@ from src.utils.reproducibility import get_pipeline_seed
 from src.utils.progress import progress_bar
 from src.utils.torch_device import resolve_torch_device
 
-ALL_METHODS = (*ENSEMBLE_METHODS, METHOD_ENSEMBLE)
+ALL_METHODS = REPORTED_METHODS
 MIN_HEALTHY_TRAIN_TRIALS = 3
 
 
@@ -64,7 +67,7 @@ def run_bilstm_ae_loso_evaluation(config: dict) -> pd.DataFrame:
 
     unique_pids = np.unique(groups)
     logger.info(
-        "BiLSTM-AE 3-method LOSO over {} participants, {} trials",
+        "BiLSTM-AE 2-method LOSO over {} participants, {} trials",
         len(unique_pids),
         n,
     )

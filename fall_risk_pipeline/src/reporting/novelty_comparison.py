@@ -3,7 +3,7 @@ Section 2 novelty comparison — methodological firsts vs competitor literature.
 
 GaitGuard's three unambiguous firsts (manuscript bullets):
   1. First strict subject-level LOSO on the full 8-cohort Voisard dataset.
-  2. First 3-method one-class ensemble (BiLSTM-AE + Isolation Forest + OC-SVM) under LOSO.
+  2. First 2-method one-class ensemble (Isolation Forest + OC-SVM on BiLSTM-AE latents) under LOSO.
   3. First zero-shot cross-dataset generalization to DAPHNET FOG (4-sensor train → 1-sensor LB eval).
 """
 
@@ -131,7 +131,7 @@ NOVELTY_COMPARATORS: tuple[NoveltyRow, ...] = (
         cross_dataset_eval=True,
         cohort_count=8,
         notes=(
-            "Healthy-only one-class training; 3-method latent ensemble; sealed DAPHNET eval with "
+            "Healthy-only one-class training; 2-method one-class ensemble; sealed DAPHNET eval with "
             "4-sensor train → lower-back-only zero-padded transfer (asymmetric sensor layout)."
         ),
     ),
@@ -172,8 +172,9 @@ def three_firsts_bullets() -> list[str]:
             "under leave-one-subject-out holdout."
         ),
         (
-            "**First 3-method one-class ensemble under LOSO.** BiLSTM-AE reconstruction + Isolation Forest "
-            "on latent activations + one-class SVM boundary distance, trained on healthy gait only per fold."
+            "**First 2-method one-class ensemble under LOSO.** Isolation Forest (latent) + One-Class SVM "
+            "(latent) on BiLSTM-AE latent representations, trained on healthy gait only per fold. "
+            "AE reconstruction is reported standalone as an ablation baseline and is not a fusion member."
         ),
         (
             "**First zero-shot cross-dataset FOG transfer in this comparator set.** Sealed DAPHNET "
@@ -192,7 +193,7 @@ def render_novelty_markdown(df: pd.DataFrame | None = None) -> str:
         "Comparison of **evaluation rigor** features across wearable gait competitors benchmarked "
         "in GaitGuard. Numeric performance lives in Table 2 (`docs/paper/table2_prior_work.md`).",
         "",
-        "| Study | Year | Dataset | Strict LOSO | 3-method one-class ensemble | Cross-dataset eval | Cohorts |",
+        "| Study | Year | Dataset | Strict LOSO | 2-method one-class ensemble | Cross-dataset eval | Cohorts |",
         "|---|---:|---|:---:|:---:|:---:|---|",
     ]
     for row in frame.itertuples(index=False):
@@ -211,8 +212,9 @@ def render_novelty_markdown(df: pd.DataFrame | None = None) -> str:
             "## Footnotes",
             "",
             "- **Strict LOSO:** leave-one-participant-out; no trial from the held-out subject appears in training.",
-            "- **3-method one-class ensemble:** BiLSTM-AE + Isolation Forest (latent) + one-class SVM (latent); "
-            "pathological gait never used for manifold fitting.",
+            "- **2-method one-class ensemble:** Isolation Forest (latent) + one-class SVM (latent) on "
+            "BiLSTM-AE latent representations, rank-averaged; pathological gait never used for manifold "
+            "fitting. AE reconstruction is an ablation-only baseline, not a voting member of the fusion.",
             "- **Cross-dataset eval:** train on Voisard, evaluate on an external dataset without target-domain "
             "retraining (DAPHNET FOG).",
             "- Competitor flags reflect **published protocols** for the cited benchmark papers, not re-runs on Voisard.",

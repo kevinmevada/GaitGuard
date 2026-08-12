@@ -173,12 +173,12 @@ def _bilstm_ae_primary_section(metrics_dir: Path) -> str:
     path = metrics_dir / "bilstm_ae_anomaly_metrics.csv"
     if not path.is_file():
         return (
-            "## 2. Primary BiLSTM-AE 3-method ensemble (LOSO OOF)\n\n"
+            "## 2. Primary BiLSTM-AE 2-method ensemble (LOSO OOF)\n\n"
             "_`bilstm_ae_anomaly_metrics.csv` not found — run `python main.py --stage anomaly`._\n"
         )
     df = pd.read_csv(path)
     lines = [
-        "## 2. Primary BiLSTM-AE 3-method ensemble (LOSO OOF)",
+        "## 2. Primary BiLSTM-AE 2-method ensemble (LOSO OOF)",
         "",
         "Healthy-reference BiLSTM autoencoder (HE+LB+LF+RF) with latent Isolation Forest "
         "and One-Class SVM — strict leave-one-subject-out "

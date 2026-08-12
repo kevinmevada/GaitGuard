@@ -71,7 +71,8 @@ def _loso_ensemble_auc(
     device: torch.device,
     random_state: int,
 ) -> dict[str, float]:
-    """LOSO OOF ROC-AUC for the 3-method BiLSTM-AE ensemble."""
+    """LOSO OOF ROC-AUC for the 2-method ensemble (BiLSTM-AE latent representations scored by Isolation Forest
+    + One-Class SVM)."""
     trial_to_idx = {tid: i for i, tid in enumerate(bundle.trial_ids)}
     groups = bundle.participant_ids
     cohorts = bundle.cohorts

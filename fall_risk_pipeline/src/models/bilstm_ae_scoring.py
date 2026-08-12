@@ -1,8 +1,9 @@
 """
-BiLSTM-AE scoring + 3-method one-class ensemble (primary model).
+BiLSTM-AE scoring + 2-method ensemble (BiLSTM-AE latent representations scored by Isolation Forest
++ One-Class SVM) (primary model).
 
 Methods (all fit on Healthy train-fold windows only):
-  1. AE reconstruction error (per-sensor MSE; LB slice for DAPHNET)
+  1. AE reconstruction error (per-sensor MSE; LB slice for DAPHNET) — ablation baseline, not fused
   2. Isolation Forest on pooled latent activations h_t
   3. One-class SVM boundary distance on latent activations
 """
@@ -33,6 +34,7 @@ METHOD_OCSVM_LATENT = "one_class_svm_latent"
 METHOD_ENSEMBLE = "bilstm_ae_ensemble"
 
 ENSEMBLE_METHODS = (METHOD_IF_LATENT, METHOD_OCSVM_LATENT)
+REPORTED_METHODS = (METHOD_AE_RECON, METHOD_IF_LATENT, METHOD_OCSVM_LATENT, METHOD_ENSEMBLE)
 
 # Manuscript sensor ablation: 4 > 2 > 1 in-distribution; 4-sensor train → DAPHNET LB transfer.
 SENSOR_ABLATION_CONFIGS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -67,9 +69,9 @@ def _primary_cfg(config: dict[str, Any]) -> dict[str, Any]:
 def ensemble_weights(config: dict[str, Any]) -> dict[str, float]:
     p = _primary_cfg(config)
     w = {
-        METHOD_AE_RECON: float(p.get("ae_reconstruction_weight", 0.40)),
-        METHOD_IF_LATENT: float(p.get("isolation_forest_latent_weight", 0.33)),
-        METHOD_OCSVM_LATENT: float(p.get("one_class_svm_latent_weight", 0.27)),
+        METHOD_AE_RECON: float(p.get("ae_reconstruction_weight", 0.0)),
+        METHOD_IF_LATENT: float(p.get("isolation_forest_latent_weight", 0.50)),
+        METHOD_OCSVM_LATENT: float(p.get("one_class_svm_latent_weight", 0.50)),
     }
     total = sum(w.values())
     if total <= 0:
