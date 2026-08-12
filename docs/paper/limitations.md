@@ -6,7 +6,7 @@ Copy into the paper **Limitations** (or end of **Discussion**). Adjust tense/voi
 
 ## Limitations
 
-This study has several important limitations. First, it was a **retrospective** analysis of **one** open clinical gait dataset (260 participants, 1,356 trials; Voisard et al., Figshare DOI: 10.6084/m9.figshare.28806086). We performed **no prospective enrollment or follow-up** for this work and therefore report **no incident fall outcomes** (falls, injurious falls, or fall-related healthcare use) linked to individual participants. Supervision relied on **cohort-level pathology labels** and literature-based fall-risk references by diagnostic group—not verified per-participant fall histories during a defined observation window. Consequently, model performance (e.g. leave-one-subject-out macro AUC and Youden operating-point sensitivity and specificity) reflects **cohort discrimination and internal cross-validation**, not prospective fall prediction or clinical effectiveness.
+This study has several important limitations. First, it was a **retrospective** analysis of **one** open clinical gait dataset (260 participants, 1,355 trials; Voisard et al., Figshare DOI: 10.6084/m9.figshare.28806086). We performed **no prospective enrollment or follow-up** for this work and therefore report **no incident fall outcomes** (falls, injurious falls, or fall-related healthcare use) linked to individual participants. Supervision relied on **cohort-level pathology labels** and literature-based fall-risk references by diagnostic group—not verified per-participant fall histories during a defined observation window. Consequently, model performance (e.g. leave-one-subject-out macro AUC and Youden operating-point sensitivity and specificity) reflects **cohort discrimination and internal cross-validation**, not prospective fall prediction or clinical effectiveness.
 
 Second, evaluation was **entirely on the same dataset** used for feature and model development. We did not include external multi-site replication. Single-trial deployment inference (API) does not reproduce multi-trial patient-level aggregation (mean, standard deviation, range, and trend) used in training, which may underestimate uncertainty for real-world monitoring.
 
@@ -18,7 +18,9 @@ Fourth, **laterality imbalance (sidestep by design).** Several orthopedic and ne
 
 **Note:** `clinicalDeficitSide` in the same metadata files does not always agree with `laterality` (e.g. 5/15 Hip OA participants); all tabulated side counts in the audit use **`laterality`** to match the dataset’s published bookkeeping.
 
-**Fifth, the DAPHNET zero-shot evaluation is confounded by a single-subject positive class.**
+**Fifth, the tabular supervised pathology-tier classifier's results (§2b in Results) are provisional:** 9 participants from an external dataset (DAPHNET; S02–S10) were inadvertently included in the training and evaluation data due to a missing filter, discovered post-hoc. The same contamination reaches `sensor_ablation.csv`, `split_protocol_comparison.csv`, and `cross_cohort_transfer.csv` (all via `load_patient_feature_matrix`); in the leave-one-cohort-out analysis the held-out "PD" test group (n=33) comprises 24 Voisard-sourced PD participants and 9 DAPHNET-sourced participants (~27% of that held-out test set). An eval-set-only sensitivity check (removing these 9 from evaluation without retraining) is reported in Results §2b (xgboost macro-OvR AUC 0.8415 → 0.8364), but a fully corrected re-run — retraining on the Voisard-only N=260 cohort — has not yet been completed. The primary anomaly-screening endpoint (Results §2 Primary BiLSTM-AE; AUC 0.7545) is unaffected by this issue.
+
+**Sixth, the DAPHNET zero-shot evaluation is confounded by a single-subject positive class.**
 All 62 FOG-positive windows (of 15,916 total, 9 subjects) originate from one subject (S03); the
 remaining 8 subjects contribute zero positive windows. Consequently, this evaluation cannot
 currently distinguish a model that detects freezing-of-gait from a model that detects
@@ -47,4 +49,5 @@ evidence of generalizable FOG detection rather than a single-subject case study.
 - LOSO internal validation; no external replication  
 - Research prototype — not for clinical use without validation  
 - **Laterality skew (HOA 15R/0L; CVA 47R/2L) — sidestep protocol confound; see `laterality_audit.csv`**
+- **Tabular supervised results provisional — 9 DAPHNET subjects leaked into patient feature matrix (LOCO PD n=33 = 24 Voisard + 9 DAPHNET); primary BiLSTM-AE unaffected**
 - **DAPHNET zero-shot: all 62 FOG+ windows from one subject (S03) — FOG vs subject-identity not separable**

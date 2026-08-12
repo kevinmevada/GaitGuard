@@ -86,6 +86,41 @@ def load_selected_feature_names(feat_dir: Path, config: dict) -> list[str] | Non
     return [str(name) for name in features]
 
 
+def drop_daphnet_rows(df: pd.DataFrame, config: dict | None = None) -> pd.DataFrame:
+    """Exclude DAPHNET-sourced rows from feature frames (Voisard-only tabular path).
+
+    Matches ``load_phase12_trial_matrix`` / BiLSTM-AE metadata filters: drop
+    ``trial_id`` values starting with ``daphnet_``, or ``source_dataset == daphnet``.
+    Patient-level frames lack those columns, so participants that appear on any
+    ``daphnet_*`` trial in ``trial_metadata.csv`` are removed when ``config`` is set.
+    """
+    if df is None or df.empty:
+        return df
+    out = df
+    if "trial_id" in out.columns:
+        out = out[~out["trial_id"].astype(str).str.startswith("daphnet_")]
+    if "source_dataset" in out.columns:
+        out = out[out["source_dataset"].astype(str).str.lower() != "daphnet"]
+    if (
+        config is not None
+        and "participant_id" in out.columns
+        and "trial_id" not in df.columns
+    ):
+        processed = Path(config["paths"]["processed_data"]) / "trial_metadata.csv"
+        if processed.is_file():
+            meta = pd.read_csv(processed, usecols=["trial_id", "participant_id"])
+            daph_pids = set(
+                meta.loc[
+                    meta["trial_id"].astype(str).str.startswith("daphnet_"),
+                    "participant_id",
+                ]
+                .astype(str)
+            )
+            if daph_pids:
+                out = out[~out["participant_id"].astype(str).isin(daph_pids)]
+    return out.reset_index(drop=True)
+
+
 def load_patient_feature_matrix(
     config: dict,
     *,
@@ -97,10 +132,12 @@ def load_patient_feature_matrix(
 
     When feature selection is enabled and ``selected_features.json`` exists,
     columns are restricted to the selected set (order preserved).
+    DAPHNET-sourced subjects are excluded (Voisard-only supervised path).
     """
     feat_dir = feat_dir or Path(config["paths"]["features"])
     path = feat_dir / "patient_features.parquet"
     df = pd.read_parquet(path)
+    df = drop_daphnet_rows(df, config)
     assert_no_target_proxies_in_feature_frame(df, context=str(path))
 
     feat_cols = get_numeric_feature_columns(df)

@@ -5,8 +5,40 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pandas as pd
 
-from src.features.feature_matrix import nested_rfecv_column_indices
+from src.features.feature_matrix import drop_daphnet_rows, nested_rfecv_column_indices
+
+
+def test_drop_daphnet_rows_filters_trial_id_prefix():
+    df = pd.DataFrame(
+        {
+            "trial_id": ["HS_1_1", "daphnet_S02", "ACL_1_1"],
+            "participant_id": ["HS_1", "S02", "ACL_1"],
+            "x": [1.0, 2.0, 3.0],
+        }
+    )
+    out = drop_daphnet_rows(df)
+    assert list(out["trial_id"]) == ["HS_1_1", "ACL_1_1"]
+
+
+def test_drop_daphnet_rows_filters_patient_ids_via_metadata(tmp_path):
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    pd.DataFrame(
+        {
+            "trial_id": ["HS_1_1", "daphnet_S02", "daphnet_S03"],
+            "participant_id": ["HS_1", "S02", "S03"],
+        }
+    ).to_csv(processed / "trial_metadata.csv", index=False)
+    df = pd.DataFrame(
+        {
+            "participant_id": ["HS_1", "S02", "S03", "PD_1"],
+            "x": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    out = drop_daphnet_rows(df, {"paths": {"processed_data": str(processed)}})
+    assert list(out["participant_id"]) == ["HS_1", "PD_1"]
 
 
 def test_nested_rfecv_accepts_integer_train_indices():

@@ -1,0 +1,198 @@
+% MDPI Sensors body paste-in
+% 1. Download official MDPI LaTeX template (mdpi.com/authors/latex)
+% 2. Set: \documentclass[sensors,article,submit,pdftex,moreauthors]{Definitions/mdpi}
+% 3. Put abstract/keywords into MDPI \abstract{...} / \keyword{...} (see main.tex abstract)
+% 4. Paste everything below into the template body (after front matter)
+
+\section{Introduction}
+
+Falls and gait dysfunction are major contributors to morbidity and healthcare cost across orthopedic and neurological patient populations. Wearable IMU-based gait monitoring offers a low-cost, continuous alternative to laboratory gait analysis, but most published systems are developed and validated on a single patient population---typically Parkinson's disease---using loosely grouped or ungrouped train/test splits that risk participant-level data leakage.
+
+A recently released public dataset \citep{voisard2025,voisard2025figshare} provides four-sensor IMU gait recordings across eight clinical cohorts spanning both orthopedic and neurological pathology, enabling evaluation across a broader pathology spectrum than prior single-cohort studies. This work uses that dataset to develop and evaluate (1)~a healthy-reference, unsupervised anomaly screening system requiring no pathological training labels, and (2)~a supervised pathology-tier classifier, under strict participant-grouped leave-one-subject-out validation throughout.
+
+A concurrent independent study \citep{sadeghsalehi2025} also uses this dataset and identifies the same cohort laterality confound; that work evaluates four binary screening tasks, whereas this work evaluates the full eight-cohort multi-class tier under strict participant-grouped leave-one-subject-out validation, adds a healthy-reference anomaly screening ensemble, and adds zero-shot cross-dataset transfer to an external freezing-of-gait dataset.
+
+Our contributions are:
+\begin{enumerate}[leftmargin=*]
+  \item A healthy-reference anomaly screening ensemble (BiLSTM-autoencoder latent representations scored by Isolation Forest and One-Class SVM) requiring no pathological training data, evaluated under strict LOSO across all eight Voisard cohorts.
+  \item A source-locked, zero-shot cross-dataset transfer evaluation to an external freezing-of-gait dataset (DAPHNET), using fusion membership fixed entirely from source-domain evidence, with no target-domain tuning.
+  \item Full methodological transparency regarding known confounds and limitations discovered during development, including a cohort laterality confound (also independently identified by Sadeghsalehi et~al., 2025) and a data-contamination issue in an early version of the supervised tabular pipeline, both disclosed with quantified impact.
+  \item A fully documented, executable end-to-end pipeline with participant-grouped evaluation, interpretability analyses (SHAP, feature/sensor ablation), and publicly inspectable artifacts intended to support independent replication.
+\end{enumerate}
+
+We emphasize that labels in this dataset are cohort-level pathology categories rather than prospectively adjudicated individual fall outcomes. Accordingly, performance metrics should be interpreted as evidence for pathology-tier screening utility, not direct clinical fall prediction.
+
+\section{Materials and Methods}
+
+\subsection{Dataset}
+
+The primary dataset \citep{voisard2025,voisard2025figshare} comprises 260~participants and 1{,}355 walking trials across eight cohorts (Healthy, Hip~OA, Knee~OA, ACL injury, Parkinson's disease, CVA, CIPN, RIL), recorded with four synchronized body-worn IMUs (head, lower back, left foot, right foot) at 100~Hz. A secondary dataset (DAPHNET; \cite{bachlin2010daphnet}) is used only for zero-shot cross-dataset transfer evaluation (Section~\ref{sec:daphnet}), never for training.
+
+Cohort labels were mapped to pathology-tier targets: Class~0 Healthy; Class~1 Orthopedic (Hip~OA, Knee~OA, ACL); Class~2 Neurological (PD, CVA, CIPN, RIL).
+
+\subsection{Primary endpoint: healthy-reference anomaly screening}
+\label{sec:primary}
+
+\textbf{Primary endpoint (\texttt{bilstm\_ae\_ensemble}):} trial-level Healthy-reference BiLSTM-AE anomaly screening with LOSO out-of-fold evaluation. For each held-out participant, a BiLSTM autoencoder and latent one-class models (Isolation Forest, One-Class SVM) were fit on Healthy training trials only; held-out trials received Isolation Forest and OCSVM latent scores, later rank-averaged over the pooled OOF set into the reported ensemble. Evaluation pseudo-label: non-Healthy trial~=~positive (screening target). Youden~$J$ thresholds were fit on OOF scores for sensitivity/specificity reporting.
+
+\textbf{Fusion membership (source-locked, not pre-registered).} Equal-weight IF+OCSVM membership was chosen from source-domain Voisard OOF diagnostics---AE reconstruction was below chance (AUC~0.479) and only weakly correlated with the latent detectors (Spearman~$\sim$0.41--0.43)---then frozen before any DAPHNET evaluation. Git history shows the original three-method weights (0.40~/~0.33~/~0.27 including AE) were committed with the BiLSTM-AE pipeline; the 0~/~0.50~/~0.50 two-method rule was locked after those Voisard OOF diagnostics, not after target-domain look-ahead. We therefore describe the rule as \emph{source-locked}, not a priori~/~pre-registered. An identical percentile-rank-averaging procedure ($0.5\times[\mathrm{rank\_pct}(\mathrm{IF})+\mathrm{rank\_pct}(\mathrm{OCSVM})]$) was applied independently within each evaluation set (Voisard: 1{,}345 OOF trials; DAPHNET: 15{,}916 zero-shot windows). No DAPHNET labels, performance, or score distribution informed model selection or fusion-weight choice---those were fixed from Voisard evidence only. However, percentile normalization in each domain is computed relative to that domain's own score pool rather than a shared frozen reference distribution, so the two ensembles are not on a strictly identical numeric scale. Percentile ranks for the reported Voisard ensemble are computed over the full pooled OOF score set rather than within each LOSO fold independently; this does not use held-out labels but does mean a given fold's fused score is influenced by the score distribution of other folds' held-out trials. A companion tabular one-class ensemble (Isolation Forest, LOF, One-Class SVM on engineered features) remains a secondary subsystem.
+
+\subsection{Secondary endpoint: supervised pathology-tier classification [provisional]}
+\label{sec:tabular}
+
+A supervised tabular pipeline (XGBoost, LightGBM, Random Forest, SVM, MLP, and soft-voting/stacking ensembles) classifies trials into three pathology tiers (Healthy, orthopedic, neurological) using nested-RFECV/SHAP feature selection performed per LOSO fold.
+
+\textbf{Data-contamination disclosure.} During manuscript preparation, we discovered that the feature-loading step for this tabular pipeline lacked a dataset-source filter present elsewhere in the codebase, resulting in nine DAPHNET-sourced participants (labeled by cohort convention as Parkinson's disease) being included in the tabular pipeline's LOSO folds, feature selection, and evaluation---affecting metrics, SHAP importance exports, feature ablation, sensor ablation, split-protocol comparison, and cross-cohort transfer. Notably, the leave-one-cohort-out ``PD'' held-out group ($n=33$) comprised 24 Voisard-sourced and 9 DAPHNET-sourced participants ($\sim$27\% of that group). We corrected the filter (verified via unit tests) and confirmed the BiLSTM-AE anomaly-screening endpoint (Section~\ref{sec:primary}) was unaffected, as its data loader already applied an explicit DAPHNET filter. All results derived from the contaminated tabular pipeline are reported as \textbf{provisional} throughout this manuscript pending a fully corrected re-run on the Voisard-only ($N=260$) cohort. An eval-set-only sensitivity check---removing the nine DAPHNET-sourced rows from evaluation without retraining---showed small, consistently negative shifts ($-0.001$ to $-0.009$ AUC across five tabular models), which bounds only the evaluation-side effect and does not rule out an effect on feature selection or hyperparameter tuning from the contaminated training folds.
+
+\subsection{Deep learning baselines}
+
+Six deep architectures (InceptionTime, DeepConvLSTM, Gait Transformer, TCN, CNN-1D, BiLSTM-Attention) were evaluated under matched LOSO protocol with per-fold Optuna hyperparameter tuning. Unlike the tabular pipeline, the deep pipeline's trial-loading step requires all four sensor channels, implicitly excluding DAPHNET's lower-back-only trials and yielding a clean $N=260$---confirmed unaffected by the contamination described in Section~\ref{sec:tabular}.
+
+\subsection{Zero-shot cross-dataset transfer (DAPHNET)}
+\label{sec:daphnet}
+
+The primary anomaly-screening fusion membership (Section~\ref{sec:primary}), fixed entirely from Voisard evidence, was applied without modification to DAPHNET---a lower-back-only freezing-of-gait dataset, with the other three sensor channels zero-padded to match the training sensor layout. No DAPHNET labels, performance, or score distribution informed model or weight selection. DAPHNET trunk was mapped to Voisard lower back; ankle and thigh channels were not remapped. Signals were resampled to 100~Hz after calibration-row removal.
+
+\section{Results}
+
+\subsection{Primary endpoint: Voisard LOSO anomaly screening}
+
+\begin{table}[ht]
+\centering
+\caption{Voisard LOSO Healthy-reference BiLSTM-AE anomaly screening (OOF). Primary endpoint is the source-locked 2-method ensemble.}
+\label{tab:voisard-ae}
+\begin{tabular}{lrr}
+\toprule
+Method & ROC-AUC & PR-AUC \\
+\midrule
+AE reconstruction & 0.479 & 0.772 \\
+Isolation Forest (latent) & 0.754 & 0.842 \\
+One-Class SVM (latent) & 0.749 & 0.876 \\
+\textbf{2-method ensemble (primary)} & \textbf{0.7545} & \textbf{0.8669} \\
+\textit{3-method ensemble (sensitivity, rejected)} & \textit{0.6238} & \textit{0.8053} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The three-method variant including raw AE reconstruction error underperforms the two-method ensemble by 0.13 AUC (0.6238 vs.\ 0.7545), consistent with reconstruction error's below-chance individual performance and weak correlation with the latent detectors (Section~\ref{sec:primary}). Isolation Forest alone is 0.7540; ensemble gain is $+0.0005$ (IF-dominated). Operating point at Youden~$J$: sensitivity 0.711, specificity 0.720, F1~0.786, MCC~0.388, Cohen~$\kappa$~0.369.
+
+\subsection{Zero-shot cross-dataset transfer (DAPHNET FOG)}
+
+We evaluated the source-locked 2-method fusion (membership and equal weights fixed from Voisard; no DAPHNET-side weight tuning) on 15{,}916 windows from 9 DAPHNET subjects, with lower-back input only. An identical percentile-rank-averaging procedure was applied independently within this evaluation set: DAPHNET ranks are computed over the pooled zero-shot window scores, not against a shared frozen Voisard reference, so the two ensembles are not on a strictly identical numeric scale. FOG-positive windows numbered 62 (prevalence 0.39\%), and all 62 originated from a single subject (S03); the remaining 8 subjects contributed no positive windows. This is a single-positive-subject case study, not cross-subject FOG generalization.
+
+\begin{table}[ht]
+\centering
+\caption{DAPHNET zero-shot FOG transfer (LB-only; per-domain rank-average).}
+\label{tab:daphnet}
+\begin{tabular}{lccrr}
+\toprule
+Method & ROC-AUC & 95\% CI & PR-AUC & PR / prev. \\
+\midrule
+AE reconstruction & \textbf{0.7046} & [0.627, 0.769] & 0.0071 & $1.82\times$ \\
+Isolation Forest (latent) & 0.5884 & [0.463, 0.726] & 0.0199 & $5.10\times$ \\
+One-Class SVM (latent) & 0.4497 & [0.323, 0.582] & 0.0033 & $0.84\times$ \\
+2-method ensemble & 0.5314 & [0.405, 0.664] & 0.0223 & $5.73\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Under this per-domain rank-average, One-Class SVM's below-chance ranking pulls the ensemble below Isolation Forest alone. AE reconstruction outranks the ensemble on point estimate, though the 95\% confidence intervals overlap, so this reversal should be read as directional, not statistically significant at conventional thresholds.
+
+\subsection{Provisional supervised tabular results}
+\label{sec:res-tabular}
+
+\textbf{Provisional status:} the tabular supervised pipeline's feature matrix included 9 participants sourced from DAPHNET (S02--S10), mislabeled as Voisard PD-cohort members (Section~\ref{sec:tabular}). Affected artifacts include AUC, SHAP, feature/sensor ablation, split-protocol comparison, and cross-cohort transfer. The BiLSTM-AE anomaly screening endpoint (Table~\ref{tab:voisard-ae}) is unaffected.
+
+\begin{table}[ht]
+\centering
+\caption{Provisional tabular pathology-tier LOSO macro OvR AUC and eval-only sensitivity (drop S02--S10 from evaluation without retraining).}
+\label{tab:tabular}
+\begin{tabular}{lrrr}
+\toprule
+Model & Contaminated ($N{=}269$) & Eval-only ($N{=}260$) & $\Delta$ \\
+\midrule
+XGBoost & 0.8415 & 0.8364 & $-0.0051$ \\
+Ensemble (soft voting) & 0.8404 & 0.8372 & $-0.0032$ \\
+Ensemble (stacking) & 0.8371 & 0.8325 & $-0.0046$ \\
+Random Forest & 0.8279 & 0.8234 & $-0.0045$ \\
+LightGBM & 0.8239 & 0.8227 & $-0.0012$ \\
+SVM & 0.8172 & 0.8113 & $-0.0059$ \\
+MLP & 0.7505 & 0.7411 & $-0.0094$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Per-class F1 (XGBoost, provisional): Healthy 0.526, orthopedic 0.622, neurological 0.857 (macro-F1 0.669; macro one-vs-rest AUC 0.842).
+
+\subsection{Per-cohort anomaly scores}
+
+Stable one-vs-Healthy AUROC is reportable for CVA (0.7542) and RIL (0.6775); cohorts with fewer than 25 participants have AUROC suppressed by design. Mean anomaly-score gaps are negative for orthopedic cohorts (HOA, TKA/Knee~OA, ACL), indicating unsupervised deviation from the healthy manifold is not equivalent to epidemiological fall risk. Kruskal--Wallis tests reject equality of anomaly-score distributions across cohorts (trial-level $H=191.6$, $p<0.001$; participant-mean $H=52.0$, $p<0.001$). Spearman correlation between participant mean anomaly score and literature reference fall probability is $\rho=0.333$ ($n=260$, $p<0.001$).
+
+\subsection{Deep supervised baselines (clean $N=260$)}
+
+Among six deep architectures under matched LOSO, Gait Transformer achieved the highest AUC (0.950, 95\% CI [0.929, 0.970]), followed by TCN (0.941), InceptionTime (0.936), CNN-1D (0.934), BiLSTM-Attention (0.933), and DeepConvLSTM (0.926)---all within a 0.024 AUC band.
+
+\section{Discussion}
+
+\subsection{Principal findings}
+
+The primary, unaffected endpoint is the healthy-reference anomaly-screening ensemble (ROC-AUC 0.7545) under strict LOSO across all eight Voisard cohorts without pathological training labels. Isolation Forest on BiLSTM-AE latents is the effective in-domain detector; the ensemble adds negligible lift ($+0.0005$).
+
+The provisional supervised pathology-tier classifier shows a tier gradient---F1 of 0.857 (neurological) vs.\ 0.622 (orthopedic) vs.\ 0.526 (Healthy)---directionally plausible but presented as a hypothesis for the corrected re-run rather than a settled finding.
+
+\subsection{Model behavior (provisional tabular)}
+
+Global SHAP importance is dominated by lower-back signal complexity (\texttt{lb\_sampen\_mean}, mean $|$SHAP$|$ 0.381). Removing trunk-dynamics features drops nested-RFECV AUC from 0.8489 to 0.7980 ($\Delta=-0.051$), the largest degradation among feature-family ablations.
+
+\subsection{Classical vs.\ deep learning}
+
+All six supervised deep models outperform the provisional best tabular classifier (XGBoost 0.8415) by a wide margin; this gap should not be over-interpreted given tabular contamination. The unsupervised BiLSTM-AE endpoint is deliberately not positioned as competing with supervised alternatives on raw discrimination.
+
+\subsection{Sensor configuration (provisional)}
+
+Tabular sensor-subset AUCs cluster into few distinct values, with near-insensitivity beyond a two-sensor (head + lower back) minimum---consistent with SHAP trunk dominance, and flagged for re-verification on corrected $N=260$.
+
+\subsection{Cross-cohort generalization and split protocol}
+
+Several LOCO folds produce undefined AUC due to single-class test folds; combined with PD-group contamination, we do not claim cross-cohort external validity from current LOCO results. Comparing strict participant-grouped LOSO against ungrouped $K$-fold shows modest AUC inflation under leakage-prone protocol (mean $\approx$1.8\%, range 0.0--5.3\%), supporting grouped evaluation for this modality.
+
+\subsection{In-domain vs.\ zero-shot fusion behavior}
+
+Under Voisard LOSO, the 2-method ensemble outperforms AE reconstruction (0.7545 vs.\ 0.4790). Under zero-shot DAPHNET transfer with the same frozen membership and per-domain rank-average procedure, ordering reverses (reconstruction 0.7046 vs.\ ensemble 0.5314), with overlapping CIs. We did not retune fusion weights on DAPHNET. Latent one-class boundaries fit to Voisard's healthy latent shape may not transfer to zero-padded single-sensor DAPHNET; reconstruction error appears more distribution-agnostic. This is a plausible mechanism, not a demonstrated one, and is inseparable from the S03 single-positive-subject limitation.
+
+\subsection{Why an unsupervised endpoint is primary}
+
+The unsupervised endpoint requires no pathological labels at training time and remains deployable in populations without disease-specific training data---a property supervised models do not share.
+
+\subsection{Orthopedic anomaly-score direction}
+
+Unsupervised deviation from the healthy manifold is not equivalent to epidemiological fall risk; orthopedic mechanical gait alterations can fall within the healthy latent manifold even when clinical fall risk is elevated.
+
+\section{Limitations}
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Retrospective; no prospective fall outcomes.} This is a retrospective analysis of one open clinical gait dataset. We performed no prospective enrollment or follow-up and report no incident fall outcomes linked to individual participants. Supervision used cohort-level pathology labels, not verified per-participant fall histories.
+  \item \textbf{Single-dataset development scope.} Evaluation was entirely on the same dataset used for feature and model development, aside from the sealed DAPHNET zero-shot check. No external multi-site replication with frozen models was performed.
+  \item \textbf{Research prototype.} Outputs are not medical advice, regulatory-cleared diagnostics, or substitutes for established clinical fall-risk tools. Youden thresholds are not calibrated to bedside scores.
+  \item \textbf{Cohort laterality confound.} Hip~OA: 15 right~/~0 left~/~0 bilateral; CVA: 47 right~/~2 left~/~0 bilateral; ACL: 9 right~/~2 left. Fixed walkway with mandated U-turn can couple path side with affected limb. Explicit documentation is intentional methodological transparency, not a claim of superiority; independently also identified by Sadeghsalehi et~al.\ (2025).
+  \item \textbf{Tabular pipeline data contamination (provisional results).} Nine DAPHNET participants were inadvertently included in tabular training and evaluation. Eval-only sensitivity shifts were small ($-0.001$ to $-0.009$ AUC) but do not bound training-side effects. Full Voisard-only retrain has not been completed. Primary anomaly-screening endpoint is unaffected.
+  \item \textbf{DAPHNET zero-shot is a single-subject case study.} All 62 FOG-positive windows originate from S03. This evaluation cannot distinguish FOG detection from subject-specific characteristics of S03.
+\end{enumerate}
+
+\section{Conclusions}
+
+We presented a healthy-reference gait anomaly screening system evaluated under strict LOSO across eight clinical cohorts, achieving ROC-AUC 0.7545 without pathological training labels, and a source-locked zero-shot cross-dataset transfer evaluation revealing a fusion-behavior reversal under domain shift, disclosed transparently alongside its single-subject case-study limitation. We additionally identified and corrected a data-contamination issue in a secondary supervised pipeline, reporting affected results as provisional pending a corrected re-run. Methodological transparency---including disclosure of confounds and errors discovered during development---combined with cross-dataset evaluation offers a template for more rigorous, reproducible wearable gait screening research. Future work should prioritize the Voisard-only tabular recompute, prospective outcome-linked validation, external multi-site replication, and FOG evaluation with multiple positive-bearing subjects.
+
+\vspace{1em}
+\noindent\textbf{Institutional Review Board Statement.} This study used a publicly available, de-identified dataset hosted on Figshare (DOI:~10.6084/m9.figshare.28806086; Voisard et~al., \textit{Scientific Data} 2025). The original data collection was approved by the Comit\'e de Protection des Personnes \^Ile-de-France~II (CPP ID 2014-10-04 RNI). No new human participants were recruited and no new human data were collected for this secondary analysis.
+
+\noindent\textbf{Informed Consent Statement.} Informed consent was obtained from all participants by the original investigators (Voisard et~al., 2025). No additional informed consent was required for this secondary computational study of de-identified data.
+
+\noindent\textbf{Data Availability Statement.} The code and LOSO split manifests supporting this study are openly available at [Zenodo DOI, once minted]. Trained model checkpoints are available at [Hugging Face Hub URL, once uploaded]. The primary dataset is publicly available at \url{https://doi.org/10.6084/m9.figshare.28806086} (Voisard et~al., 2025). This study used only publicly available, de-identified data; no new human data were collected.
+
+\noindent\textbf{Conflicts of Interest.} The author declares no conflict of interest.
+
+\noindent\textbf{Author Contributions.} Conceptualization, methodology, software, formal analysis, writing---original draft, and writing---review \& editing: K.M. [Expand if co-authors are added.]
+
+\noindent\textbf{Funding.} [Insert funding statement or ``This research received no external funding.'']
+

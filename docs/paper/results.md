@@ -1,7 +1,7 @@
 # Results
 _Auto-generated 2026-07-27 14:42 UTC from pipeline artifacts (git `5296a27`). Do not edit by hand — run `scripts/regenerate_paper_results.py` after each pipeline run._
 ## 1. Cohort composition
-The analysis set contains 260 participants and 1,356 walking trials across eight cohorts with four synchronized IMUs. Demographics: `fall_risk_pipeline/results/metrics/table1_demographics.md`.
+The analysis set contains 260 participants and 1,355 walking trials across eight cohorts with four synchronized IMUs (Voisard-only; DAPHNET subjects are reserved for zero-shot transfer). Demographics: `fall_risk_pipeline/results/metrics/table1_demographics.md` (regenerate after applying the Voisard-only metadata filter — the on-disk table currently still includes 9 DAPHNET rows in its Total).
 ## 2. Methodological novelty vs competitor literature
 
 Comparison of **evaluation rigor** features across wearable gait competitors benchmarked in GaitGuard. Numeric performance lives in Table 2 (`docs/paper/table2_prior_work.md`).
@@ -182,7 +182,11 @@ Within a single cohort, fall probability is cohort-constant, so ρ is reported f
 
 ## 2b. Secondary supervised pathology-tier performance (tabular models)
 
-Supplementary to primary anomaly screening — nested RFECV LOSO from `metrics.csv`.
+**Provisional status:** the tabular supervised pipeline's feature matrix (`patient_features.parquet`) was found to include 9 participants sourced from the DAPHNET dataset (S02–S10), mislabeled as Voisard PD-cohort members, due to a missing dataset filter in the feature-loading step. This affects LOSO fold composition, nested feature selection, and all results derived from this pipeline (AUC, SHAP importances, feature ablation, tabular sensor ablation, deploy-schema gap, and split-protocol comparison). This also affects the sensor-configuration ablation (`sensor_ablation.csv`), the grouped-vs-ungrouped split-protocol leakage comparison (`split_protocol_comparison.csv`), and the cross-cohort/leave-one-cohort-out transfer analysis (`cross_cohort_transfer.csv`) — all generated via the same `load_patient_feature_matrix` loader. Concretely, the leave-one-cohort-out "PD" held-out test group (n=33) comprises 24 Voisard-sourced PD participants and 9 DAPHNET-sourced participants, meaning roughly 27% of that specific cohort's held-out test set was not drawn from the primary study population. All results derived from these three files — and the broader tabular pipeline above — are provisional pending the corrected Voisard-only (N=260) re-run and should not be treated as final. The BiLSTM-AE anomaly screening endpoint (§2 Primary BiLSTM-AE, AUC 0.7545) is unaffected — it uses a separately filtered N=260 training/evaluation pipeline (confirmed via explicit `daphnet_` trial filters / multi-sensor windowing) and is unchanged by this issue.
+
+**Eval-set-only sensitivity check** (drop S02–S10 from evaluation without retraining; *not* a valid corrected LOSO estimate — models were still trained on folds that included those 9 subjects): xgboost macro-OvR AUC 0.8415 → **0.8364** (Δ −0.0051); ensemble_soft_voting 0.8404 → **0.8372** (Δ −0.0032). Full table: `results/metrics/tabular_daphnet_eval_only_sensitivity.csv`.
+
+Supplementary to primary anomaly screening — nested RFECV LOSO from `metrics.csv` (reported N=269 participants in that artifact).
 
 | Model | AUC | 95% CI | Macro-F1 | Accuracy |
 |---|---:|---|---:|---:|
@@ -194,9 +198,11 @@ Supplementary to primary anomaly screening — nested RFECV LOSO from `metrics.c
 | svm | 0.8172 | [0.7771, 0.8525] | 0.5394 | 0.6840 |
 | mlp | 0.7505 | [0.7025, 0.7990] | 0.5279 | 0.6283 |
 
-**Best supervised LOSO macro-OVR AUC:** xgboost (0.8415).
+**Best supervised LOSO macro-OVR AUC (provisional):** xgboost (0.8415).
 
 ## 3. Deploy-schema vs nested-RFECV LOSO gap (ML-032)
+
+> **Provisional** — same DAPHNET contamination as §2b.
 
 Section 2b reports nested per-fold RFECV LOSO (`metrics.csv`). API/deploy checkpoints use `selected_features.json`. Deploy-schema LOSO AUCs:
 
@@ -272,11 +278,13 @@ Participant-level LOSO; early-stopping val AUC aggregated per participant (ML-01
 
 # Feature ablation (LOSO macro-OVR AUC)
 
+> **Provisional** — same DAPHNET contamination as §2b (tabular XGBoost reference). Do not treat as final Voisard-only evidence.
+
 Reference classifier: **xgboost** (checkpoint hyperparameters, re-fit per LOSO fold).
 
 Trial-level features in config: **90**; patient-level columns vary by aggregation (mean, std, range, trend).
 
-Top-10 SHAP features (LOSO aggregate, nested RFECV per fold): `mr_f00044_mean`, `lb_sampen_mean`, `it_ms_mp_29_mean`, `it_ms10_08_mean`, `it_ms_mp_30_mean`, `it_ms20_06_mean`, `mr_f00046_mean`, `it_ms_mp_31_mean`, `lb_jerk_mean_ap_mean`, `it_ms_mp_27_mean`
+Top-10 SHAP features (LOSO aggregate, nested RFECV per fold; **provisional** — same contamination): `mr_f00044_mean`, `lb_sampen_mean`, `it_ms_mp_29_mean`, `it_ms10_08_mean`, `it_ms_mp_30_mean`, `it_ms20_06_mean`, `mr_f00046_mean`, `it_ms_mp_31_mean`, `lb_jerk_mean_ap_mean`, `it_ms_mp_27_mean`
 
 | Scenario | n features | AUC | 95% CI | Macro F1 |
 |---|---:|---:|---|---:|
@@ -318,6 +326,8 @@ Three training configurations on Voisard (Healthy-reference LOSO ensemble). Inac
 
 ## Cross-Cohort Transfer (Leave-One-Cohort-Out)
 
+> **Provisional** — same DAPHNET contamination as §2b (`cross_cohort_transfer.csv` via `load_patient_feature_matrix`; held-out PD n=33 = 24 Voisard + 9 DAPHNET).
+
 Train on all subjects from N-1 cohorts, test on the held-out cohort. Answers: 'Can a model trained without any PD patients still detect PD?'
 
 | Held-Out Cohort | N (test) | AUC | Mean True-Class Prob. | Accuracy | F1 (macro) |
@@ -336,6 +346,8 @@ so `N/A` is expected. Mean true-class probability is reported as the transfer-co
 
 See `cross_cohort_pairwise.csv` for the full 8x8 train-on-A / test-on-B matrix (macro-F1, macro OvR AUC, and accuracy). The primary heatmap `cross_cohort_pairwise.{pdf,png}` uses **macro-F1** (preferred under class imbalance); `cross_cohort_pairwise_auc.{pdf,png}` is supplemental.
 ## 10. Split-protocol sensitivity
+
+> **Provisional** — tabular models; same DAPHNET contamination as §2b.
 
 Compares LOSO (grouped, one participant per row) against standard StratifiedKFold (ungrouped splits). At participant granularity this measures split-difficulty inflation, not duplicate-subject leakage (ML-048). Both arms use matched per-fold nested RFECV when `nested_in_evaluation: true` (ML-036). Ungrouped KFold AUC is averaged over multiple seeds per model (see `ungrouped_kfold_seed_repeats`; default 5, MED-001).
 

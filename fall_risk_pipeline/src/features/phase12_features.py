@@ -98,10 +98,11 @@ def load_phase12_patient_matrix(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], pd.DataFrame]:
     from pathlib import Path
 
-    from src.features.feature_matrix import get_numeric_feature_columns
+    from src.features.feature_matrix import drop_daphnet_rows, get_numeric_feature_columns
 
     feat_dir = Path(config["paths"]["features"])
     df = pd.read_parquet(feat_dir / "patient_features.parquet")
+    df = drop_daphnet_rows(df, config)
     numeric = get_numeric_feature_columns(df)
     feat_cols = [c for c in phase12_patient_columns(numeric, config) if c in df.columns]
     if not feat_cols:
